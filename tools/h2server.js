@@ -10,6 +10,8 @@
 //   /redirect  302 to /hello
 // plain HTTP/1.1:
 //   /chunked   three 1000-byte chunks (Transfer-Encoding: chunked)
+//   /stream/BYTES/SEED  BYTES of a pattern (byte i = (i*7 + SEED*13 + (i>>16)) % 251),
+//              written as fast as the client takes them (userland/programs/dltest.c)
 // tools/selftest.py --suite network starts it with a throwaway certificate.
 'use strict';
 const fs = require('fs'), http = require('http'), http2 = require('http2');
@@ -47,6 +49,24 @@ function handle(req, res) {
             setTimeout(next, 20);
         };
         next();
+    } else if (/^\/stream\/\d+\/\d+$/.test(req.url)) {
+        const [, bytes, seed] = req.url.split('/').slice(1).map(Number);
+        res.writeHead(200, { ...head, 'content-type': 'application/octet-stream', 'content-length': bytes });
+        const block = 65536;
+        let sent = 0;
+        const more = () => {
+            while (sent < bytes) {
+                const b = Buffer.alloc(Math.min(block, bytes - sent));
+                for (let i = 0; i < b.length; i++) {
+                    const k = sent + i;
+                    b[i] = (k * 7 + seed * 13 + Math.floor(k / 65536)) % 251;
+                }
+                sent += b.length;
+                if (!res.write(b)) return res.once('drain', more);
+            }
+            res.end();
+        };
+        more();
     } else {
         res.writeHead(404, { ...head, 'content-type': 'text/plain' });
         res.end('not found\n');

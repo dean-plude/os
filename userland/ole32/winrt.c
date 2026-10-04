@@ -2,8 +2,8 @@
  * Windows Runtime strings (HSTRING) and activation, the part of combase
  * (api-ms-win-core-winrt-*) Win32 programs touch: they make HSTRINGs to
  * name runtime classes, and ask for activation factories, which NovaOS
- * has few of (winrt_classes.c; others give REGDB_E_CLASSNOTREG, as for a
- * class Windows lacks).
+ * has few of (winrt_classes.c, uisettings.c; others give
+ * REGDB_E_CLASSNOTREG, as for a class Windows lacks).
  */
 #define NOVA_BUILD_OLE32
 #include <objbase.h>
@@ -135,7 +135,21 @@ WINOLEAPI_(HRESULT) RoGetActivationFactory(HSTRING cls, REFIID iid, void **f)
     const WCHAR *name = WindowsGetStringRawBuffer(cls, &len);
     return ole32_winrt_factory(name, len, iid, f);
 }
-WINOLEAPI_(HRESULT) RoActivateInstance(HSTRING cls, void **inst) { (void)cls; if (inst) *inst = 0; return REGDB_E_CLASSNOTREG; }
+static const GUID IID_IActivationFactory__ = { 0x00000035, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+/* The class's factory's IActivationFactory::ActivateInstance, the slot
+ * after IInspectable's six */
+WINOLEAPI_(HRESULT) RoActivateInstance(HSTRING cls, void **inst)
+{
+    if (!inst) return E_POINTER;
+    *inst = 0;
+    IUnknown *f;
+    HRESULT hr = RoGetActivationFactory(cls, &IID_IActivationFactory__, (void **)&f);
+    if (FAILED(hr)) return hr;
+    typedef HRESULT (STDMETHODCALLTYPE *Activate)(IUnknown *, void **);
+    hr = ((Activate)((void **)f->lpVtbl)[6])(f, inst);
+    f->lpVtbl->Release(f);
+    return hr;
+}
 WINOLEAPI_(BOOL) RoOriginateErrorW(HRESULT hr, UINT32 len, const WCHAR *msg) { (void)hr; (void)len; (void)msg; return FALSE; }
 WINOLEAPI_(BOOL) RoOriginateError(HRESULT hr, HSTRING msg) { (void)hr; (void)msg; return FALSE; }
 /* C++/WinRT's hresult_error reports through this before it throws; there is

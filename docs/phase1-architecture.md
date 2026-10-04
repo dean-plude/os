@@ -120,11 +120,21 @@ Slab sizes: 8, 16, 32, 64, 128, 256, 512, 1024, 2048 bytes
 Each slab:  One 4KiB page, header at page start, objects following
 Free list:  Embedded in free objects (first 8 bytes = next pointer)
 Large (>2KB): Direct PMM allocation + header page for size tracking
+Mapped (>=4MB, or any large block when no run of pages is free):
+              single pages from anywhere, mapped one after another
+              (header page first) into 2 MiB slots of a kernel window
 ```
 
-The heap lives entirely in the physmap window — no new page table entries
-needed. This is efficient for Phase 1 but means kernel data isn't protected
-from accidental overwrites. Phase 2 will add guard pages.
+Slabs and large blocks live in the physmap window — no new page table
+entries needed.  A large block there is one physically contiguous run,
+which a machine whose memory is in use in small pieces may lack even with
+hundreds of megabytes free, so big blocks (drive C:'s files, a DLL's image
+while it loads) are mapped blocks instead: they live at physmap + 384 GiB
+(128 GiB, in the top-level entry every address space shares), take whole
+2 MiB slots (one page table each), and grow in place into the slots after
+them.  Freed slots are reused only after one TLB shootdown for all of them.
+Kernel data isn't protected from accidental overwrites; Phase 2 will add
+guard pages.
 
 ---
 
@@ -132,18 +142,25 @@ from accidental overwrites. Phase 2 will add guard pages.
 
 ### GDT Layout
 
-| Selector | Description           | DPL |
-|----------|-----------------------|-----|
-| 0x00     | Null                  | —   |
-| 0x08     | Kernel Code (64-bit)  | 0   |
-| 0x10     | Kernel Data           | 0   |
-| 0x18     | User Code (64-bit)    | 3   |
-| 0x20     | User Data             | 3   |
-| 0x28     | TSS (16-byte entry)   | 0   |
+| Selector | Description                                   | DPL |
+|----------|-----------------------------------------------|-----|
+| 0x00     | Null                                          | —   |
+| 0x10     | Kernel Code (64-bit)                          | 0   |
+| 0x18     | Kernel Data                                   | 0   |
+| 0x20     | User Code (32-bit, compatibility mode): 0x23  | 3   |
+| 0x28     | User Data and stack: 0x2B                     | 3   |
+| 0x30     | User Code (64-bit): 0x33                      | 3   |
+| 0x40     | TSS (16-byte entry)                           | 0   |
+| 0x50     | The 32-bit TEB, FS in 32-bit code: 0x53       | 3   |
 
-The SYSCALL/SYSRET instruction reads STAR MSR to determine CS/SS selectors.
-Our layout (0x08/0x10 kernel, 0x18/0x20 user) matches Windows NT's layout
-exactly, which simplifies STAR MSR configuration for Phase 4.
+This is Windows' own x64 layout (`KGDT64_*`), and programs see it: a
+64-bit program's CS is 0x33, its stack and data 0x2B, FS 0x53, and a far
+jump to 0x23 runs 32-bit code in it (Roblox's Hyperion does).  The
+SYSCALL/SYSRET instructions read the STAR MSR for their selectors and need
+this order: kernel code with its data 8 above, and user 32-bit code with
+the data 8 above and 64-bit code 16 above (STAR = 0x0023_0010_0000_0000,
+as on Windows).  0x08 and 0x60-0x68 are empty, for Windows' GDT limit of
+0x6F.
 
 ### IDT Gate Assignments
 
@@ -153,6 +170,7 @@ exactly, which simplifies STAR MSR configuration for Phase 4.
 | 32–47     | APIC hardware IRQs (remapped PIC)    |
 | 0x30      | APIC timer (tick and sleep deadlines)|
 | 0x32      | ACPI SCI, routed through the I/O APIC (the only device interrupt; the other drivers poll) |
+| 0x29      | `__fastfail` (DPL 3): the program ends with STATUS_STACK_BUFFER_OVERRUN |
 | 0x2E      | NT syscall (int 0x2E)                |
 | 0xFF      | APIC spurious interrupt              |
 

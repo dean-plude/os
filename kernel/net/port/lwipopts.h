@@ -15,17 +15,25 @@
 #define LWIP_SOCKET                 0
 #define LWIP_PROVIDE_ERRNO          1
 
-/* Memory: lwIP's own heap and pools (no libc malloc) */
+/* Memory: lwIP's own heap and pools (no libc malloc).  Sized for a
+ * desktop's load, not a microcontroller's: a browser or a game client
+ * keeps hundreds of sockets open, downloads over dozens of connections at
+ * once and runs several DNS lookups in parallel, and Windows has no fixed
+ * limit for any of it.  Every PCB counts while it is in TIME-WAIT or
+ * closing as well (lwIP reclaims the oldest TIME-WAIT one when the pool is
+ * full, never a live connection), and each lookup in flight holds a UDP
+ * PCB of its own (DNS_MAX_SOURCE_PORTS), so the old 16 TCP and 8 UDP PCBs
+ * ran out and socket() failed with WSAENOBUFS. */
 #define MEM_ALIGNMENT               8
-#define MEM_SIZE                    (256 * 1024)
-#define MEMP_NUM_PBUF               64
-#define MEMP_NUM_TCP_PCB            16
-#define MEMP_NUM_TCP_PCB_LISTEN     4
-#define MEMP_NUM_TCP_SEG            128
-#define MEMP_NUM_UDP_PCB            8
+#define MEM_SIZE                    (1024 * 1024)  /* tcp_write's copies (TCP_SND_BUF per sending connection), UDP sends */
+#define MEMP_NUM_PBUF               256
+#define MEMP_NUM_TCP_PCB            512
+#define MEMP_NUM_TCP_PCB_LISTEN     64
+#define MEMP_NUM_TCP_SEG            1024
+#define MEMP_NUM_UDP_PCB            128
 #define MEMP_NUM_MLD6_GROUP         6
 #define MEMP_NUM_RAW_PCB            4
-#define PBUF_POOL_SIZE              128
+#define PBUF_POOL_SIZE              512             /* received frames: in flight, queued out of order, or refused by a full ring */
 #define PBUF_POOL_BUFSIZE           1536
 
 /* Protocols */
@@ -55,7 +63,8 @@
 #define LWIP_ALTCP                  0
 
 #define DNS_MAX_SERVERS             3
-#define DNS_TABLE_SIZE              8
+#define DNS_TABLE_SIZE              32      /* names cached and asked at once (a 33rd lookup in flight fails) */
+#define DNS_MAX_SOURCE_PORTS        8       /* random source ports in use at once: each is a UDP PCB taken from programs */
 #define DNS_MAX_NAME_LENGTH         256
 
 /* TCP tuning */

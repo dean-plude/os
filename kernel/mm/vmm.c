@@ -30,6 +30,8 @@
 #include "../include/types.h"
 #include "../arch/x86_64/cpu.h"
 #include "../ke/kpcr.h"
+#include "../ke/smp.h"
+#include "../arch/x86_64/paging.h"
 
 /* -----------------------------------------------------------------------
  * Slab cache
@@ -246,6 +248,206 @@ static void large_free(void *ptr)
     pmm_free_pages(pa, total_pages);
 }
 
+/* -----------------------------------------------------------------------
+ * Mapped blocks: large blocks out of pages from anywhere
+ *
+ * A large block from large_alloc is one physically contiguous run, which a
+ * machine whose memory is in use in many small pieces may not have even
+ * with hundreds of megabytes free (drive C:'s files are blocks like this:
+ * Firefox's 164 MB xul.dll could not be unpacked with 735 MB free).  A
+ * block of MAPPED_MIN or more, or a smaller one when no run is free, is
+ * instead single pages mapped one after another into a window of kernel
+ * addresses after the physmap and the MMIO window, in the top-level entry
+ * every address space shares.  The window is in 2 MiB slots (one page
+ * table each, so blocks never share one); a block takes whole slots, with
+ * a header page first as large blocks have.
+ *
+ * Freed slots are stale until every CPU has flushed its TLB (other CPUs
+ * may still hold their old translations), and are only reused after one
+ * shootdown for all of them, when no fresh slots are left.
+ * ----------------------------------------------------------------------- */
+
+#define MAPPED_BASE   (PHYSMAP_BASE + (384ull << 30))
+#define MAPPED_SIZE   (128ull << 30)
+#define MAPPED_SLOT   HUGE_PAGE_SIZE
+#define MAPPED_SLOTS  (MAPPED_SIZE / MAPPED_SLOT)
+#define MAPPED_MIN    (4ull << 20)          /* blocks this large are always mapped */
+#define MAPPED_MAGIC  UINT64_C(0x4D41505045444844)  /* "MAPPEDHD" */
+#define SLOT_PAGES    (MAPPED_SLOT / PAGE_SIZE)
+
+typedef struct {
+    uint64_t magic;
+    size_t   pages;     /* data pages mapped now */
+    size_t   mapped;    /* data pages ever mapped (past pages: stale in other CPUs' TLBs) */
+    size_t   slots;     /* slots taken, header included */
+} MappedHeader;
+
+static uint64_t  g_slot_used[MAPPED_SLOTS / 64];
+static uint64_t  g_slot_stale[MAPPED_SLOTS / 64];
+static size_t    g_slots_stale;
+static size_t    g_slot_hint;               /* no free slot below this one */
+static bool      g_mapped_ready;
+static KSpinLock g_slot_lock = KSPINLOCK_INIT;
+
+/* Every CPU's TLB, this one's too (smp_tlb_flush asks only the others) */
+static void flush_everywhere(void)
+{
+    smp_tlb_flush(0);
+    write_cr3(read_cr3());
+}
+
+static bool slot_busy(size_t i)
+{
+    return ((g_slot_used[i / 64] | g_slot_stale[i / 64]) >> (i % 64)) & 1;
+}
+
+static void slots_mark(uint64_t *map, size_t first, size_t n, bool on)
+{
+    for (size_t i = first; i < first + n; i++) {
+        if (on) map[i / 64] |= UINT64_C(1) << (i % 64);
+        else    map[i / 64] &= ~(UINT64_C(1) << (i % 64));
+    }
+}
+
+/* @n slots in a row (the slot lock held), or MAPPED_SLOTS */
+static size_t slots_find(size_t n)
+{
+    for (int pass = 0; pass < 2; pass++) {
+        size_t run = 0;
+        for (size_t i = g_slot_hint; i < MAPPED_SLOTS; i++) {
+            if (!(i % 64) && (g_slot_used[i / 64] | g_slot_stale[i / 64]) == ~UINT64_C(0)) {
+                run = 0;
+                i += 63;
+                continue;
+            }
+            run = slot_busy(i) ? 0 : run + 1;
+            if (run == n) return i + 1 - n;
+        }
+        if (!g_slots_stale) break;
+        flush_everywhere();                 /* the stale slots are clean everywhere now */
+        __builtin_memset(g_slot_stale, 0, sizeof(g_slot_stale));
+        g_slots_stale = 0;
+        g_slot_hint = 0;
+    }
+    return MAPPED_SLOTS;
+}
+
+static void slots_free(size_t first, size_t n)
+{
+    IrqState s = spin_lock_irqsave(&g_slot_lock);
+    slots_mark(g_slot_used, first, n, false);
+    slots_mark(g_slot_stale, first, n, true);
+    g_slots_stale += n;
+    spin_unlock_irqrestore(&g_slot_lock, s);
+}
+
+/* Map fresh pages at [va, va + n pages); false (none left mapped) when
+ * memory runs out */
+static bool map_fresh(uintptr_t va, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        uintptr_t pa = pmm_alloc_page();
+        if (pa && NT_SUCCESS(paging_map(va + i * PAGE_SIZE, pa, PAGE_SIZE, MAP_WRITABLE | MAP_NO_EXEC)))
+            continue;
+        if (pa) pmm_free_page(pa);
+        for (size_t k = 0; k < i; k++) {
+            uintptr_t at = va + k * PAGE_SIZE;
+            uintptr_t p = paging_virt_to_phys(at);
+            paging_unmap(at, PAGE_SIZE);
+            pmm_free_page(p);
+        }
+        return false;
+    }
+    return true;
+}
+
+static void unmap_pages(uintptr_t va, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        uintptr_t at = va + i * PAGE_SIZE;
+        uintptr_t p = paging_virt_to_phys(at);
+        paging_unmap(at, PAGE_SIZE);
+        if (p) pmm_free_page(p);
+    }
+}
+
+static bool is_mapped(const void *ptr)
+{
+    return (uintptr_t)ptr >= MAPPED_BASE && (uintptr_t)ptr < MAPPED_BASE + MAPPED_SIZE;
+}
+
+static MappedHeader *mapped_header(const void *ptr)
+{
+    MappedHeader *h = (MappedHeader *)(ALIGN_DOWN((uintptr_t)ptr, MAPPED_SLOT));
+    return h->magic == MAPPED_MAGIC ? h : NULL;
+}
+
+static void *mapped_alloc(size_t size)
+{
+    if (!g_mapped_ready) return NULL;
+    size_t pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    size_t slots = (pages + 1 + SLOT_PAGES - 1) / SLOT_PAGES;
+    IrqState s = spin_lock_irqsave(&g_slot_lock);
+    size_t first = slots_find(slots);
+    if (first < MAPPED_SLOTS) {
+        slots_mark(g_slot_used, first, slots, true);
+        if (first == g_slot_hint) g_slot_hint = first + slots;
+    }
+    spin_unlock_irqrestore(&g_slot_lock, s);
+    if (first >= MAPPED_SLOTS) return NULL;
+    uintptr_t va = MAPPED_BASE + first * MAPPED_SLOT;
+    if (!map_fresh(va, 1 + pages)) { slots_free(first, slots); return NULL; }
+    MappedHeader *h = (MappedHeader *)va;
+    h->magic = MAPPED_MAGIC;
+    h->pages = h->mapped = pages;
+    h->slots = slots;
+    return (void *)(va + PAGE_SIZE);
+}
+
+static void mapped_free(void *ptr)
+{
+    MappedHeader *h = mapped_header(ptr);
+    if (!h || (uintptr_t)ptr != (uintptr_t)h + PAGE_SIZE) {
+        kprintf("[VMM] BUG: kfree(%p): not a mapped block\n", ptr);
+        return;
+    }
+    size_t pages = h->pages, slots = h->slots;
+    uintptr_t va = (uintptr_t)h;
+    h->magic = 0;
+    unmap_pages(va, 1 + pages);
+    slots_free((va - MAPPED_BASE) / MAPPED_SLOT, slots);
+}
+
+static bool mapped_resize(void *ptr, size_t size)
+{
+    MappedHeader *h = mapped_header(ptr);
+    if (!h || !size) return false;
+    size_t pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    uintptr_t data = (uintptr_t)h + PAGE_SIZE;
+    if (pages < h->pages) {
+        unmap_pages(data + pages * PAGE_SIZE, h->pages - pages);
+        h->pages = pages;
+        return true;
+    }
+    if (pages == h->pages) return true;
+    size_t slots = (pages + 1 + SLOT_PAGES - 1) / SLOT_PAGES;
+    size_t first = ((uintptr_t)h - MAPPED_BASE) / MAPPED_SLOT;
+    if (slots > h->slots) {                  /* the slots after it, when free */
+        bool ok = first + slots <= MAPPED_SLOTS;
+        IrqState s = spin_lock_irqsave(&g_slot_lock);
+        for (size_t i = first + h->slots; ok && i < first + slots; i++) ok = !slot_busy(i);
+        if (ok) slots_mark(g_slot_used, first + h->slots, slots - h->slots, true);
+        spin_unlock_irqrestore(&g_slot_lock, s);
+        if (!ok) return false;
+        h->slots = slots;
+    }
+    if (h->pages < h->mapped) flush_everywhere();   /* (pages it gave back: old translations) */
+    if (!map_fresh(data + h->pages * PAGE_SIZE, pages - h->pages)) return false;
+    h->pages = pages;
+    if (pages > h->mapped) h->mapped = pages;
+    return true;
+}
+
 static LargeAllocHeader *large_header(const void *ptr)
 {
     uintptr_t page_before = ALIGN_DOWN((uintptr_t)ptr, PAGE_SIZE) - PAGE_SIZE;
@@ -257,6 +459,10 @@ static LargeAllocHeader *large_header(const void *ptr)
 size_t ksize(const void *ptr)
 {
     if (!ptr) return 0;
+    if (is_mapped(ptr)) {
+        MappedHeader *m = mapped_header(ptr);
+        return m ? m->pages * PAGE_SIZE : 0;
+    }
     LargeAllocHeader *hdr = large_header(ptr);
     if (hdr) return hdr->pages * PAGE_SIZE;
     return ((Slab *)ALIGN_DOWN((uintptr_t)ptr, PAGE_SIZE))->obj_size;
@@ -264,6 +470,7 @@ size_t ksize(const void *ptr)
 
 bool kresize(void *ptr, size_t size)
 {
+    if (is_mapped(ptr)) return mapped_resize(ptr, size);
     LargeAllocHeader *hdr = ptr ? large_header(ptr) : NULL;
     if (!hdr || !size) return false;
     size_t pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -289,6 +496,7 @@ void vmm_init(void)
     }
     kprintf("[VMM] Slab caches initialized: %d size classes (8B–2KB)\n",
             SLAB_SIZES_COUNT);
+    g_mapped_ready = NT_SUCCESS(paging_prepare(MAPPED_BASE, MAPPED_SIZE));
 }
 
 /* -----------------------------------------------------------------------
@@ -306,8 +514,10 @@ void *kmalloc(size_t size)
         }
     }
 
-    /* Large allocation */
-    return large_alloc(size);
+    /* Large allocation: one run of pages, or mapped pages from anywhere
+     * (always for big blocks, which would use up the long runs) */
+    void *p = size < MAPPED_MIN ? large_alloc(size) : NULL;
+    return p ? p : mapped_alloc(size);
 }
 
 void *kzalloc(size_t size)
@@ -320,6 +530,7 @@ void *kzalloc(size_t size)
 void kfree(void *ptr)
 {
     if (!ptr) return;
+    if (is_mapped(ptr)) { mapped_free(ptr); return; }
 
     /* Check if this is a large allocation by reading the header page.
      * For slab objects the "header" is the slab descriptor, which has

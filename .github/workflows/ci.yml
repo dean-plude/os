@@ -117,10 +117,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable KVM (fails without /dev/kvm unless allow_tcg)
+      - name: Enable KVM (TCG when the runner has no /dev/kvm)
         env:
-          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg || github.event_name == 'pull_request' }}   # a required check must not go red on a runner without KVM that nobody can re-run
-        run: tools/ci/enable-kvm.sh
+          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
+        run: tools/ci/enable-kvm.sh optional   # a required check must not go red on a runner without KVM that nobody can re-run
 
       - name: Install the toolchain and QEMU
         run: |
@@ -227,7 +227,7 @@ jobs:
             qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl ccache \
             xvfb xauth mesa-vulkan-drivers libgl1-mesa-dri libegl1 seabios ipxe-qemu \
             ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev libepoxy-dev libgbm-dev \
-            libdrm-dev libvulkan-dev libpng-dev glslang-tools bison flex python3-mako python3-yaml python3-venv
+            libdrm-dev libvulkan-dev libpng-dev glslang-tools bison flex python3-mako python3-yaml python3-venv gdb
           pip install --user --break-system-packages -q 'meson==1.9.0' pycotap
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo /usr/lib/ccache >> "$GITHUB_PATH"
@@ -292,6 +292,11 @@ jobs:
       - name: Run d2dtest, install Mesa, DXVK and Venus from the App Store, run gltest, d3dtest and the frame-rate tests
         run: |
           export NOVARUN_QEMU="$HOME/qv/bin/qemu-system-x86_64" LD_LIBRARY_PATH="$HOME/qv/lib/x86_64-linux-gnu"
+          # what the host side was doing when a test hangs (tools/ci/host_watch.py)
+          mkdir -p graphics-out
+          export VIRGL_LOG_LEVEL=debug VIRGL_LOG_FILE="$PWD/graphics-out/virglrenderer-%PID%.log"
+          python3 tools/ci/host_watch.py graphics-out &
+          trap 'kill $! 2>/dev/null || true' EXIT
           xvfb-run -a -s '-screen 0 1280x1024x24' \
             python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
             --junit graphics-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"

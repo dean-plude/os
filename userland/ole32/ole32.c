@@ -1,17 +1,20 @@
 /*
  * ole32.dll — the COM runtime.
  *
- * Every COM object in NovaOS lives in-process: CoCreateInstance finds the
- * class among the objects registered with CoRegisterClassObject, or in the
- * registry (HKCR\CLSID\{clsid}\InprocServer32), loads that DLL and asks its
- * DllGetClassObject for the class factory.  There is no marshaling and no
- * cross-apartment proxying: apartments are only tracked (so CoInitializeEx
- * reports RPC_E_CHANGED_MODE the way Windows does), and every interface
- * pointer can be used from any thread, as if all objects were free-threaded.
+ * CoCreateInstance finds the class among the objects registered with
+ * CoRegisterClassObject, or in the registry: an in-process server
+ * (HKCR\CLSID\{clsid}\InprocServer32) is loaded and its DllGetClassObject
+ * asked for the class factory; a local server (LocalServer32) runs in a
+ * process of its own, reached through the standard marshaler (marshal.c).
+ * Within a process there is no cross-apartment proxying: apartments are
+ * tracked (so CoInitializeEx reports RPC_E_CHANGED_MODE the way Windows
+ * does, and calls from other processes into an STA object run on its
+ * thread), but every interface pointer can be used from any thread of its
+ * own process, as if all objects were free-threaded.
  */
 
 #define NOVA_BUILD_OLE32
-#include <objbase.h>
+#include "com_private.h"
 
 /* ---------------------------------------------------------------------------
  * Apartments
@@ -41,6 +44,8 @@ WINOLEAPI_(void) CoUninitialize(void)
 {
     if (t_inits > 0 && --t_inits == 0) CoFreeUnusedLibraries();
 }
+
+int ole_thread_is_sta(void) { return t_inits > 0 && t_model == COINIT_APARTMENTTHREADED; }
 
 WINOLEAPI_(HRESULT) CoGetApartmentType(APTTYPE *type, APTTYPEQUALIFIER *q)
 {
@@ -180,35 +185,15 @@ WINOLEAPI_(HRESULT) CoLockObjectExternal(IUnknown *p, BOOL lock, BOOL last)
     return S_OK;
 }
 
-WINOLEAPI_(HRESULT) CoDisconnectObject(IUnknown *p, DWORD reserved) { (void)p; (void)reserved; return S_OK; }
 WINOLEAPI_(BOOL)    CoIsHandlerConnected(IUnknown *p) { (void)p; return TRUE; }
 WINOLEAPI_(HRESULT) CoAllowSetForegroundWindow(IUnknown *p, LPVOID r) { (void)p; (void)r; return S_OK; }
 WINOLEAPI_(HRESULT) CoRegisterMessageFilter(LPVOID filter, LPVOID *old) { (void)filter; if (old) *old = 0; return S_OK; }
 WINOLEAPI_(HRESULT) CoEnableCallCancellation(LPVOID r) { (void)r; return S_OK; }
 WINOLEAPI_(HRESULT) CoDisableCallCancellation(LPVOID r) { (void)r; return S_OK; }
 
-/* marshaling would need an RPC runtime; everything is in-process */
-WINOLEAPI_(HRESULT) CoMarshalInterface(IStream *s, REFIID riid, IUnknown *p, DWORD ctx, void *pv, DWORD flags)
-{
-    (void)s; (void)riid; (void)p; (void)ctx; (void)pv; (void)flags;
-    return E_NOTIMPL;
-}
-WINOLEAPI_(HRESULT) CoUnmarshalInterface(IStream *s, REFIID riid, void **ppv)
-{
-    (void)s; (void)riid;
-    if (ppv) *ppv = 0;
-    return E_NOTIMPL;
-}
+/* (CoMarshalInterface and the rest of marshaling: marshal.c) */
 
-WINOLEAPI_(HRESULT) CoGetStdMarshalEx(IUnknown *outer, DWORD flags, IUnknown **out)
-{
-    (void)outer; (void)flags;
-    if (out) *out = 0;
-    return E_NOTIMPL;
-}
-
-/* no call ever arrives from another apartment or process, so no code runs
- * inside one: Windows answers this outside a call */
+/* there is no call context to give: Windows answers this outside a call */
 WINOLEAPI_(HRESULT) CoGetCallContext(REFIID riid, void **ppv)
 {
     (void)riid;
@@ -458,6 +443,39 @@ WINOLEAPI_(HRESULT) CoGetTreatAsClass(REFCLSID clsid, LPCLSID out)
     return S_OK;
 }
 
+static const CLSID CLSID_PSDispatch_ = { 0x00020420, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+static const CLSID CLSID_PSOAInterface_ = { 0x00020424, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+
+/* CoGetPSClsid: the proxy/stub class for an interface: this process's
+ * CoRegisterPSClsid first, then HKCR\Interface\{iid}\ProxyStubClsid32
+ * (what a proxy DLL's DllRegisterServer, rpcrt4's NdrDllRegisterProxy,
+ * writes) */
+WINOLEAPI_(HRESULT) CoGetPSClsid(REFIID riid, CLSID *clsid)
+{
+    if (!riid || !clsid) return E_INVALIDARG;
+    int found = 0;
+    AcquireSRWLockShared(&g_ps_lock);
+    for (PsClsid *p = g_ps_clsids; p; p = p->next)
+        if (IsEqualIID(&p->iid, riid)) { *clsid = p->clsid; found = 1; break; }
+    ReleaseSRWLockShared(&g_ps_lock);
+    if (found) return S_OK;
+    static const WCHAR pre[] = L"Interface\\", leaf[] = L"\\ProxyStubClsid32";
+    WCHAR key[80], val[64];
+    int n = 0;
+    for (int i = 0; pre[i]; i++) key[n++] = pre[i];
+    n += StringFromGUID2(riid, key + n, 39) - 1;
+    for (int i = 0; leaf[i]; i++) key[n++] = leaf[i];
+    key[n] = 0;
+    DWORD size = sizeof val;
+    if (!RegGetValueW(HKEY_CLASSES_ROOT, key, 0, RRF_RT_REG_SZ, 0, val, &size) && parse_guid(val, clsid)) return S_OK;
+    /* IDispatch: oleaut32's PSDispatch */
+    if (IsEqualIID(riid, &IID_IDispatch)) {
+        *clsid = CLSID_PSDispatch_;
+        return S_OK;
+    }
+    return REGDB_E_IIDNOTREG;
+}
+
 /* ---------------------------------------------------------------------------
  * Class objects: registered in-process, or in-process servers from the registry
  * ------------------------------------------------------------------------- */
@@ -470,6 +488,9 @@ typedef struct RegClass {
     IUnknown *obj;
     DWORD ctx, flags, cookie;
     BOOL used;                        /* REGCLS_SINGLEUSE: handed out once */
+    BOOL suspended;                   /* REGCLS_SUSPENDED until CoResumeClassObjects */
+    OleApt apt;                       /* where activation requests from other processes run */
+    void *listener;                   /* CLSCTX_LOCAL_SERVER: the class's pipe (marshal.c) */
 } RegClass;
 
 typedef struct Server {
@@ -492,7 +513,10 @@ WINOLEAPI_(HRESULT) CoRegisterClassObject(REFCLSID clsid, IUnknown *obj, DWORD c
     r->obj = obj;
     r->ctx = ctx;
     r->flags = flags;
+    r->suspended = (flags & REGCLS_SUSPENDED) != 0;
+    ole_current_apt(&r->apt);
     obj->lpVtbl->AddRef(obj);
+    if ((ctx & CLSCTX_LOCAL_SERVER) && !r->suspended) r->listener = ole_class_listen(clsid);
     AcquireSRWLockExclusive(&g_lock);
     r->cookie = g_next_cookie++;
     r->next = g_classes;
@@ -510,22 +534,64 @@ WINOLEAPI_(HRESULT) CoRevokeClassObject(DWORD cookie)
         if ((*pp)->cookie == cookie) { r = *pp; *pp = r->next; break; }
     ReleaseSRWLockExclusive(&g_lock);
     if (!r) return CO_E_OBJNOTREG;
+    ole_class_unlisten(r->listener);
     r->obj->lpVtbl->Release(r->obj);
     HeapFree(GetProcessHeap(), 0, r);
     return S_OK;
 }
 
-WINOLEAPI_(HRESULT) CoResumeClassObjects(void) { return S_OK; }
-WINOLEAPI_(HRESULT) CoSuspendClassObjects(void) { return S_OK; }
-WINOLEAPI_(ULONG)   CoAddRefServerProcess(void) { return 1; }
-WINOLEAPI_(ULONG)   CoReleaseServerProcess(void) { return 0; }
+/* other processes' activation requests: classes registered suspended
+ * start listening, and suspending stops them all */
+static void set_suspended(BOOL suspend)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    for (RegClass *r = g_classes; r; r = r->next) {
+        r->suspended = suspend;
+        if (!(r->ctx & CLSCTX_LOCAL_SERVER) || r->used) continue;
+        if (!suspend && !r->listener) r->listener = ole_class_listen(&r->clsid);
+        if (suspend && r->listener) { ole_class_unlisten(r->listener); r->listener = 0; }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+}
+WINOLEAPI_(HRESULT) CoResumeClassObjects(void) { set_suspended(FALSE); return S_OK; }
+WINOLEAPI_(HRESULT) CoSuspendClassObjects(void) { set_suspended(TRUE); return S_OK; }
+
+/* a local server's lifetime: the last CoReleaseServerProcess suspends its
+ * classes, so no new activation reaches a server on its way out */
+static volatile LONG g_server_refs;
+WINOLEAPI_(ULONG) CoAddRefServerProcess(void) { return (ULONG)InterlockedIncrement(&g_server_refs); }
+WINOLEAPI_(ULONG) CoReleaseServerProcess(void)
+{
+    LONG r = InterlockedDecrement(&g_server_refs);
+    if (r <= 0) { g_server_refs = 0; CoSuspendClassObjects(); r = 0; }
+    return (ULONG)r;
+}
+
+/* an activation request from another process (marshal.c) */
+IUnknown *ole_local_class(REFCLSID clsid, OleApt *apt)
+{
+    IUnknown *obj = 0;
+    void *stop = 0;
+    AcquireSRWLockExclusive(&g_lock);
+    for (RegClass *r = g_classes; r; r = r->next)
+        if (IsEqualCLSID(&r->clsid, clsid) && (r->ctx & CLSCTX_LOCAL_SERVER) && !r->suspended && !r->used) {
+            obj = r->obj;
+            obj->lpVtbl->AddRef(obj);
+            *apt = r->apt;
+            if ((r->flags & 3) == REGCLS_SINGLEUSE) { r->used = TRUE; stop = r->listener; r->listener = 0; }
+            break;
+        }
+    ReleaseSRWLockExclusive(&g_lock);
+    if (stop) ole_class_unlisten(stop);            /* the next client starts a server of its own */
+    return obj;
+}
 
 static IUnknown *find_registered(REFCLSID clsid, DWORD ctx)
 {
     IUnknown *obj = 0;
     AcquireSRWLockExclusive(&g_lock);
     for (RegClass *r = g_classes; r; r = r->next)
-        if (IsEqualCLSID(&r->clsid, clsid) && (r->ctx & ctx) && !(r->flags & REGCLS_SUSPENDED) && !r->used) {
+        if (IsEqualCLSID(&r->clsid, clsid) && (r->ctx & ctx) && !r->used) {
             obj = r->obj;
             obj->lpVtbl->AddRef(obj);
             if ((r->flags & 3) == REGCLS_SINGLEUSE) r->used = TRUE;
@@ -561,6 +627,10 @@ static HRESULT inproc_class_object(REFCLSID clsid, REFIID riid, void **ppv)
     DWORD size = sizeof path;
     clsid_key(clsid, L"InprocServer32", key);
     LSTATUS e = RegGetValueW(HKEY_CLASSES_ROOT, key, 0, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, 0, path, &size);
+    if (e && (IsEqualCLSID(clsid, &CLSID_PSDispatch_) || IsEqualCLSID(clsid, &CLSID_PSOAInterface_))) {
+        lstrcpyW(path, L"oleaut32.dll");                       /* Automation's proxies and stubs */
+        e = 0;
+    }
     if (e) {
         clsid_key(clsid, 0, key);
         { char m[140]; int n = 0; const char *pre = "ole32: class not registered: ";
@@ -596,8 +666,11 @@ WINOLEAPI_(HRESULT) CoGetClassObject(REFCLSID clsid, DWORD ctx, LPVOID server, R
         obj->lpVtbl->Release(obj);
         return hr;
     }
-    if (!(ctx & (CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER))) return REGDB_E_CLASSNOTREG;
-    return inproc_class_object(&real, riid, ppv);
+    HRESULT hr = REGDB_E_CLASSNOTREG;
+    if (ctx & (CLSCTX_INPROC_SERVER | CLSCTX_INPROC_HANDLER)) hr = inproc_class_object(&real, riid, ppv);
+    if (hr == REGDB_E_CLASSNOTREG && (ctx & CLSCTX_LOCAL_SERVER))
+        hr = ole_local_activate(&real, OLE_ACTIVATE_CLASS, riid, ppv);
+    return hr;
 }
 
 WINOLEAPI_(HRESULT) CoCreateInstance(REFCLSID clsid, IUnknown *outer, DWORD ctx, REFIID riid, LPVOID *ppv)
@@ -605,7 +678,19 @@ WINOLEAPI_(HRESULT) CoCreateInstance(REFCLSID clsid, IUnknown *outer, DWORD ctx,
     if (!ppv) return E_POINTER;
     *ppv = 0;
     IClassFactory *cf;
-    HRESULT hr = CoGetClassObject(clsid, ctx, 0, &IID_IClassFactory, (void **)&cf);
+    HRESULT hr = CoGetClassObject(clsid, ctx & ~CLSCTX_LOCAL_SERVER, 0, &IID_IClassFactory, (void **)&cf);
+    if (hr == REGDB_E_CLASSNOTREG && (ctx & CLSCTX_LOCAL_SERVER)) {
+        CLSID real;
+        IUnknown *obj = find_registered(clsid, CLSCTX_LOCAL_SERVER);
+        if (obj) {                                    /* this process serves it itself */
+            hr = obj->lpVtbl->QueryInterface(obj, &IID_IClassFactory, (void **)&cf);
+            obj->lpVtbl->Release(obj);
+        } else {
+            if (outer) return CLASS_E_NOAGGREGATION;
+            CoGetTreatAsClass(clsid, &real);
+            return ole_local_activate(&real, OLE_ACTIVATE_CREATE, riid, ppv);   /* one request: no class object proxy */
+        }
+    }
     if (FAILED(hr)) return hr;
     hr = cf->lpVtbl->CreateInstance(cf, outer, riid, ppv);
     cf->lpVtbl->Release(cf);
@@ -921,13 +1006,6 @@ WINOLEAPI_(HRESULT) CoCreateFreeThreadedMarshaler(IUnknown *outer, IUnknown **ma
     if (marshal) *marshal = 0;
     return E_NOTIMPL;
 }
-WINOLEAPI_(HRESULT) CoGetMarshalSizeMax(ULONG *size, REFIID riid, IUnknown *unk, DWORD ctx, LPVOID pv, DWORD flags)
-{
-    (void)riid; (void)unk; (void)ctx; (void)pv; (void)flags;
-    if (size) *size = 0;
-    return E_NOTIMPL;
-}
-WINOLEAPI_(HRESULT) CoReleaseMarshalData(IStream *stm) { (void)stm; return E_NOTIMPL; }
 
 /* -----------------------------------------------------------------------
  * OLE in-place activation helpers (MFC's container code links them).

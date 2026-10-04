@@ -73,7 +73,10 @@ GDIAPI BOOL ArcTo(HDC h, int l, int t, int r, int b, int x1, int y1, int x2, int
 {
     NOVA_DC *d = dc_of(h); if (!d) return FALSE;
     POINT *pt = arc_buf(); if (!pt) return FALSE;
-    int n = arc_points(l, t, r, b, x1, y1, x2, y2, pt, ARC_CAP);
+    int n = d->arc_dir == 2 ? arc_points(l, t, r, b, x2, y2, x1, y1, pt, ARC_CAP)
+                            : arc_points(l, t, r, b, x1, y1, x2, y2, pt, ARC_CAP);
+    if (d->arc_dir == 2)                                    /* clockwise: drawn from the start ray */
+        for (int i = 0, j = n - 1; i < j; i++, j--) { POINT tp = pt[i]; pt[i] = pt[j]; pt[j] = tp; }
     if (n) {
         LineTo(h, pt[0].x, pt[0].y);
         for (int i = 1; i < n; i++) LineTo(h, pt[i].x, pt[i].y);
@@ -82,6 +85,22 @@ GDIAPI BOOL ArcTo(HDC h, int l, int t, int r, int b, int x1, int y1, int x2, int
     return TRUE;
 }
 
+
+/* The direction Arc, ArcTo, Pie and Chord draw in: AD_COUNTERCLOCKWISE (1,
+ * the default) or AD_CLOCKWISE (2); returns the old one */
+GDIAPI int SetArcDirection(HDC h, int dir)
+{
+    NOVA_DC *d = dc_of(h);
+    if (!d || (dir != 1 && dir != 2)) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    int old = d->arc_dir == 2 ? 2 : 1;
+    d->arc_dir = dir == 2 ? 2 : 0;
+    return old;
+}
+GDIAPI int GetArcDirection(HDC h) { NOVA_DC *d = dc_of(h); return !d ? 0 : d->arc_dir == 2 ? 2 : 1; }
+
+/* Drawing is synchronous here, so there is never an operation in progress
+ * on another thread to cancel */
+GDIAPI BOOL CancelDC(HDC h) { return dc_of(h) != 0; }
 
 
 /* Cubic Bézier curves, each flattened to 16 segments */

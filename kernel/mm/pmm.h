@@ -79,6 +79,18 @@ void pmm_stats(uint64_t *total_pages_out,
                uint64_t *used_pages_out);
 
 /*
+ * The free page count without taking the lock (a snapshot for figures
+ * programs see, such as KUSER_SHARED_DATA's; safe with interrupts off).
+ */
+size_t pmm_free_now(void);
+
+/*
+ * The machine's RAM in pages: the firmware's conventional memory (the
+ * total pmm_stats gives also counts the holes below the highest address).
+ */
+size_t pmm_ram_pages(void);
+
+/*
  * Mark a physical range as used (prevents allocation of those pages).
  * Used to protect firmware regions, MMIO, etc.
  */

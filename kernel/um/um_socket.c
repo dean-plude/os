@@ -73,23 +73,24 @@ static int handle_sock(UmProcess *p, UINT64 h)
 }
 
 /* NtNovaSocket(type, family): type 0 = TCP, 1 = UDP; family AF_INET (2,
- * also for 0) or AF_INET6 (23).  Returns a handle, or 0 on error. */
+ * also for 0) or AF_INET6 (23).  Returns a handle, or -SOCK_* (EMFILE:
+ * no socket or handle left, ENOBUFS: no memory, ENETDOWN, EAFNOSUPPORT). */
 static UINT64 sys_socket(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
     UmProcess *p = UmCurrent();
     int fam = a2 ? (int)a2 : NET_AF_INET;
     int s = a1 == 1 ? NetSockUdp(fam) : NetSockTcp(fam);
-    if (s < 0) return 0;
+    if (s < 0) return (UINT64)(INT64)s;
     UmObject *o = kzalloc(sizeof(*o));
-    if (!o) { NetSockClose(s); return 0; }
+    if (!o) { NetSockClose(s); return (UINT64)(INT64)-SOCK_ENOBUFS; }
     o->type = UO_SOCKET;
     o->refs = 1;
     o->sock = s;
     o->destroy = sock_destroy;
     UINT64 hv = um_handle_new_object(p, o);
     um_ob_unref(o);
-    return hv;                                   /* 0 if the table was full */
+    return hv ? hv : (UINT64)(INT64)-SOCK_EMFILE;    /* (the handle table was full) */
 }
 
 /* NtNovaSockConnect(h, sockaddr, length) */

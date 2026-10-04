@@ -62,6 +62,26 @@ UINT32 um_new_id(void)
 /* -----------------------------------------------------------------------
  * Locks
  * ----------------------------------------------------------------------- */
+/* Giving the CPU away while waiting for a lock: a yield, and after a few
+ * of them a short sleep.  Yielding alone can leave the holder off the CPU
+ * for good: a yield only hands the CPU to threads of the same or higher
+ * priority, so a waiter that a wake-up boost lifted above the holder (both
+ * queued on one CPU) takes the CPU back every time.  The Roblox installer
+ * stopped the whole machine like that part way through its download, in
+ * two runs of five under TCG: one of its threads spun for the desktop
+ * lock (NtCreateSection) while the desktop thread, holding it, waited for
+ * the network lock; in the other run the wait was for the file-system
+ * lock's readers to leave.  Off the run queue for 0.1 ms, the waiter lets
+ * the holder run and let go (net_lock in net/net.c does the same). */
+#define UM_LOCK_YIELDS      8
+#define UM_LOCK_NAP_100NS   1000
+static void um_give_way(int *yields)
+{
+    /* (a thread on its way to blocking only yields: a sleep would lose that) */
+    if (++*yields <= UM_LOCK_YIELDS || sched_current()->state != THREAD_RUNNING) sched_yield();
+    else sched_sleep_until_tsc(NULL, sched_tsc_after(UM_LOCK_NAP_100NS));
+}
+
 void um_lock(UmLock *l)
 {
     Thread *me = sched_current();
@@ -69,11 +89,11 @@ void um_lock(UmLock *l)
     /* Held briefly as a rule: spin a while (the holder is likely running
      * on another CPU) before giving the CPU away — but not holding the big
      * kernel lock, which the holder may be waiting for (yielding lets it go) */
-    int most = bkl_held() ? 0 : 2000;
+    int most = bkl_held() ? 0 : 2000, yields = 0;
     for (int spins = 0; __atomic_exchange_n(&l->v, 1, __ATOMIC_ACQUIRE); ) {
         while (__atomic_load_n(&l->v, __ATOMIC_RELAXED)) {
             if (++spins < most) pause_cpu();
-            else { sched_yield(); spins = 0; }
+            else { um_give_way(&yields); spins = 0; }
         }
     }
     l->owner = me;
@@ -87,15 +107,16 @@ void um_unlock(UmLock *l)
     __atomic_store_n(&l->v, 0, __ATOMIC_RELEASE);
 }
 
-/* Wait (spin a while, then yield) until @cond holds.  Spinning holding the
- * big kernel lock too: what is waited for (readers leaving) takes moments,
- * and a thread that yields here may not run again for a whole time slice,
- * holding up everyone its taken write lock keeps out. */
+/* Wait (spin a while, then give way) until @cond holds.  Spinning holding
+ * the big kernel lock too: what is waited for (readers leaving) takes
+ * moments, and a thread that yields here may not run again for a whole
+ * time slice, holding up everyone its taken write lock keeps out.  (A
+ * reader the waiter keeps off the CPU never leaves: see um_give_way.) */
 #define UM_WAIT_UNTIL(cond) do { \
-        int most_ = 2000; \
+        int most_ = 2000, yields_ = 0; \
         for (int spins_ = 0; !(cond); ) { \
             if (++spins_ < most_) pause_cpu(); \
-            else { sched_yield(); spins_ = 0; } \
+            else { um_give_way(&yields_); spins_ = 0; } \
         } \
     } while (0)
 
@@ -655,6 +676,7 @@ static void kusd_init(void)
     *(UINT32 *)(g_kusd + 0x270) = 0;                      /* NtMinorVersion */
     static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
     for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
+    *(UINT32 *)(g_kusd + 0x2E8) = (UINT32)pmm_ram_pages();   /* NumberOfPhysicalPages */
     /* XState (XSTATE_CONFIGURATION): the legacy x87 and SSE state only, kept
      * in a CONTEXT's FltSave, as kernel32's GetEnabledXStateFeatures says */
     *(UINT64 *)(g_kusd + 0x3D8) = 3;                      /* EnabledFeatures */
@@ -692,6 +714,7 @@ void UmTimerTick(UINT64 ticks)
     kusd_time(0x14, um_now_100ns());                      /* SystemTime */
     kusd_time(0x320, ticks);                              /* TickCount */
     *(volatile UINT32 *)g_kusd = (UINT32)ticks;           /* TickCountLowDeprecated */
+    *(volatile UINT32 *)(g_kusd + UM_KUSD_AVAIL_PAGES) = (UINT32)pmm_free_now();
 }
 
 static bool map_kusd(UmProcess *p)
@@ -2511,6 +2534,7 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
                        status == 0xC00000FDu ? "stack overflow" :
                        status == 0xC0000096u ? "privileged instruction" :
                        status == 0x80000003u ? "breakpoint" :
+                       status == 0xC0000409u ? "fail fast (a security check)" :
                        (status & 0xF0000000u) == 0xC0000000u ? "unhandled exception" : "unhandled software exception";
     const UmModule *mod = um_module_at(p, rip);
     char where[64];
@@ -2520,6 +2544,8 @@ void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp)
         if (status == UM_STATUS_ACCESS_VIOLATION)
             ksnprintf(p->why, sizeof(p->why), "crashed: %s at %s (address 0x%llx)", what, where,
                       (unsigned long long)addr);
+        else if (status == 0xC0000409u)                     /* __fastfail: addr is its code */
+            ksnprintf(p->why, sizeof(p->why), "crashed: %s, code %llu, at %s", what, (unsigned long long)addr, where);
         else if (!strcmp(what, "unhandled exception") || !strcmp(what, "unhandled software exception"))
             ksnprintf(p->why, sizeof(p->why), "crashed: %s 0x%08x at %s", what, status, where);
         else

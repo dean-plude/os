@@ -211,6 +211,70 @@ Binary files mesa-26.2.4/src/util/perf/__pycache__/u_trace.cpython-313.pyc and .
  #else
     return vn_renderer_create_vtest(instance, alloc, renderer);
  #endif
+--- a/src/virtio/vulkan/vn_ring.c
++++ b/src/virtio/vulkan/vn_ring.c
+@@ -186,6 +186,29 @@
+    return vn_ring_ge_seqno(ring, vn_ring_load_head(ring), seqno);
+ }
+ 
++/* (NovaOS) vn_ring_submit_internal() wakes an idle ring at most once per
++ * VN_RING_IDLE_TIMEOUT_NS of the guest's clock.  If that clock runs slower
++ * than the renderer's (a guest whose timer was calibrated badly), a wake-up
++ * can be held back while the renderer's ring thread has just gone idle, and
++ * then nobody wakes it: the wait below would never end.  A wait that goes
++ * on for tens of milliseconds with the ring idle wakes it again (harmless
++ * when the ring is awake or the wake-up was only slow). */
++#define VN_RING_REWAKE_ITERS 32
++
++static void
++vn_ring_rewake(struct vn_ring *ring, uint32_t seqno)
++{
++   if (!(vn_ring_load_status(ring) & VK_RING_STATUS_IDLE_BIT_MESA))
++      return;
++
++   uint32_t notify_ring_data[8];
++   struct vn_cs_encoder local_enc = VN_CS_ENCODER_INITIALIZER_LOCAL(
++      notify_ring_data, sizeof(notify_ring_data));
++   vn_encode_vkNotifyRingMESA(&local_enc, 0, ring->id, seqno, 0);
++   vn_renderer_submit_simple(ring->instance->renderer, notify_ring_data,
++                             vn_cs_encoder_get_len(&local_enc));
++}
++
+ void
+ vn_ring_wait_seqno(struct vn_ring *ring, uint32_t seqno)
+ {
+@@ -196,12 +219,15 @@
+                                           ? VN_RELAX_REASON_RING_SEQNO
+                                           : VN_RELAX_REASON_TLS_RING_SEQNO;
+    struct vn_relax_state relax_state = vn_relax_init(ring->instance, reason);
++   uint32_t rewake = 0;
+    do {
+       if (vn_ring_get_seqno_status(ring, seqno)) {
+          vn_relax_fini(&relax_state);
+          return;
+       }
+       vn_relax(&relax_state);
++      if (++rewake % VN_RING_REWAKE_ITERS == 0)
++         vn_ring_rewake(ring, seqno);
+    } while (true);
+ }
+ 
+@@ -243,12 +269,15 @@
+       /* see the reasoning in vn_ring_wait_seqno */
+       struct vn_relax_state relax_state =
+          vn_relax_init(ring->instance, VN_RELAX_REASON_RING_SPACE);
++      uint32_t rewake = 0;
+       do {
+          vn_relax(&relax_state);
+          if (vn_ring_has_space(ring, size, &head)) {
+             vn_relax_fini(&relax_state);
+             return head;
+          }
++         if (++rewake % VN_RING_REWAKE_ITERS == 0)
++            vn_ring_rewake(ring, ring->cur);
+       } while (true);
+    }
+ }
 --- a/src/vulkan/runtime/vk_instance.c
 +++ b/src/vulkan/runtime/vk_instance.c
 @@ -578,9 +578,18 @@

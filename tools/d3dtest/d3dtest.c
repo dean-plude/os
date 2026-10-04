@@ -3,19 +3,30 @@
  * fixed-function Direct3D 9 triangle, render-target read-back, and a few
  * seconds of presented frames from each.
  * Build: x86_64-w64-mingw32-gcc -O2 -o d3dtest.exe d3dtest.c -ld3d9 -ld3d11 -ldxgi -luser32 -lgdi32 -lole32
- *        (i686-w64-mingw32-gcc for the 32-bit one).  Usage: d3dtest [seconds [9|11]]
+ *        (i686-w64-mingw32-gcc for the 32-bit one).  Usage: d3dtest [seconds [9|11]], d3dtest angle
  *
  * d3dtest fps [seconds]: the frame-rate test.  A Direct3D 9 scene that
  * keeps the rasterizer busy (64 blended full-window quads at 640x480) runs
  * once on Mesa's Venus (Vulkan on the host's GPU through a virtio-gpu) and
  * once on lavapipe (Vulkan on NovaOS's CPU), each in a child process whose
- * VK_DRIVER_FILES names the driver; Venus must draw more frames per second. */
+ * VK_DRIVER_FILES names the driver; Venus must draw more frames per second.
+ *
+ * d3dtest angle: Direct3D 11 brought up the way ANGLE's D3D11 back end
+ * (Chromium's GPU process, so Steam's browser, WebView2 and Qt WebEngine)
+ * does it: the screen's DC as the EGL display, the first adapter that is not
+ * Microsoft's, a device on it from the feature levels ANGLE asks for, the
+ * DXGI 1.2 device, the adapter's description, factory and driver version,
+ * the feature and format queries, a DXGI 1.2 swap chain on a window, and a
+ * WARP device whose adapter comes from the device. */
 #define COBJMACROS
 #define INITGUID
 #include <windows.h>
 #include <d3d9.h>
 #include <d3d11.h>
+#include <d3d11_1.h>
+#include <d3d11_3.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -218,6 +229,172 @@ static void test_d3d11(int secs)
     DestroyWindow(w);
 }
 
+/* ---- Direct3D 11 as ANGLE brings it up ------------------------------------ */
+typedef HRESULT (WINAPI *CreateDevice_t)(IDXGIAdapter *, D3D_DRIVER_TYPE, HMODULE, UINT, const D3D_FEATURE_LEVEL *,
+                                         UINT, UINT, ID3D11Device **, D3D_FEATURE_LEVEL *, ID3D11DeviceContext **);
+
+/* (Renderer11::callD3D11CreateDevice: on E_INVALIDARG, again without 11_1) */
+static HRESULT angle_create(CreateDevice_t create, IDXGIAdapter *ad, D3D_DRIVER_TYPE type, ID3D11Device **dev,
+                            D3D_FEATURE_LEVEL *fl, ID3D11DeviceContext **ctx)
+{
+    static const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
+                                                D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3 };
+    HRESULT hr = create(ad, ad ? D3D_DRIVER_TYPE_UNKNOWN : type, NULL, 0, levels, 5, D3D11_SDK_VERSION, dev, fl, ctx);
+    if (hr == E_INVALIDARG) hr = create(ad, ad ? D3D_DRIVER_TYPE_UNKNOWN : type, NULL, 0, levels + 1, 4, D3D11_SDK_VERSION,
+                                        dev, fl, ctx);
+    return hr;
+}
+
+static void angle_formats(ID3D11Device *dev)
+{
+    static const DXGI_FORMAT fmts[] = { DXGI_FORMAT_B5G6R5_UNORM, DXGI_FORMAT_B4G4R4A4_UNORM, DXGI_FORMAT_B5G5R5A1_UNORM,
+                                        DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_D24_UNORM_S8_UINT };
+    UINT ok = 0;
+    for (int i = 0; i < 6; i++) {
+        UINT sup = 0, q = 0;
+        if (SUCCEEDED(ID3D11Device_CheckFormatSupport(dev, fmts[i], &sup)) && sup) {
+            ok++;
+            ID3D11Device_CheckMultisampleQualityLevels(dev, fmts[i], 4, &q);
+        }
+    }
+    check("CheckFormatSupport answers RGBA8, BGRA8 and D24S8", ok >= 3);
+    D3D11_FEATURE_DATA_D3D11_OPTIONS o = { 0 };
+    check("CheckFeatureSupport D3D11_OPTIONS",
+          SUCCEEDED(ID3D11Device_CheckFeatureSupport(dev, D3D11_FEATURE_D3D11_OPTIONS, &o, sizeof(o))));
+    D3D11_FEATURE_DATA_D3D11_OPTIONS2 o2 = { 0 };
+    check("CheckFeatureSupport D3D11_OPTIONS2",
+          SUCCEEDED(ID3D11Device_CheckFeatureSupport(dev, D3D11_FEATURE_D3D11_OPTIONS2, &o2, sizeof(o2))));
+    D3D11_FEATURE_DATA_FORMAT_SUPPORT2 f2 = { DXGI_FORMAT_R8G8B8A8_UNORM, 0 };
+    check("CheckFeatureSupport FORMAT_SUPPORT2",
+          SUCCEEDED(ID3D11Device_CheckFeatureSupport(dev, D3D11_FEATURE_FORMAT_SUPPORT2, &f2, sizeof(f2))));
+}
+
+static void test_angle(void)
+{
+    /* the EGL display: Chromium passes GetDC(NULL), which ANGLE takes only
+     * when WindowFromDC finds its window */
+    HDC screen = GetDC(NULL);
+    HWND desk = WindowFromDC(screen);
+    check("WindowFromDC(GetDC(NULL)) is the desktop window", desk && desk == GetDesktopWindow());
+    ReleaseDC(NULL, screen);
+
+    HMODULE d3d11 = LoadLibraryA("d3d11.dll");
+    CreateDevice_t create = d3d11 ? (CreateDevice_t)GetProcAddress(d3d11, "D3D11CreateDevice") : NULL;
+    check("d3d11.dll exports D3D11CreateDevice", create != NULL);
+    if (!create) return;
+
+    /* Renderer11::initializeDXGIAdapter: the first adapter that isn't
+     * Microsoft's (WARP), else the first */
+    IDXGIFactory1 *fac = NULL;
+    check("CreateDXGIFactory1", SUCCEEDED(CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&fac)) && fac);
+    if (!fac) return;
+    IDXGIAdapter *ad = NULL, *t = NULL;
+    for (UINT i = 0; !ad && SUCCEEDED(IDXGIFactory1_EnumAdapters(fac, i, &t)); i++) {
+        DXGI_ADAPTER_DESC d;
+        if (SUCCEEDED(IDXGIAdapter_GetDesc(t, &d)) && d.VendorId != 0x1414) ad = t;
+        else IDXGIAdapter_Release(t);
+    }
+    if (!ad) IDXGIFactory1_EnumAdapters(fac, 0, &ad);
+    check("DXGI adapter for ANGLE", ad != NULL);
+    IDXGIFactory1_Release(fac);
+    if (!ad) return;
+
+    ID3D11Device *dev = NULL;
+    ID3D11DeviceContext *ctx = NULL;
+    D3D_FEATURE_LEVEL fl = 0;
+    HRESULT hr = angle_create(create, ad, D3D_DRIVER_TYPE_HARDWARE, &dev, &fl, &ctx);
+    check("D3D11CreateDevice on the adapter", SUCCEEDED(hr) && dev && ctx);
+    if (!dev || !ctx) { printf("D3D11CreateDevice: 0x%08lx\n", (unsigned long)hr); IDXGIAdapter_Release(ad); return; }
+    printf("ANGLE feature level %x.%x\n", fl >> 12, (fl >> 8) & 0xF);
+    check("feature level >= 10.0", fl >= D3D_FEATURE_LEVEL_10_0);
+
+    /* Renderer11::initialize: DXGI 1.2 (for HWNDs of other processes), the
+     * 11.1 and 11.3 contexts, the adapter's description and factory */
+    IDXGIDevice2 *dxdev = NULL;
+    check("IDXGIDevice2 from the device", SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice2, (void **)&dxdev)));
+    ID3D11DeviceContext1 *ctx1 = NULL;
+    check("ID3D11DeviceContext1", SUCCEEDED(ID3D11DeviceContext_QueryInterface(ctx, &IID_ID3D11DeviceContext1, (void **)&ctx1)));
+    ID3D11DeviceContext3 *ctx3 = NULL;
+    ID3D11DeviceContext_QueryInterface(ctx, &IID_ID3D11DeviceContext3, (void **)&ctx3);
+    DXGI_ADAPTER_DESC desc;
+    check("adapter GetDesc", SUCCEEDED(IDXGIAdapter_GetDesc(ad, &desc)));
+    printf("ANGLE adapter  %ls (vendor %04x device %04x)\n", desc.Description, desc.VendorId, desc.DeviceId);
+    IDXGIFactory *parent = NULL;
+    check("adapter GetParent(IDXGIFactory)", SUCCEEDED(IDXGIAdapter_GetParent(ad, &IID_IDXGIFactory, (void **)&parent)) && parent);
+    LARGE_INTEGER umd = { 0 };
+    check("adapter CheckInterfaceSupport(IDXGIDevice)",
+          SUCCEEDED(IDXGIAdapter_CheckInterfaceSupport(ad, &IID_IDXGIDevice, &umd)));
+    printf("ANGLE driver version %u.%u.%u.%u\n", HIWORD(umd.HighPart), LOWORD(umd.HighPart), HIWORD(umd.LowPart),
+           LOWORD(umd.LowPart));
+    if (ctx3) {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS3 o3 = { 0 };
+        check("CheckFeatureSupport D3D11_OPTIONS3",
+              SUCCEEDED(ID3D11Device_CheckFeatureSupport(dev, D3D11_FEATURE_D3D11_OPTIONS3, &o3, sizeof(o3))));
+    }
+    angle_formats(dev);
+    ID3DUserDefinedAnnotation *ann = NULL;
+    if (SUCCEEDED(ID3D11DeviceContext_QueryInterface(ctx, &IID_ID3DUserDefinedAnnotation, (void **)&ann)))
+        ID3DUserDefinedAnnotation_Release(ann);
+
+    /* NativeWindow11Win32::createSwapChain: a DXGI 1.2 swap chain on the
+     * window, cleared and presented */
+    IDXGIFactory2 *fac2 = NULL;
+    check("IDXGIFactory2 from the factory", parent && SUCCEEDED(IDXGIFactory_QueryInterface(parent, &IID_IDXGIFactory2, (void **)&fac2)));
+    HWND w = make_window("ANGLE's Direct3D 11");
+    if (fac2) {
+        DXGI_SWAP_CHAIN_DESC1 sd = { 0 };
+        sd.Width = 320; sd.Height = 240; sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; sd.SampleDesc.Count = 1;
+        sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_SHADER_INPUT | DXGI_USAGE_BACK_BUFFER;
+        sd.BufferCount = 1; sd.Scaling = DXGI_SCALING_STRETCH; sd.SwapEffect = DXGI_SWAP_EFFECT_SEQUENTIAL;
+        IDXGISwapChain1 *sc = NULL;
+        hr = IDXGIFactory2_CreateSwapChainForHwnd(fac2, (IUnknown *)dev, w, &sd, NULL, NULL, &sc);
+        check("CreateSwapChainForHwnd", SUCCEEDED(hr) && sc);
+        if (sc) {
+            IDXGIFactory2_MakeWindowAssociation(fac2, w, DXGI_MWA_NO_ALT_ENTER);
+            ID3D11Texture2D *back = NULL;
+            ID3D11RenderTargetView *rtv = NULL;
+            IDXGISwapChain1_GetBuffer(sc, 0, &IID_ID3D11Texture2D, (void **)&back);
+            if (back) ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)back, NULL, &rtv);
+            check("swap chain render target", rtv != NULL);
+            const float col[4] = { 0.1f, 0.6f, 0.3f, 1.0f };
+            if (rtv) ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, col);
+            check("swap chain Present", SUCCEEDED(IDXGISwapChain1_Present(sc, 0, 0)));
+            pump();
+            if (rtv) ID3D11RenderTargetView_Release(rtv);
+            if (back) ID3D11Texture2D_Release(back);
+            IDXGISwapChain1_Release(sc);
+        }
+        IDXGIFactory2_Release(fac2);
+    }
+    DestroyWindow(w);
+    if (parent) IDXGIFactory_Release(parent);
+    if (ctx3) ID3D11DeviceContext3_Release(ctx3);
+    if (ctx1) ID3D11DeviceContext1_Release(ctx1);
+    if (dxdev) IDXGIDevice2_Release(dxdev);
+    ID3D11DeviceContext_Release(ctx);
+    ID3D11Device_Release(dev);
+    IDXGIAdapter_Release(ad);
+
+    /* EGL_PLATFORM_ANGLE_DEVICE_TYPE_D3D_WARP_ANGLE: no adapter, the WARP
+     * driver type, and the adapter from the device
+     * (Renderer11::initializeAdapterFromDevice) */
+    dev = NULL; ctx = NULL;
+    hr = angle_create(create, NULL, D3D_DRIVER_TYPE_WARP, &dev, &fl, &ctx);
+    check("D3D11CreateDevice(D3D_DRIVER_TYPE_WARP)", SUCCEEDED(hr) && dev);
+    if (dev) {
+        IDXGIDevice *dd = NULL;
+        IDXGIAdapter *wa = NULL;
+        if (SUCCEEDED(ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice, (void **)&dd))) {
+            IDXGIDevice_GetParent(dd, &IID_IDXGIAdapter, (void **)&wa);
+            IDXGIDevice_Release(dd);
+        }
+        check("WARP device's adapter", wa != NULL);
+        if (wa) IDXGIAdapter_Release(wa);
+        if (ctx) ID3D11DeviceContext_Release(ctx);
+        ID3D11Device_Release(dev);
+    }
+}
+
 /* ---- the frame-rate test ------------------------------------------------ */
 #define FPS_W 640
 #define FPS_H 480
@@ -360,8 +537,11 @@ int main(int argc, char **argv)
     wc.hCursor = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
     wc.lpszClassName = "d3dtest";
     RegisterClassA(&wc);
-    if (strcmp(only, "11")) test_d3d9(secs);
-    if (strcmp(only, "9")) test_d3d11(secs);
+    if (argc > 1 && !strcmp(argv[1], "angle")) test_angle();
+    else {
+        if (strcmp(only, "11")) test_d3d9(secs);
+        if (strcmp(only, "9")) test_d3d11(secs);
+    }
     printf("d3dtest: %d passed, %d failed\n", pass, fail);
     return fail != 0;
 }

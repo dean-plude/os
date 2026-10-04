@@ -160,20 +160,39 @@ static uint32_t calibrate_apic_timer(void)
     return ticks_in_10ms;
 }
 
-/* The same against the HPET: 10 ms of its main counter */
+/* The same against the HPET: 10 ms of its main counter.  A window that gets
+ * stretched (QEMU's TCG on a busy machine: some boots saw 16 ms pass for the
+ * HPET's 10, and every clock the guest had then ran 1.6 times slow, which
+ * hung Venus's ring wake-ups) makes the TSC and the APIC timer count more,
+ * never less.  So take a few windows and keep the one that counted least, as
+ * Linux does when it calibrates the TSC */
+#define HPET_WINDOWS 5
+
 static uint32_t calibrate_apic_timer_hpet(void)
 {
     uint64_t n = HpetFrequency() / 100;
+    uint64_t tsc[HPET_WINDOWS], best_tsc = ~0ull, worst_tsc = 0;
+    uint32_t best_ticks = 0;
     lapic_write(LAPIC_TIMER_DIV,  LAPIC_TIMER_DIV_16);
-    uint64_t h0 = HpetCounter();
-    lapic_write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
-    uint64_t tsc0 = rdtsc();
-    while (((HpetCounter() - h0) & 0xFFFFFFFFull) < n) pause_cpu();
-    g_tsc_per_tick = rdtsc() - tsc0;
-    uint32_t ticks_in_10ms = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CURR);
+    for (int k = 0; k < HPET_WINDOWS; k++) {
+        uint64_t h0 = HpetCounter();
+        lapic_write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
+        uint64_t tsc0 = rdtsc();
+        while (((HpetCounter() - h0) & 0xFFFFFFFFull) < n) pause_cpu();
+        tsc[k] = rdtsc() - tsc0;
+        uint32_t ticks = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CURR);
+        if (tsc[k] < best_tsc) { best_tsc = tsc[k]; best_ticks = ticks; }
+        if (tsc[k] > worst_tsc) worst_tsc = tsc[k];
+    }
     lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED);
     lapic_write(LAPIC_TIMER_INIT, 0);
-    return ticks_in_10ms;
+    g_tsc_per_tick = best_tsc;
+    if (worst_tsc > best_tsc + best_tsc / 10) {
+        kprintf("[APIC] The HPET windows disagree (TSC per 10 ms:");
+        for (int k = 0; k < HPET_WINDOWS; k++) kprintf(" %llu", (unsigned long long)tsc[k]);
+        kprintf("): the shortest is used\n");
+    }
+    return best_ticks;
 }
 
 /* Without an HPET: the clocks the CPU reports (Intel, CPUID leaf 0x15:

@@ -11,7 +11,11 @@
  *   - two files appended in turn (so neither can grow where it is), a file
  *     made shorter and longer again, and appending to a closed file keep
  *     their contents;
- *   - deleting the files gives the memory back. */
+ *   - deleting the files gives the memory back;
+ *   - programs are told the machine's real memory: GlobalMemoryStatusEx's
+ *     total is NtQuerySystemInformation's physical pages, its free memory
+ *     is drive C:'s free space and falls when a file takes memory (it said
+ *     512 MB total, 256 MB free whatever the machine had). */
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -72,6 +76,35 @@ static BOOL verify(const WCHAR *name, int file, unsigned long long len, unsigned
     return ok;
 }
 
+/* GlobalMemoryStatusEx's free memory, once the kernel's figure (updated
+ * every timer tick) has caught up */
+static unsigned long long avail_phys(void)
+{
+    Sleep(50);
+    MEMORYSTATUSEX ms = { .dwLength = sizeof(ms) };
+    return GlobalMemoryStatusEx(&ms) ? ms.ullAvailPhys : 0;
+}
+
+static void memory_status(void)
+{
+    MEMORYSTATUSEX ms = { .dwLength = sizeof(ms) };
+    CHECK("GlobalMemoryStatusEx", GlobalMemoryStatusEx(&ms));
+    struct { ULONG Reserved, TimerResolution, PageSize, NumberOfPhysicalPages, Lowest, Highest, Granularity;
+             ULONG_PTR MinimumUserModeAddress, MaximumUserModeAddress, Affinity; CHAR NumberOfProcessors; } sbi;
+    typedef LONG (WINAPI *QSI)(ULONG, PVOID, ULONG, PULONG);
+    QSI qsi = (QSI)(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation");
+    CHECK("NtQuerySystemInformation(SystemBasicInformation)", qsi && qsi(0, &sbi, sizeof(sbi), NULL) == 0);
+    printf("ramdisktest: memory: %llu MB total, %llu MB free, %lu%% in use; %lu physical pages\n",
+           ms.ullTotalPhys / MiB, ms.ullAvailPhys / MiB, ms.dwMemoryLoad, sbi.NumberOfPhysicalPages);
+    CHECK("the total is the machine's (not 512 MB)", ms.ullTotalPhys > 1024 * MiB);
+    CHECK("SystemBasicInformation's pages make the same total",
+          (unsigned long long)sbi.NumberOfPhysicalPages * 4096 == ms.ullTotalPhys);
+    CHECK("free memory is below the total", ms.ullAvailPhys > 0 && ms.ullAvailPhys < ms.ullTotalPhys);
+    CHECK("the memory load matches", ms.dwMemoryLoad == 100 - ms.ullAvailPhys * 100 / ms.ullTotalPhys);
+    MEMORYSTATUSEX bad = { .dwLength = 0 };
+    CHECK("a wrong dwLength fails", !GlobalMemoryStatusEx(&bad) && GetLastError() == ERROR_INVALID_PARAMETER);
+}
+
 int main(void)
 {
     const WCHAR *a = L"C:\\Temp\\ramdisktest-a.bin", *b = L"C:\\Temp\\ramdisktest-b.bin", *c = L"C:\\Temp\\ramdisktest-c.bin";
@@ -79,6 +112,9 @@ int main(void)
     DeleteFileW(a); DeleteFileW(b); DeleteFileW(c);
     unsigned long long start = free_bytes();
     CHECK("C: reports its free space", start > 200 * MiB);
+    memory_status();
+    unsigned long long avail = avail_phys();
+    CHECK("free memory is drive C:'s free space", avail + SLACK > start && avail < start + SLACK);
 
     /* 1. 33 MiB appended in 64 KiB writes: the buffer may grow to 64 MiB
      *    while the file is open, the file takes 33 MiB once closed */
@@ -103,6 +139,10 @@ int main(void)
     taken = before - free_bytes();
     printf("ramdisktest: length set to 72 MiB: %llu KiB taken\n", taken / 1024);
     CHECK("SetEndOfFile takes the length asked for", taken < clen + SLACK);
+    unsigned long long avail2 = avail_phys();
+    printf("ramdisktest: free memory with the 72 MiB file: %llu MB (was %llu MB)\n", avail2 / MiB, avail / MiB);
+    unsigned long long seen = avail2 + clen + alen;            /* (the 33 MiB file is still there) */
+    CHECK("programs see the files' memory taken", seen < avail + SLACK && seen + SLACK > avail);
     pos.QuadPart = 0;
     ok = SetFilePointerEx(h, pos, NULL, FILE_BEGIN);
     for (unsigned long long off = 0; ok && off < 8 * MiB; off += CHUNK) ok = append(h, 3, off, CHUNK);

@@ -166,11 +166,8 @@ static UINT64 sys_NtQuerySystemInformation(UINT64 InfoClass,
         sbi.MaximumUserModeAddress = 0x7FFFFFFFFFFEFFFF;
         sbi.ActiveProcessorsAffinityMask = (1ULL << g_cpu_count) - 1;
         sbi.NumberOfProcessors    = (UINT8)g_cpu_count;
-        /* PMM stats for physical page counts */
-        uint64_t total_pages, free_pages, used_pages;
-        extern void pmm_stats(uint64_t *, uint64_t *, uint64_t *);
-        pmm_stats(&total_pages, &free_pages, &used_pages);
-        sbi.NumberOfPhysicalPages = (UINT32)total_pages;
+        extern size_t pmm_ram_pages(void);
+        sbi.NumberOfPhysicalPages = (UINT32)pmm_ram_pages();     /* the machine's RAM */
         return CopyToUser(UPTR(InfoPtr), &sbi, sizeof(sbi));
     }
     default:
@@ -1188,8 +1185,9 @@ void SyscallInitCpu(void)
      *   Bits 47:32 — SYSCALL: CS = STAR[47:32],      SS = STAR[47:32] + 8
      *   Bits 63:48 — SYSRETQ: CS = STAR[63:48] + 16, SS = STAR[63:48] + 8
      *
-     * Kernel: CS = 0x08, SS = 0x10.
-     * User:   base = (GDT_USER_DATA - 8) | 3 = 0x13 → SS = 0x1B, CS = 0x23.
+     * Kernel: CS = 0x10, SS = 0x18.
+     * User:   base = GDT_USER_CODE32 | 3 = 0x23 → SS = 0x2B, CS = 0x33,
+     *         Windows' own STAR value.
      * The base carries RPL 3 itself: Intel CPUs force RPL 3 on both
      * selectors, but AMD ones load SS as STAR[63:48] + 8 unchanged, and
      * with 0x10 there programs ran with SS = 0x18 (RPL 0).  That works in
@@ -1198,7 +1196,7 @@ void SyscallInitCpu(void)
      * AMD hosts; QEMU's emulation forces RPL 3 like Intel).
      * See the selector layout in gdt.h.
      */
-    UINT64 star = ((UINT64)((GDT_USER_DATA - 8) | 3) << 48) |
+    UINT64 star = ((UINT64)SEL_USER_CODE32 << 48) |
                   ((UINT64)GDT_KERNEL_CODE << 32);
     wrmsr(MSR_STAR, star);
 
