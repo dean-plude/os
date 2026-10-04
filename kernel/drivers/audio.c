@@ -24,13 +24,16 @@
  * runs under it too (a few thousand frames per tick and output).
  *
  * Capture streams run the other way: inputs are attached like outputs
- * (the HD Audio card's microphone or line in at boot, a USB microphone
- * when it is plugged in), with a default chosen the same way, and a
+ * (the HD Audio card's microphone or line in at boot, a laptop's
+ * microphone array once the audio DSP's firmware runs (sof.c), a USB
+ * microphone when it is plugged in), with a default chosen the same way, and a
  * stream records from the default or the input its program chose.  While
  * any running capture stream records from an input, that input is
  * recording into its ring, and every tick the new frames are copied into
  * each of those streams (the oldest dropped when a stream is full),
- * converted from the input's rate to the stream's where they differ.
+ * converted from the input's rate to the stream's where they differ (and
+ * to stereo from an input with another channel count: a microphone
+ * array's 4).
  *
  * Each device has its own volume and mute (the endpoint volume programs
  * set through IAudioEndpointVolume, and Settings' sliders), applied to
@@ -46,6 +49,7 @@
 
 #include "audio.h"
 #include "hda.h"
+#include "sof.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../ke/printf.h"
@@ -300,6 +304,19 @@ static void put_frame(Stream *s, INT32 l, INT32 r)
     s->written++;
 }
 
+/* An input frame of @ch channels as stereo: the even channels' mean on
+ * the left, the odd ones' on the right (a microphone array's pairs), a
+ * mono one on both */
+static void in_frame(const INT16 *f, UINT32 ch, INT32 *l, INT32 *r)
+{
+    if (ch == 2) { *l = f[0]; *r = f[1]; return; }
+    if (ch == 1) { *l = *r = f[0]; return; }
+    INT32 sum[2] = { 0, 0 };
+    for (UINT32 c = 0; c < ch; c++) sum[c & 1] += f[c];
+    *l = sum[0] / (INT32)((ch + 1) / 2);
+    *r = sum[1] / (INT32)(ch / 2);
+}
+
 /* Copy what each recording input recorded since the last tick into the
  * running capture streams that record from it */
 static void pull_capture(void)
@@ -311,9 +328,10 @@ static void pull_capture(void)
         if (!t->run) continue;
         Master *mc = &t->vol;
         UINT32 pos = in->position(in->ctx);
+        UINT32 ch = in->channels ? in->channels : 2, fb = ch * 2;
         while (t->cpos != pos) {
             UINT32 end = pos > t->cpos ? pos : in->bytes;         /* up to the wrap first */
-            UINT32 n = (end - t->cpos) / FRAME;
+            UINT32 n = (end - t->cpos) / fb;
             const INT16 *src = (const INT16 *)((UINT8 *)in->ring + t->cpos);
             for (int i = 0; i < MAX_STREAMS; i++) {
                 Stream *s = &g.s[i];
@@ -321,8 +339,10 @@ static void pull_capture(void)
                 UINT32 vl = mc->mute ? 0 : (UINT32)(((UINT64)mc->l * s->vol_l) >> 16);
                 UINT32 vr = mc->mute ? 0 : (UINT32)(((UINT64)mc->r * s->vol_r) >> 16);
                 for (UINT32 f = 0; f < n; f++) {
-                    INT32 l = (INT32)(((INT32)src[f * 2] * (INT64)vl) >> 16);
-                    INT32 r = (INT32)(((INT32)src[f * 2 + 1] * (INT64)vr) >> 16);
+                    INT32 sl, sr;
+                    in_frame(src + f * ch, ch, &sl, &sr);
+                    INT32 l = (INT32)((sl * (INT64)vl) >> 16);
+                    INT32 r = (INT32)((sr * (INT64)vr) >> 16);
                     if (s->rate == t->rate) {
                         put_frame(s, l, r);
                         continue;
@@ -484,6 +504,16 @@ void AudioInputDetach(const AudioInput *i)
     else if (found && !now) kprintf("[AUDIO] No sound input left\n");
 }
 
+void AudioInputRestart(AudioInput *i, INT16 *ring, UINT32 bytes)
+{
+    IrqState st = spin_lock_irqsave(&g.lock);
+    i->ring = ring;
+    i->bytes = bytes;
+    for (int k = 0; k < g.nins; k++)
+        if (g.ins[k].i == i && g.ins[k].run) g.ins[k].cpos = i->position(i->ctx);
+    spin_unlock_irqrestore(&g.lock, st);
+}
+
 int AudioDevices(bool capture, AudioDevice *out, int max)
 {
     IrqState st = spin_lock_irqsave(&g.lock);
@@ -603,6 +633,7 @@ bool AudioInit(void)
         return false;
     }
     if (!HdaInit()) return false;
+    SofStart();                                     /* the laptop's digital microphones, behind the audio DSP */
     g_hda_out.name = HdaName();
     g_hda_out.ring = HdaRing(&g_hda_out.bytes);
     AudioOutputAttach(&g_hda_out);

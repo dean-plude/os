@@ -1,0 +1,1 @@
+| **Microsoft Edge WebView2 runtime** (the evergreen offline installer) | Partly | Its installer, Microsoft Edge Update, installs itself and accepts Microsoft's signature on the runtime's package; the install then fails because Edge Update's background pass uninstalls Edge Update under it ([WebView2](#webview2)) | nightly corpus (the installer) |

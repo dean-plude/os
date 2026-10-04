@@ -1193,7 +1193,17 @@ WINBASEAPI BOOL WINAPI SetPriorityClass(HANDLE p, DWORD c)
 }
 
 static UINT g_error_mode;
-WINBASEAPI UINT WINAPI SetErrorMode(UINT mode) { UINT old = g_error_mode; g_error_mode = mode; return old; }
+/* The process's mode goes to the kernel too (ProcessDefaultHardErrorMode),
+ * where SEM_NOALIGNMENTFAULTEXCEPT turns on alignment-fault fixup; as on
+ * Windows, that one stays once set */
+WINBASEAPI UINT WINAPI SetErrorMode(UINT mode)
+{
+    UINT old = g_error_mode;
+    g_error_mode = mode | (old & 0x0004u);              /* SEM_NOALIGNMENTFAULTEXCEPT */
+    ULONG m = g_error_mode;
+    NtSetInformationProcess(GetCurrentProcess(), 12 /* ProcessDefaultHardErrorMode */, &m, sizeof(m));
+    return old;
+}
 WINBASEAPI UINT WINAPI GetErrorMode(void)      { return g_error_mode; }
 WINBASEAPI BOOL WINAPI SetThreadErrorMode(DWORD mode, LPDWORD old) { if (old) *old = g_error_mode; g_error_mode = mode; return TRUE; }
 WINBASEAPI DWORD WINAPI GetThreadErrorMode(void) { return g_error_mode; }
@@ -1231,24 +1241,30 @@ WINBASEAPI PVOID WINAPI DecodePointer(PVOID p)       { return p; }
 WINBASEAPI PVOID WINAPI EncodeSystemPointer(PVOID p) { return p; }
 WINBASEAPI PVOID WINAPI DecodeSystemPointer(PVOID p) { return p; }
 
+/* 64-bit: the kernel answers for the calling thread too (its system call's
+ * registers, as Windows' trap frame), so these go straight to it */
 WINBASEAPI BOOL WINAPI GetThreadContext(HANDLE t, LPCONTEXT c)
 {
+#ifndef _WIN64
     if (t == GetCurrentThread() || GetThreadId(t) == GetCurrentThreadId()) {
         DWORD flags = c->ContextFlags;
         RtlCaptureContext(c);
         c->ContextFlags = flags;
         return TRUE;
     }
+#endif
     NTSTATUS s = NtGetContextThread(t, c);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
 
 WINBASEAPI BOOL WINAPI SetThreadContext(HANDLE t, const CONTEXT *c)
 {
+#ifndef _WIN64
     if (t == GetCurrentThread() || GetThreadId(t) == GetCurrentThreadId()) {
         NtContinue((PCONTEXT)c, FALSE);
         return FALSE;
     }
+#endif
     NTSTATUS s = NtSetContextThread(t, c);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
@@ -1546,10 +1562,15 @@ WINBASEAPI HANDLE WINAPI FindFirstFileExA(LPCSTR name, FINDEX_INFO_LEVELS l, LPV
     return FindFirstFileA(name, data);
 }
 
+/* As Windows' CopyFile, the copy keeps the source's attributes and its
+ * last-write time (programs compare them to tell whether a copy is
+ * current: Steam's service updates itself again and again otherwise) */
 WINBASEAPI BOOL WINAPI CopyFileA(LPCSTR from, LPCSTR to, BOOL fail_if_exists)
 {
     HANDLE in = CreateFileA(from, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     if (in == INVALID_HANDLE_VALUE) return FALSE;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(in, &info)) { DWORD e = GetLastError(); CloseHandle(in); SetLastError(e); return FALSE; }
     HANDLE out = CreateFileA(to, GENERIC_WRITE, 0, 0, fail_if_exists ? CREATE_NEW : CREATE_ALWAYS, 0, 0);
     if (out == INVALID_HANDLE_VALUE) { DWORD e = GetLastError(); CloseHandle(in); SetLastError(e); return FALSE; }
     static BYTE buf[64 * 1024];             /* callers are rarely concurrent; keep stacks small */
@@ -1562,10 +1583,13 @@ WINBASEAPI BOOL WINAPI CopyFileA(LPCSTR from, LPCSTR to, BOOL fail_if_exists)
         if (!WriteFile(out, buf, got, &put, 0) || put != got) { ok = FALSE; break; }
     }
     unlock();
+    if (ok) SetFileTime(out, NULL, NULL, &info.ftLastWriteTime);
     DWORD e = GetLastError();
     CloseHandle(in);
     CloseHandle(out);
     if (!ok) { DeleteFileA(to); SetLastError(e); }
+    else if (info.dwFileAttributes & (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+        SetFileAttributesA(to, info.dwFileAttributes | FILE_ATTRIBUTE_ARCHIVE);
     return ok;
 }
 
@@ -1940,16 +1964,25 @@ WINBASEAPI SIZE_T WINAPI VirtualQuery(LPCVOID p, PMEMORY_BASIC_INFORMATION mbi, 
     return got;
 }
 
+/* The machine's memory as the kernel publishes it in KUSER_SHARED_DATA:
+ * Windows' NumberOfPhysicalPages and NovaOS's free page count (0xF08,
+ * kept current on every timer tick).  NovaOS has no page file, so the
+ * commit figures are the physical ones. */
+#define KUSD_PHYS_PAGES  (*(volatile const ULONG *)(ULONG_PTR)0x7FFE02E8)
+#define KUSD_AVAIL_PAGES (*(volatile const ULONG *)(ULONG_PTR)0x7FFE0F08)
+
 WINBASEAPI BOOL WINAPI GlobalMemoryStatusEx(LPMEMORYSTATUSEX ms)
 {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    ms->dwMemoryLoad = 30;
-    ms->ullTotalPhys = 512ULL << 20;
-    ms->ullAvailPhys = 256ULL << 20;
-    ms->ullTotalPageFile = ms->ullTotalPhys;
-    ms->ullAvailPageFile = ms->ullAvailPhys;
-    ms->ullTotalVirtual = sizeof(void *) == 4 ? 0x7FFE0000ULL : 0x7FFE0000000ULL;
+    if (ms->dwLength != sizeof(*ms)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    ULONGLONG total = (ULONGLONG)KUSD_PHYS_PAGES << 12, avail = (ULONGLONG)KUSD_AVAIL_PAGES << 12;
+    if (!total) total = 512ULL << 20;                   /* (a kernel without the fields) */
+    if (avail > total) avail = total;
+    ms->dwMemoryLoad = (DWORD)(100 - avail * 100 / total);
+    ms->ullTotalPhys = total;
+    ms->ullAvailPhys = avail;
+    ms->ullTotalPageFile = total;
+    ms->ullAvailPageFile = avail;
+    ms->ullTotalVirtual = sizeof(void *) == 4 ? 0x7FFE0000ULL : 0x7FFFFFE0000ULL;
     ms->ullAvailVirtual = sizeof(void *) == 4 ? 0x70000000ULL : 0x7F000000000ULL;
     ms->ullAvailExtendedVirtual = 0;
     return TRUE;
@@ -2661,8 +2694,18 @@ WINBASEAPI BOOL WINAPI FillConsoleOutputCharacterW(HANDLE h, WCHAR c, DWORD n, C
 WINBASEAPI BOOL WINAPI FillConsoleOutputAttribute(HANDLE h, WORD a, DWORD n, COORD at, LPDWORD done) { (void)h; (void)a; (void)at; if (done) *done = n; return TRUE; }
 
 /* -----------------------------------------------------------------------
- * Time zones (NovaOS keeps UTC)
+ * Time zones
+ *
+ * The clock keeps UTC; the zone is where Windows keeps it,
+ * HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation (the
+ * first-boot setup, Settings or tzutil set it; kernel/ke/timezone.c),
+ * and the zones on offer are under ...\Windows NT\CurrentVersion\Time
+ * Zones\NAME (Display, Std, Dlt, TZI).  A process re-reads the zone at
+ * most once a second.
  * ----------------------------------------------------------------------- */
+#define TZ_KEY  L"SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation"
+#define TZS_KEY L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones"
+
 static void utc_zone(LPTIME_ZONE_INFORMATION tz)
 {
     memset(tz, 0, sizeof(*tz));
@@ -2670,41 +2713,306 @@ static void utc_zone(LPTIME_ZONE_INFORMATION tz)
     u2w("Coordinated Universal Time", -1, tz->DaylightName, 31);
 }
 
-WINBASEAPI DWORD WINAPI GetTimeZoneInformation(LPTIME_ZONE_INFORMATION tz) { utc_zone(tz); return TIME_ZONE_ID_UNKNOWN; }
-
-WINBASEAPI BOOL WINAPI GetTimeZoneInformationForYear(USHORT year, DYNAMIC_TIME_ZONE_INFORMATION *d, LPTIME_ZONE_INFORMATION tz)
+static BOOL reg_get(HKEY k, LPCWSTR name, void *out, DWORD cap, DWORD want)
 {
-    (void)year; (void)d;
-    utc_zone(tz);
-    return TRUE;
+    DWORD type = 0, n = cap;
+    return !RegQueryValueExW(k, name, NULL, &type, (BYTE *)out, &n) && type == want && (want != REG_BINARY || n == cap);
 }
 
-WINBASEAPI DWORD WINAPI GetDynamicTimeZoneInformation(DYNAMIC_TIME_ZONE_INFORMATION *d)
+static void load_zone(DYNAMIC_TIME_ZONE_INFORMATION *d)
 {
+    HKEY k;
     TIME_ZONE_INFORMATION tz;
     utc_zone(&tz);
     memset(d, 0, sizeof(*d));
     memcpy(d, &tz, sizeof(tz));
     u2w("UTC", -1, d->TimeZoneKeyName, 127);
-    return TIME_ZONE_ID_UNKNOWN;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, TZ_KEY, 0, KEY_READ, &k)) return;
+    DWORD v;
+    if (reg_get(k, L"Bias", &v, 4, REG_DWORD))         d->Bias = (LONG)v;
+    if (reg_get(k, L"StandardBias", &v, 4, REG_DWORD)) d->StandardBias = (LONG)v;
+    if (reg_get(k, L"DaylightBias", &v, 4, REG_DWORD)) d->DaylightBias = (LONG)v;
+    if (reg_get(k, L"DynamicDaylightTimeDisabled", &v, 4, REG_DWORD)) d->DynamicDaylightTimeDisabled = v != 0;
+    reg_get(k, L"StandardName", d->StandardName, sizeof(d->StandardName) - 2, REG_SZ);
+    reg_get(k, L"DaylightName", d->DaylightName, sizeof(d->DaylightName) - 2, REG_SZ);
+    reg_get(k, L"TimeZoneKeyName", d->TimeZoneKeyName, sizeof(d->TimeZoneKeyName) - 2, REG_SZ);
+    if (!reg_get(k, L"StandardStart", &d->StandardDate, sizeof(SYSTEMTIME), REG_BINARY) ||
+        !reg_get(k, L"DaylightStart", &d->DaylightDate, sizeof(SYSTEMTIME), REG_BINARY)) {
+        memset(&d->StandardDate, 0, sizeof(SYSTEMTIME));
+        memset(&d->DaylightDate, 0, sizeof(SYSTEMTIME));
+    }
+    RegCloseKey(k);
+}
+
+static DYNAMIC_TIME_ZONE_INFORMATION g_zone;
+static ULONGLONG g_zone_when;
+static volatile LONG g_zone_lock, g_zone_have;
+
+static void current_zone(DYNAMIC_TIME_ZONE_INFORMATION *d)
+{
+    ULONGLONG now = GetTickCount64();
+    while (InterlockedExchange(&g_zone_lock, 1)) SwitchToThread();
+    if (!g_zone_have || now - g_zone_when >= 1000) {
+        load_zone(&g_zone);
+        g_zone_when = now;
+        g_zone_have = 1;
+    }
+    *d = g_zone;
+    InterlockedExchange(&g_zone_lock, 0);
+}
+
+static void zone_changed(void)
+{
+    while (InterlockedExchange(&g_zone_lock, 1)) SwitchToThread();
+    g_zone_have = 0;
+    InterlockedExchange(&g_zone_lock, 0);
+}
+
+/* Minutes since 1601 */
+static LONGLONG st_minutes(const SYSTEMTIME *st)
+{
+    FILETIME ft;
+    SystemTimeToFileTime(st, &ft);
+    return (LONGLONG)(((ULONGLONG)ft.dwHighDateTime << 32 | ft.dwLowDateTime) / 600000000ULL);
+}
+
+static int month_days(int y, int m)
+{
+    static const BYTE n[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    return m == 2 && y % 4 == 0 && (y % 100 || y % 400 == 0) ? 29 : n[m - 1];
+}
+
+/* The local minute a rule (month, the wDay-th wDayOfWeek, 5 = the last;
+ * or a date when wYear is set) names in @year */
+static LONGLONG rule_minutes(int year, const SYSTEMTIME *r)
+{
+    SYSTEMTIME st = { 0 };
+    st.wYear = (WORD)year;
+    st.wMonth = r->wMonth;
+    st.wDay = 1;
+    if (r->wYear) {
+        st.wDay = r->wDay;
+    } else {
+        int first = (int)((st_minutes(&st) / 1440 + 1) % 7);   /* 1601-01-01 was a Monday */
+        int day = 1 + (r->wDayOfWeek - first + 7) % 7 + (r->wDay - 1) * 7;
+        while (day > month_days(year, r->wMonth)) day -= 7;
+        st.wDay = (WORD)day;
+    }
+    st.wHour = r->wHour;
+    st.wMinute = r->wMinute;
+    return st_minutes(&st);
+}
+
+static BOOL has_dst(const TIME_ZONE_INFORMATION *tz)
+{
+    const SYSTEMTIME *s = &tz->StandardDate, *d = &tz->DaylightDate;
+    return s->wMonth >= 1 && s->wMonth <= 12 && d->wMonth >= 1 && d->wMonth <= 12 &&
+           (s->wYear || (s->wDay >= 1 && s->wDay <= 5)) && (d->wYear || (d->wDay >= 1 && d->wDay <= 5));
+}
+
+/* The bias (UTC = local + bias) in effect at UTC time @u */
+static LONG bias_at(const TIME_ZONE_INFORMATION *tz, const SYSTEMTIME *u, BOOL *dst)
+{
+    if (dst) *dst = FALSE;
+    if (!has_dst(tz)) return tz->Bias + tz->StandardBias;
+    LONGLONG now = st_minutes(u);
+    LONGLONG on  = rule_minutes(u->wYear, &tz->DaylightDate) + tz->Bias + tz->StandardBias;
+    LONGLONG off = rule_minutes(u->wYear, &tz->StandardDate) + tz->Bias + tz->DaylightBias;
+    BOOL in = on < off ? now >= on && now < off : now >= on || now < off;
+    if (dst) *dst = in;
+    return tz->Bias + (in ? tz->DaylightBias : tz->StandardBias);
+}
+
+static DWORD zone_id(const TIME_ZONE_INFORMATION *tz)
+{
+    SYSTEMTIME now;
+    BOOL dst;
+    if (!has_dst(tz)) return TIME_ZONE_ID_UNKNOWN;
+    GetSystemTime(&now);
+    bias_at(tz, &now, &dst);
+    return dst ? TIME_ZONE_ID_DAYLIGHT : TIME_ZONE_ID_STANDARD;
+}
+
+static void shift_st(const SYSTEMTIME *in, LONG minutes, LPSYSTEMTIME out)
+{
+    FILETIME ft;
+    SystemTimeToFileTime(in, &ft);
+    ULONGLONG t = (ULONGLONG)ft.dwHighDateTime << 32 | ft.dwLowDateTime;
+    t += (ULONGLONG)((LONGLONG)minutes * 600000000LL);
+    ft.dwLowDateTime = (DWORD)t;
+    ft.dwHighDateTime = (DWORD)(t >> 32);
+    FileTimeToSystemTime(&ft, out);
+}
+
+/* The bias now (FileTimeToLocalFileTime uses it, whatever the date, as on Windows) */
+static LONG bias_now(void)
+{
+    DYNAMIC_TIME_ZONE_INFORMATION d;
+    SYSTEMTIME now;
+    current_zone(&d);
+    GetSystemTime(&now);
+    return bias_at((TIME_ZONE_INFORMATION *)&d, &now, NULL);
+}
+
+WINBASEAPI DWORD WINAPI GetTimeZoneInformation(LPTIME_ZONE_INFORMATION tz)
+{
+    DYNAMIC_TIME_ZONE_INFORMATION d;
+    current_zone(&d);
+    memcpy(tz, &d, sizeof(*tz));
+    return zone_id(tz);
+}
+
+WINBASEAPI DWORD WINAPI GetDynamicTimeZoneInformation(DYNAMIC_TIME_ZONE_INFORMATION *d)
+{
+    current_zone(d);
+    return zone_id((TIME_ZONE_INFORMATION *)d);
+}
+
+/* A zone of the list (Time Zones\NAME) */
+static BOOL find_zone(LPCWSTR name, LPTIME_ZONE_INFORMATION tz)
+{
+    WCHAR path[200];
+    HKEY k;
+    struct { LONG Bias, StandardBias, DaylightBias; SYSTEMTIME StandardDate, DaylightDate; } tzi;
+    int n = 0;
+    for (const WCHAR *p = TZS_KEY; *p; p++) path[n++] = *p;
+    path[n++] = '\\';
+    for (int i = 0; name[i] && n < 199; i++) path[n++] = name[i];
+    path[n] = 0;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &k)) return FALSE;
+    BOOL ok = reg_get(k, L"TZI", &tzi, sizeof(tzi), REG_BINARY);
+    if (ok) {
+        memset(tz, 0, sizeof(*tz));
+        tz->Bias = tzi.Bias;
+        tz->StandardBias = tzi.StandardBias;
+        tz->DaylightBias = tzi.DaylightBias;
+        tz->StandardDate = tzi.StandardDate;
+        tz->DaylightDate = tzi.DaylightDate;
+        reg_get(k, L"Std", tz->StandardName, sizeof(tz->StandardName) - 2, REG_SZ);
+        reg_get(k, L"Dlt", tz->DaylightName, sizeof(tz->DaylightName) - 2, REG_SZ);
+    }
+    RegCloseKey(k);
+    return ok;
+}
+
+WINBASEAPI BOOL WINAPI GetTimeZoneInformationForYear(USHORT year, DYNAMIC_TIME_ZONE_INFORMATION *d, LPTIME_ZONE_INFORMATION tz)
+{
+    (void)year;                                 /* (one rule for every year) */
+    if (d && d->TimeZoneKeyName[0]) {
+        if (find_zone(d->TimeZoneKeyName, tz)) return TRUE;
+        memcpy(tz, d, sizeof(*tz));
+        return TRUE;
+    }
+    DYNAMIC_TIME_ZONE_INFORMATION cur;
+    current_zone(&cur);
+    memcpy(tz, &cur, sizeof(*tz));
+    return TRUE;
+}
+
+WINBASEAPI DWORD WINAPI EnumDynamicTimeZoneInformation(DWORD i, DYNAMIC_TIME_ZONE_INFORMATION *d)
+{
+    HKEY k;
+    WCHAR name[128];
+    DWORD n = 128;
+    if (!d) return ERROR_INVALID_PARAMETER;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, TZS_KEY, 0, KEY_READ, &k)) return ERROR_NO_MORE_ITEMS;
+    LONG e = RegEnumKeyExW(k, i, name, &n, NULL, NULL, NULL, NULL);
+    RegCloseKey(k);
+    if (e) return ERROR_NO_MORE_ITEMS;
+    memset(d, 0, sizeof(*d));
+    if (!find_zone(name, (LPTIME_ZONE_INFORMATION)d)) return ERROR_NO_MORE_ITEMS;
+    memcpy(d->TimeZoneKeyName, name, (n + 1) * 2);
+    return ERROR_SUCCESS;
+}
+
+static BOOL set_zone(const DYNAMIC_TIME_ZONE_INFORMATION *d)
+{
+    HKEY k;
+    DWORD v, n;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, TZ_KEY, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &k, NULL)) {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    v = (DWORD)d->Bias;         RegSetValueExW(k, L"Bias", 0, REG_DWORD, (const BYTE *)&v, 4);
+    v = (DWORD)d->StandardBias; RegSetValueExW(k, L"StandardBias", 0, REG_DWORD, (const BYTE *)&v, 4);
+    v = (DWORD)d->DaylightBias; RegSetValueExW(k, L"DaylightBias", 0, REG_DWORD, (const BYTE *)&v, 4);
+    RegSetValueExW(k, L"StandardStart", 0, REG_BINARY, (const BYTE *)&d->StandardDate, sizeof(SYSTEMTIME));
+    RegSetValueExW(k, L"DaylightStart", 0, REG_BINARY, (const BYTE *)&d->DaylightDate, sizeof(SYSTEMTIME));
+    for (n = 0; n < 31 && d->StandardName[n]; n++) {}
+    RegSetValueExW(k, L"StandardName", 0, REG_SZ, (const BYTE *)d->StandardName, (n + 1) * 2);
+    for (n = 0; n < 31 && d->DaylightName[n]; n++) {}
+    RegSetValueExW(k, L"DaylightName", 0, REG_SZ, (const BYTE *)d->DaylightName, (n + 1) * 2);
+    for (n = 0; n < 127 && d->TimeZoneKeyName[n]; n++) {}
+    RegSetValueExW(k, L"TimeZoneKeyName", 0, REG_SZ, (const BYTE *)d->TimeZoneKeyName, (n + 1) * 2);
+    v = d->DynamicDaylightTimeDisabled; RegSetValueExW(k, L"DynamicDaylightTimeDisabled", 0, REG_DWORD, (const BYTE *)&v, 4);
+    RegCloseKey(k);
+    zone_changed();
+    return TRUE;
+}
+
+WINBASEAPI BOOL WINAPI SetDynamicTimeZoneInformation(const DYNAMIC_TIME_ZONE_INFORMATION *d)
+{
+    if (!d) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return set_zone(d);
+}
+
+WINBASEAPI BOOL WINAPI SetTimeZoneInformation(const TIME_ZONE_INFORMATION *tz)
+{
+    DYNAMIC_TIME_ZONE_INFORMATION d;
+    if (!tz) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    memset(&d, 0, sizeof(d));
+    memcpy(&d, tz, sizeof(*tz));
+    return set_zone(&d);                        /* (no key name: none of the list's) */
 }
 
 WINBASEAPI BOOL WINAPI SystemTimeToTzSpecificLocalTime(const TIME_ZONE_INFORMATION *tz, const SYSTEMTIME *u, LPSYSTEMTIME l)
 {
-    (void)tz;
-    *l = *u;
+    DYNAMIC_TIME_ZONE_INFORMATION cur;
+    if (!u || !l) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!tz) { current_zone(&cur); tz = (TIME_ZONE_INFORMATION *)&cur; }
+    shift_st(u, -bias_at(tz, u, NULL), l);
     return TRUE;
+}
+
+WINBASEAPI BOOL WINAPI SystemTimeToTzSpecificLocalTimeEx(const DYNAMIC_TIME_ZONE_INFORMATION *d, const SYSTEMTIME *u, LPSYSTEMTIME l)
+{
+    return SystemTimeToTzSpecificLocalTime((const TIME_ZONE_INFORMATION *)d, u, l);
 }
 
 WINBASEAPI BOOL WINAPI TzSpecificLocalTimeToSystemTime(const TIME_ZONE_INFORMATION *tz, const SYSTEMTIME *l, LPSYSTEMTIME u)
 {
-    (void)tz;
-    *u = *l;
+    DYNAMIC_TIME_ZONE_INFORMATION cur;
+    SYSTEMTIME guess;
+    if (!u || !l) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!tz) { current_zone(&cur); tz = (TIME_ZONE_INFORMATION *)&cur; }
+    shift_st(l, tz->Bias + tz->StandardBias, &guess);     /* the standard-time reading first */
+    shift_st(l, bias_at(tz, &guess, NULL), u);
     return TRUE;
 }
 
-WINBASEAPI BOOL WINAPI FileTimeToLocalFileTime(const FILETIME *u, LPFILETIME l) { *l = *u; return TRUE; }
-WINBASEAPI BOOL WINAPI LocalFileTimeToFileTime(const FILETIME *l, LPFILETIME u) { *u = *l; return TRUE; }
+WINBASEAPI BOOL WINAPI TzSpecificLocalTimeToSystemTimeEx(const DYNAMIC_TIME_ZONE_INFORMATION *d, const SYSTEMTIME *l, LPSYSTEMTIME u)
+{
+    return TzSpecificLocalTimeToSystemTime((const TIME_ZONE_INFORMATION *)d, l, u);
+}
+
+static void shift_ft(const FILETIME *in, LONGLONG minutes, LPFILETIME out)
+{
+    ULONGLONG t = (ULONGLONG)in->dwHighDateTime << 32 | in->dwLowDateTime;
+    t += (ULONGLONG)(minutes * 600000000LL);
+    out->dwLowDateTime = (DWORD)t;
+    out->dwHighDateTime = (DWORD)(t >> 32);
+}
+
+WINBASEAPI BOOL WINAPI FileTimeToLocalFileTime(const FILETIME *u, LPFILETIME l) { shift_ft(u, -(LONGLONG)bias_now(), l); return TRUE; }
+WINBASEAPI BOOL WINAPI LocalFileTimeToFileTime(const FILETIME *l, LPFILETIME u) { shift_ft(l, bias_now(), u); return TRUE; }
+
+/* (kernel32.c) */
+void k32_local_time(LPSYSTEMTIME st)
+{
+    SYSTEMTIME u;
+    GetSystemTime(&u);
+    SystemTimeToTzSpecificLocalTime(NULL, &u, st);
+}
 WINBASEAPI VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME ft)           { GetSystemTimeAsFileTime(ft); }
 WINBASEAPI BOOL WINAPI SetLocalTime(const SYSTEMTIME *st)                     { (void)st; SetLastError(1314 /* PRIVILEGE_NOT_HELD */); return FALSE; }
 WINBASEAPI BOOL WINAPI SetSystemTime(const SYSTEMTIME *st)                    { (void)st; SetLastError(1314); return FALSE; }
@@ -2885,6 +3193,46 @@ WINBASEAPI DWORD WINAPI K32GetModuleFileNameExW(HANDLE p, HMODULE m, LPWSTR buf,
 WINBASEAPI DWORD WINAPI K32GetProcessImageFileNameW(HANDLE p, LPWSTR buf, DWORD n)
 {
     return K32GetModuleFileNameExW(p, 0, buf, n);
+}
+
+WINBASEAPI DWORD WINAPI K32GetProcessImageFileNameA(HANDLE p, LPSTR buf, DWORD n)
+{
+    return K32GetModuleFileNameExA(p, 0, buf, n);
+}
+
+/* The firmware's tables: 'RSMB' (SMBIOS: the machine's maker, model, serial
+ * numbers) and 'ACPI', through SystemFirmwareTableInformation.  Returns the
+ * bytes copied, or the size needed when @buf is too small, or 0. */
+static UINT firmware_table(DWORD provider, DWORD action, DWORD id, PVOID buf, DWORD size)
+{
+    ULONG cap = size > 0x7FFFFFF0u ? 0x7FFFFFF0u : size;
+    ULONG *info = HeapAlloc(GetProcessHeap(), 0, 16 + cap);
+    if (!info) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    info[0] = provider; info[1] = action; info[2] = id; info[3] = cap;
+    ULONG ret = 0;
+    NTSTATUS s = NtNovaFirmwareTable(info, 16 + cap, &ret);    /* NtQuerySystemInformation class 76 */
+    UINT n = 0;
+    if (NT_SUCCESS(s)) {
+        n = info[3];
+        if (buf) memcpy(buf, info + 4, n);
+    } else if (s == (NTSTATUS)0xC0000023 /* STATUS_BUFFER_TOO_SMALL */) {
+        n = info[3];
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+    } else {
+        fail_status(s);
+    }
+    HeapFree(GetProcessHeap(), 0, info);
+    return n;
+}
+
+WINBASEAPI UINT WINAPI GetSystemFirmwareTable(DWORD provider, DWORD id, PVOID buf, DWORD size)
+{
+    return firmware_table(provider, 1, id, buf, size);
+}
+
+WINBASEAPI UINT WINAPI EnumSystemFirmwareTables(DWORD provider, PVOID buf, DWORD size)
+{
+    return firmware_table(provider, 0, 0, buf, size);
 }
 
 WINBASEAPI BOOL WINAPI QueryFullProcessImageNameW(HANDLE p, DWORD flags, LPWSTR buf, PDWORD n)
@@ -3123,10 +3471,12 @@ WINBASEAPI VOID    WINAPI GlobalMemoryStatus(LPVOID p)
     ms.dwLength = sizeof(ms);
     GlobalMemoryStatusEx(&ms);
     DWORD *o = p;                                           /* MEMORYSTATUS: SIZE_Ts after two DWORDs */
-    o[0] = 56; o[1] = ms.dwMemoryLoad;
+    o[0] = 2 * sizeof(DWORD) + 6 * sizeof(SIZE_T); o[1] = ms.dwMemoryLoad;
     SIZE_T *s = (SIZE_T *)(o + 2);
-    s[0] = (SIZE_T)ms.ullTotalPhys; s[1] = (SIZE_T)ms.ullAvailPhys; s[2] = (SIZE_T)ms.ullTotalPageFile;
-    s[3] = (SIZE_T)ms.ullAvailPageFile; s[4] = (SIZE_T)ms.ullTotalVirtual; s[5] = (SIZE_T)ms.ullAvailVirtual;
+    const ULONGLONG v[6] = { ms.ullTotalPhys, ms.ullAvailPhys, ms.ullTotalPageFile,
+                             ms.ullAvailPageFile, ms.ullTotalVirtual, ms.ullAvailVirtual };
+    for (int i = 0; i < 6; i++)                             /* (32-bit: at most 4 GB - 1, as on Windows) */
+        s[i] = v[i] > (SIZE_T)-1 ? (SIZE_T)-1 : (SIZE_T)v[i];
 }
 
 /* ---- odds and ends VLC and Audacity import ---------------------------- */

@@ -1,0 +1,10 @@
+{
+  "deps": ["kernel32", "ntdll"],
+  "sources": ["xinput1_4"],
+  "ordinals": {
+    "XInputGetCapabilities": 2,
+    "XInputGetDSoundAudioDeviceGuids": 3,
+    "XInputGetState": 4,
+    "XInputSetState": 5
+  }
+}

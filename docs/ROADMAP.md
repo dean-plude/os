@@ -69,8 +69,10 @@ named program or test demonstrates it.
 <!-- BEGIN generated:next-graphics -->
 
 - ~~**OpenGL**: a working `opengl32.dll`~~ Done: Mesa's llvmpipe from the
-  App Store is the system `opengl32.dll` (OpenGL 4.5, 64- and 32-bit); see
-  [OpenGL](HISTORY.md#opengl-mesa-as-the-system-opengl32dll).
+  App Store is the system OpenGL (OpenGL 4.5, 64- and 32-bit); see
+  [OpenGL](HISTORY.md#opengl-mesa-as-the-system-opengl32dll).  NovaOS's
+  own `opengl32.dll` hands it to Mesa's virgl on a 3D virtio-gpu (see
+  [virgl](HISTORY.md#opengl-on-the-hosts-gpu-virgl)).
 - ~~**Direct3D**, DXGI~~ Done: DXVK from the App Store is the system
   Direct3D 8–11 on Mesa's lavapipe Vulkan, through NovaOS's own
   `vulkan-1.dll`; see [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
@@ -105,12 +107,27 @@ named program or test demonstrates it.
   disconnected.  ~~Per-monitor DPI that programs see~~ Done: a monitor at
   scale 2 can show DPI-aware programs 192 DPI (Settings > Display); they
   get `GetDpiForMonitor`, per-monitor-aware contexts, `WM_DPICHANGED` and
-  the screen's own pixels, while unaware ones keep 96 DPI.
+  the screen's own pixels, while unaware ones keep 96 DPI; user32's
+  controls, menus, dialogs and fonts and comctl32's controls follow each
+  window's DPI and are measured again when it changes, threads can have
+  their own awareness context, and window coordinates are converted
+  between awareness contexts.
+- ~~**A GPU path in QEMU**~~ Done (Phase 19.7): the virtio GPU driver does
+  3D, and Mesa's Venus (the App Store's "Venus") runs Vulkan, and Direct3D
+  through DXVK, on the host's GPU through QEMU's `virtio-vga-gl,venus=on`;
+  `d3dtest` passes on it and draws faster than on lavapipe.
+  ~~virgl (OpenGL on the host's GPU)~~ Done: the same App Store entry
+  brings Mesa's virgl, which NovaOS's own `opengl32.dll` picks on that
+  GPU; `gltest` passes on it and `gltest fps` draws faster than on
+  llvmpipe; see [virgl](HISTORY.md#opengl-on-the-hosts-gpu-virgl).
+  Still to do: showing Vulkan's and OpenGL's frames on the virtio GPU
+  directly instead of reading them back and copying them through the GDI.
 - ~~NetSurf: SVG; redrawing pages a script changes after layout.~~ Done
   (Phase 19.8): SVG images (`<img>`, `<object>`, CSS backgrounds, `.svg`
-  pages) drawn anti-aliased, and pages laid out again when a script changes
-  the DOM, a style or a stylesheet.  Still to do: inline `<svg>` in HTML,
-  and SVG text in the document's fonts.
+  pages) and `<svg>` elements written inline in HTML drawn anti-aliased,
+  and pages laid out again when a script changes the DOM, a style or a
+  stylesheet (only the changed part is built again, and the layout starts
+  at the changed box).  Still to do: SVG text in the document's fonts.
 
 <!-- END generated:next-graphics -->
 
@@ -121,14 +138,17 @@ named program or test demonstrates it.
   portable ones (Notepad++, SumatraPDF, PuTTY, WinMerge)~~ Done (Phase
   20.2, in the nightly corpus); the Qt applications: ~~KeePassXC~~ Done
   (Phase 20.3, unlocks a database in the nightly corpus; see
-  [Qt programs](HISTORY.md#qt-programs-keepassxc)), Krita next; the
+  [Qt programs](HISTORY.md#qt-programs-keepassxc)), ~~Krita~~ Done (Phase
+  20.3, Krita 5.3.4 opens a new image in the nightly corpus; see
+  [Qt programs: Krita](HISTORY.md#qt-programs-krita)); the
   GTK ones: ~~Inkscape~~ Done (Phase 20.4, Inkscape 0.91, the GTK 2 build
   from conda-forge, opens a new document in the nightly corpus; see
   [GTK programs](HISTORY.md#gtk-programs-inkscape)); ~~then Firefox~~
   Done (Phase 20, stock Firefox 157 installs from the App Store and loads
   an HTTPS page in the nightly corpus; see
   [Firefox in the App Store](HISTORY.md#firefox-in-the-app-store)).
-  Krita is the only program left in this item.
+  Left from this item: painting strokes in Krita, and a system
+  `opengl32.dll` so Krita runs without Mesa 3D.
 - ~~Common dialogs: `GetOpenFileName`/`GetSaveFileName` and the
   `IFileDialog` interfaces~~ Done (Phase 20.1, `dlgtest`); see
   [Phase 20](HISTORY.md#phase-20-common-dialogs-and-portable-programs).
@@ -154,6 +174,33 @@ named program or test demonstrates it.
   and loads an HTTPS page (a test CA trusted through `policies.json`) in
   the nightly corpus.  Still open: a page from a publicly trusted HTTPS
   site (the test network has no internet).
+- ~~First-boot setup: the user's name, the display resolution, a time
+  zone page with daylight-saving rules (local time in the clock, kernel32
+  and the C runtime) and a keyboard layout page (16 layouts with AltGr and
+  dead keys, for the desktop, the Terminal and user32)~~ Done (Phase
+  22.1): **Welcome to NovaOS** opens the first time an installed NovaOS
+  starts, and `start welcome` opens it anywhere.
+- ~~Updates: an update channel in the App Store that replaces the system
+  safely~~ Done (Phase 22.2): the App Store's Updates page and the
+  Terminal's `update` download a newer kernel and boot loader from the
+  channel (a GitHub release by default, made with `tools/mkupdate.py`),
+  check them, and stage them; the boot loader starts the new kernel once
+  and goes back to the old one if it does not reach the desktop
+  ([updates.md](updates.md)).  Signed channel files are still to come.
+- Release 0.1 (Phase 22.5): pushing a version tag builds, tests and
+  publishes a release (`.github/workflows/release.yml`,
+  [releasing.md](releasing.md)): every CI suite on the tagged commit, with
+  the audio DSP firmware fetched first, then `nova.iso`, its checksums,
+  the update channel's files and notes from the history.  Still to do:
+  tag `v0.1.0`, and start the release's ISO on the reference PC.
+- The WebView2 runtime (Roblox's login page and many other programs show
+  web content with it): ~~Edge Update's Windows APIs~~ Done
+  (`edgeupdtest`); ~~MSXML 6~~ Done (`msxmltest`); ~~rpcrt4's NDR engine
+  for COM proxy/stub DLLs~~ Done (`ndrtest`).  Still to do: COM calls
+  between processes (ole32 marshaling over a channel, `LocalServer32`
+  servers started on demand, oleaut32's `BSTR`/`VARIANT` marshaling and
+  the `IDispatch` proxy), Windows' `WOW6432Node` registry view, then the
+  runtime's setup and the Chromium runtime itself.
 
 <!-- END generated:next-apps -->
 
@@ -217,6 +264,18 @@ named program or test demonstrates it.
   quantum; the balance set lifts starving threads)~~ Done (`boosttest`:
   an event-woken thread runs within 2 ms while same-priority threads
   spin, where it waited out a 20 ms slice).
+- ~~Scheduler and Winsock leftovers of the foreground boost: longer time
+  slices for the foreground process, a Terminal's console program as the
+  foreground process, and real `setsockopt`/`getsockopt`~~ Done
+  (`prioritytest`: 60 ms slices in the foreground against 20 ms in the
+  background; `looptest`: `TCP_NODELAY`, `SO_RCVTIMEO`, `SO_SNDTIMEO`,
+  `SO_LINGER` and `SO_REUSEADDR` change what a socket does).
+- ~~Sound threads above busy programs: the Multimedia Class Scheduler
+  (`AvSetMmThreadCharacteristics`) and NT's windowing boost for input~~
+  Done (`mmcsstest`: a registered thread woken every 5 ms runs within
+  2 ms while TIME_CRITICAL threads spin on every CPU, where a plain
+  TIME_CRITICAL one waits 24-34 ms; busy registered threads still leave a
+  NORMAL thread room).
 
 <!-- END generated:next-kernel -->
 
@@ -243,10 +302,15 @@ named program or test demonstrates it.
   mice's side buttons and horizontal wheel.
   ~~Isochronous transfers, USB audio~~ Done: isochronous streams on xHCI,
   EHCI (high-speed devices, iTDs), OHCI and UHCI (alternate settings, a
-  ring of transfers per pipe), and USB Audio Class 1 speakers, headsets
-  and microphones as the sound output and input the mixer switches to
-  when they are plugged in.  Still to do: USB Audio 2.0, siTDs (full-speed
-  isochronous behind a high-speed hub on EHCI), webcams.
+  ring of transfers per pipe), and USB Audio Class 1 and 2 speakers,
+  headsets and microphones at the rates their clocks offer and with up
+  to eight channels, as the sound output and input the mixer switches to
+  when they are plugged in, or that Settings' Sound page or a program
+  chooses; the mixer runs at each device's own rate, and asynchronous
+  devices' rate feedback is followed.  Still to do: siTDs (full-speed
+  isochronous behind a high-speed hub on EHCI; QEMU cannot test them,
+  and Intel chipsets since 2015, the reference ThinkPad's included, have xHCI
+  only), webcams.
 - ACPI beyond the MADT: ~~shutdown, reboot, sleep, batteries~~ Done:
   power-off (S5), sleep (S3), reset and the fixed power button from the
   FADT; the AML interpreter (uACPI) for batteries, AC adapters,
@@ -268,7 +332,51 @@ named program or test demonstrates it.
   Waitable timers, their completion routines, timer queues, threadpool
   timers and `timeSetEvent` followed (2026-10-03): they end on the TSC
   too.
+- ~~Pick a reference machine for real hardware~~ Done (Phase 21.1): the
+  Lenovo ThinkPad T14 Gen 4 (Intel), with each of its devices marked
+  supported, partial or missing in [hardware.md](hardware.md); the
+  Terminal's `devices` lists a machine's PCI devices and the driver each
+  one has.
 - Boot and test on real hardware, not only QEMU.
+- ~~Start from a USB stick~~ Done (Phase 21.2): `nova.iso` is a USB stick
+  image as well as a disc (its EFI System Partition is a GPT partition
+  too), runs live from the stick and offers Install NovaOS, with the
+  firmware's GOP framebuffer as the display, and writes its log into
+  `\EFI\NOVA\bootlog.txt` on the stick (no serial port needed).  Checked
+  in QEMU (`usbboot` and `cdboot` in the devices suite); on the
+  reference ThinkPad T14 Gen 4 the check is by hand: start from the
+  stick with Secure Boot off, reach the desktop, read the log on another
+  computer.
+- ~~Drive the reference machine's Intel I219 Ethernet controller~~ Done
+  (Phase 21.3): the `e1000e` driver takes every I219-LM and I219-V
+  (55 IDs, [ethernet.md](ethernet.md)) with the PHY bring-up from
+  Intel's BSD-licensed code (ULP exit, LANPHYPC, the shared reset,
+  per-chipset errata); tested in QEMU on the 82574L, which shares the
+  rings and the PHY path.  Still to confirm on the T14 itself.
+- ~~Sound and the touchpad on the reference laptop~~ Done (Phase 21.4): the
+  HD Audio driver takes Intel's controllers with the audio DSP on (class
+  04.01, as on the ThinkPad T14 Gen 4) as well as off, sets up Realtek's
+  ALC256 family and turns the speakers off while headphones are plugged
+  in; I2C-HID touchpads, found through ACPI on Intel's LPSS I2C
+  controllers, move the pointer and click in their mouse mode.  Checked
+  in QEMU against modelled devices (`hwcheck` in the core suite, with an
+  ACPI table describing a touchpad); on the T14 the check is by hand
+  ([hardware.md](hardware.md)).  ~~The digital microphones, behind the
+  DSP~~ Done (Phase 21.4): Sound Open Firmware boots on the DSP, records
+  them through an IPC4 capture pipeline and they are the "Microphone
+  Array (DSP)" recording device, booted again after sleep (checked on a
+  modelled DSP, `hwcheck mic`).  Not yet: the touchpad's interrupt line
+  (polled for now), tap-to-click and two-finger scrolling.
+- ~~Install to the internal NVMe disk, and S3, batteries and the lid on
+  the reference machine's tables~~ Done (Phase 21.5): the ACPI embedded
+  controller that laptops keep their lid, battery and AC adapter behind;
+  sleep as low-power S0 idle on firmware without S3 (the T14 Gen 4 has
+  none), with the LPS0 device's calls; timers from CPUID leaf 0x15 where
+  the firmware hides the HPET; the Terminal's `install`, a firmware boot
+  entry added at the first start from the disk, and a hint when Intel
+  VMD hides the NVMe disk ([install-and-power.md](install-and-power.md)).
+  Tested in QEMU (`laptop` in the devices suite); on the T14 itself the
+  checks are by hand.
 
 <!-- END generated:next-hardware -->
 
@@ -283,7 +391,8 @@ named program or test demonstrates it.
 - **Reproducible build:** CMake drives `nasm`, clang/lld and `lld-link`
   for the kernel, bootloader and Windows userland; CI builds `nova.iso`
   with `scripts/create-iso.sh` (a run artifact on every pull request, the
-  `latest` release from `main`); the ISO is not committed.
+  `latest` build from `main`, and a release from each version tag through
+  `.github/workflows/release.yml`); the ISO is not committed.
 - **Debugging:** the GDB stub over QEMU (`run-debug`), the serial log,
   crash reports naming the module and offset, and the Terminal's `trace
   NAME` for a program's failing system calls, and symbolized kernel

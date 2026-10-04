@@ -51,16 +51,20 @@ typedef struct {
     void       *ctx;
 } AudioOutput;
 
-/* A recording device: a ring of @bytes of interleaved s16 stereo frames
- * at @rate (0: 48 kHz) that the device writes.  @position: how far it has written
- * (bytes, a whole frame).  @run (may be NULL): start or stop recording;
- * the mixer reads on from the position it finds after starting it. */
+/* A recording device: a ring of @bytes of interleaved s16 frames of
+ * @channels (0: 2, stereo) at @rate (0: 48 kHz) that the device writes;
+ * the mixer makes stereo of other counts (the even channels left, the odd
+ * ones right; mono on both).  @position: how far it has written (bytes, a
+ * whole frame).  @run (may be NULL): start or stop recording; the mixer
+ * reads on from the position it finds after starting it.  @run is called
+ * with the mixer's lock held: it must not wait. */
 typedef struct {
     const char *name;
     const char *key;                    /* (as an output's) */
     INT16      *ring;
     UINT32      bytes;
     UINT32      rate;
+    UINT32      channels;
     UINT32    (*position)(void *ctx);
     void      (*run)(void *ctx, bool on);
     void       *ctx;
@@ -99,6 +103,11 @@ UINT32      AudioDeviceRate(void);
  * mixer no longer reads @i's ring. */
 bool        AudioInputAttach(const AudioInput *i);
 void        AudioInputDetach(const AudioInput *i);
+/* Attached input @i started again (its ring at @ring now, of @bytes; its
+ * position restarted, as after sleep): the mixer reads on from where it
+ * is now, not from before; the old ring is no longer touched once this
+ * returns */
+void        AudioInputRestart(AudioInput *i, INT16 *ring, UINT32 bytes);
 /* Whether there is an input, and the default one's name and rate */
 bool        AudioCanRecord(void);
 const char *AudioInputName(void);

@@ -129,13 +129,15 @@ void um_crash_report(UmProcess *p, const char *what, UINT32 status, UINT64 rip, 
         threads, threads == 1 ? "" : "s");
     if (exe) add(&r, "Path:       %s\n", exe->path);
     add_time(&r, &t);
-    add(&r, "NovaOS:     %s\n\n", NOVA_VERSION);
+    add(&r, "NovaOS:     %s\n\n", NovaVersion());
     add(&r, "Exception:  %s (0x%08X)\n", what, status);
     if (at) add(&r, "At:         %s+0x%llx (0x%llx)\n", at->name, (unsigned long long)(rip - at->base),
                 (unsigned long long)rip);
     else    add(&r, "At:         0x%llx (in no module: generated code or a bad jump)\n", (unsigned long long)rip);
     if (status == UM_STATUS_ACCESS_VIOLATION)
         add(&r, "Address:    0x%llx (the memory it touched)\n", (unsigned long long)addr);
+    if (status == 0xC0000409u)                                   /* __fastfail */
+        add(&r, "Code:       %llu (FAST_FAIL_*, winnt.h)\n", (unsigned long long)addr);
     if (sp) add(&r, "Stack:      0x%llx\n", (unsigned long long)sp);
 
     /* return addresses into a module on the stack, as the serial log shows them */
@@ -197,7 +199,7 @@ void UmCrashKernel(void)
     add(&r, KERNEL_TITLE "\n");
     add(&r, "==========================\n\n");
     add_time(&r, &t);
-    add(&r, "NovaOS:     %s\n\n", NOVA_VERSION);
+    add(&r, "NovaOS:     %s\n\n", NovaVersion());
     add(&r, "The kernel's log up to the crash (the backtrace is at the end):\n\n");
     add_log(&r, KERNEL_CAP - 1024);
     if (PersistPanicWrite(text, r.n))
@@ -241,14 +243,14 @@ static RamNode *crash_dir(void)
     return d ? RamfsCreate(d, "Crashes", true) : NULL;
 }
 
-void UmCrashPoll(void)
+/* Writes the queued reports; the caller holds FsLock */
+static void write_pending(void)
 {
     if (!__atomic_load_n(&g_pending, __ATOMIC_ACQUIRE)) return;
     IrqState s = spin_lock_irqsave(&g_pending_lock);
     Pending *list = g_pending;
     g_pending = NULL;
     spin_unlock_irqrestore(&g_pending_lock, s);
-    FsLock();
     RamNode *dir = crash_dir();
     for (Pending *q = list, *next; q; q = next) {
         next = q->next;
@@ -263,12 +265,23 @@ void UmCrashPoll(void)
         kfree(q->text);
         kfree(q);
     }
+}
+
+void UmCrashPoll(void)
+{
+    if (!__atomic_load_n(&g_pending, __ATOMIC_ACQUIRE)) return;
+    FsLock();
+    write_pending();
     FsUnlock();
 }
 
-/* The newest report (the Terminal's "crashes last"), under the file-system lock */
+/* The newest report (the Terminal's "crashes last"), under the file-system lock.
+ * The kernel's report found at boot is only queued; the desktop loop writes it
+ * after it has handled input, so a command typed in the first iteration would
+ * see the older files: write what waits first. */
 RamNode *UmCrashNewest(void)
 {
+    write_pending();
     RamNode *dir = RamfsResolve(NULL, CRASH_DIR), *best = NULL;
     for (RamNode *n = dir && dir->dir ? dir->child : NULL; n; n = n->next)
         if (!n->dir && (!best || n->mtime > best->mtime ||

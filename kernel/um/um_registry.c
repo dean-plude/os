@@ -22,6 +22,8 @@
 #include "../ke/probe.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/timezone.h"
+#include "../wm/kbdlayout.h"
 #include "../lib/string.h"
 #include "../mm/vmm.h"
 #include "../fs/ramfs.h"
@@ -46,7 +48,7 @@
 #define VALUE_NAME_MAX 16383
 #define DATA_MAX       (1024u * 1024u)
 #define HIVE_PATH      "\\Windows\\System32\\config\\REGISTRY.DAT"
-#define USER_SID       "S-1-5-21-1000-2000-3000-1001"
+#define USER_SID       UM_USER_SID
 
 typedef struct RegValue {
     struct RegValue *next;
@@ -80,6 +82,7 @@ static UmLock g_key_lock[KEY_LOCKS];
 static UmLock *key_lock(const RegKey *k) { return &g_key_lock[((uintptr_t)k / 64) % KEY_LOCKS]; }
 static volatile bool g_dirty;
 static UINT64 g_dirty_ticks;
+static volatile UINT32 g_generation;      /* counts changes (um_registry_generation) */
 
 /* -----------------------------------------------------------------------
  * The tree
@@ -110,6 +113,7 @@ static UINT16 *dup16(const UINT16 *s, UINT32 n)
 static void touch(RegKey *k)
 {
     k->wtime = um_now_100ns();
+    g_generation++;
     if (!k->vol) { g_dirty = true; g_dirty_ticks = sched_ticks(); }
 }
 
@@ -233,11 +237,10 @@ static UINT32 walk(RegKey *k, const UINT16 *path, UINT32 n, bool create, bool vo
         if (len > NAME_MAX_CHARS) return ST_OBJECT_NAME_INVALID;
         RegKey *c = find_child(k, path + s, len);
         if (!c) {
-            if (!create) {
-                /* the last component missing: NAME_NOT_FOUND, else PATH_NOT_FOUND */
-                while (i < n && path[i] == '\\') i++;
-                return i >= n ? ST_OBJECT_NAME_NOT_FOUND : ST_OBJECT_PATH_NOT_FOUND;
-            }
+            /* Any component missing, the last or one on the way:
+             * NAME_NOT_FOUND, as Windows' registry answers (RegOpenKeyEx's
+             * ERROR_FILE_NOT_FOUND; Roblox's installer stops on anything else) */
+            if (!create) return ST_OBJECT_NAME_NOT_FOUND;
             c = add_child(k, path + s, len, vol);
             if (!c) return ST_NO_MEMORY;
             if (created) *created = true;
@@ -331,6 +334,8 @@ void um_registry_add_cpus(UINT32 n)
 
 /* Set a REG_DWORD from the kernel (an installer's registration): @path
  * from the root, e.g. "Machine\\SOFTWARE\\...", the key created if need be */
+UINT32 um_registry_generation(void) { return g_generation; }
+
 void um_registry_set_dword(const char *path, const char *name, UINT32 val)
 {
     um_lock_excl(&g_reg);
@@ -358,8 +363,10 @@ bool um_registry_get_dword(const char *path, const char *name, UINT32 *out)
     um_lock_shared(&g_reg);
     RegKey *k = NULL;
     if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        um_lock(key_lock(k));                               /* (programs change values beside us) */
         RegValue *v = find_value(k, nm, m);
         if (v && v->type == 4 /* REG_DWORD */ && v->len == 4) { memcpy(out, v->data, 4); ok = true; }
+        um_unlock(key_lock(k));
     }
     um_unlock_shared(&g_reg);
     return ok;
@@ -377,6 +384,7 @@ bool um_registry_get_sz(const char *path, const char *name, char *out, int cap)
     um_lock_shared(&g_reg);
     RegKey *k = NULL;
     if (cap > 0 && walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        um_lock(key_lock(k));
         RegValue *v = find_value(k, nm, m);
         if (v && (v->type == 1 /* REG_SZ */ || v->type == 2 /* REG_EXPAND_SZ */)) {
             const UINT16 *d = (const UINT16 *)v->data;
@@ -385,9 +393,143 @@ bool um_registry_get_sz(const char *path, const char *name, char *out, int cap)
             out[i] = 0;
             ok = true;
         }
+        um_unlock(key_lock(k));
     }
     um_unlock_shared(&g_reg);
     return ok;
+}
+
+/* Set a REG_BINARY from the kernel, the key created if need be */
+void um_registry_set_bin(const char *path, const char *name, const void *data, UINT32 len)
+{
+    UINT16 nm[128];
+    UINT32 n = 0;
+    for (; name[n] && n < 127; n++) nm[n] = (UINT8)name[n];
+    um_lock_excl(&g_reg);
+    RegKey *k = kpath(path, false);
+    if (k) set_value(k, nm, n, 3 /* REG_BINARY */, data, len);
+    um_unlock_excl(&g_reg);
+}
+
+/* Read a REG_BINARY from the kernel: its length (at most @cap bytes
+ * copied), or -1 when the key or value is missing or not binary */
+int um_registry_get_bin(const char *path, const char *name, void *out, int cap)
+{
+    UINT16 w[256], nm[128];
+    UINT32 n = 0, m = 0;
+    for (; path[n] && n < 255; n++) w[n] = (UINT8)path[n];
+    for (; name[m] && m < 127; m++) nm[m] = (UINT8)name[m];
+    int len = -1;
+    um_lock_shared(&g_reg);
+    RegKey *k = NULL;
+    if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        um_lock(key_lock(k));
+        RegValue *v = find_value(k, nm, m);
+        if (v && v->type == 3 /* REG_BINARY */) {
+            len = (int)v->len;
+            memcpy(out, v->data, (size_t)(len < cap ? len : cap));
+        }
+        um_unlock(key_lock(k));
+    }
+    um_unlock_shared(&g_reg);
+    return len;
+}
+
+/* HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Time Zones: one key
+ * per zone NovaOS knows (ke/timezone.c), as Windows has them; rebuilt
+ * every boot (volatile), so the hive on drive C: does not carry them */
+static void time_zones(void)
+{
+    for (int i = 0; i < TzCount(); i++) {
+        const TzZone *z = TzAt(i);
+        char path[160];
+        ksnprintf(path, sizeof(path), "Machine\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Time Zones\\%s", z->key);
+        RegKey *k = kpath(path, true);
+        if (!k) continue;
+        kset_sz(k, "Display", z->display, 1);
+        kset_sz(k, "Std", z->std, 1);
+        kset_sz(k, "Dlt", z->dlt, 1);
+        TzTzi tzi;
+        TzToTzi(z, &tzi);
+        UINT16 nm[3] = { 'T', 'Z', 'I' };
+        set_value(k, nm, 3, 3 /* REG_BINARY */, &tzi, sizeof(tzi));
+    }
+}
+
+/* HKLM\SYSTEM\CurrentControlSet\Control\Keyboard Layouts: one key per
+ * layout NovaOS has (wm/kbdlayout.c), volatile like the time zones */
+static void keyboard_layouts(void)
+{
+    for (int i = 0; i < KbdCount(); i++) {
+        char path[128];
+        ksnprintf(path, sizeof(path), "Machine\\SYSTEM\\CurrentControlSet\\Control\\Keyboard Layouts\\%s", KbdKlid(i));
+        RegKey *k = kpath(path, true);
+        if (!k) continue;
+        kset_sz(k, "Layout Text", KbdName(i), 1);
+        if (KbdHkl(i) >> 28 == 0xF) {                     /* a variant (Dvorak): its Layout Id */
+            char id[8];
+            ksnprintf(id, sizeof(id), "%04x", (unsigned)((KbdHkl(i) >> 16) & 0x0FFF));
+            kset_sz(k, "Layout Id", id, 1);
+        }
+    }
+}
+
+/* MSXML (msxml6.dll): DOMDocument, XMLHTTP and SAXXMLReader, version 6.0
+ * and the 3.0 / version-independent classes Windows' msxml3.dll answers
+ * (one DLL serves both on NovaOS), with their ProgIDs */
+static void msxml_classes(void)
+{
+    static const char *const cls[][4] = {       /* CLSID, name, ProgID, version-independent ProgID */
+        { "{2933BF90-7B36-11D2-B20E-00C04F983E60}", "XML DOM Document",                   "Microsoft.XMLDOM",                    0 },
+        { "{2933BF91-7B36-11D2-B20E-00C04F983E60}", "Free Threaded XML DOM Document",     "Microsoft.FreeThreadedXMLDOM",        0 },
+        { "{F6D90F11-9C73-11D3-B32E-00C04F990BB4}", "XML DOM Document",                   "Msxml2.DOMDocument",                  0 },
+        { "{F6D90F12-9C73-11D3-B32E-00C04F990BB4}", "Free Threaded XML DOM Document",     "Msxml2.FreeThreadedDOMDocument",      0 },
+        { "{F5078F1B-C551-11D3-89B9-0000F81FE221}", "XML DOM Document 2.6",               "Msxml2.DOMDocument.2.6",              "Msxml2.DOMDocument" },
+        { "{F5078F1C-C551-11D3-89B9-0000F81FE221}", "Free Threaded XML DOM Document 2.6", "Msxml2.FreeThreadedDOMDocument.2.6",  "Msxml2.FreeThreadedDOMDocument" },
+        { "{F5078F32-C551-11D3-89B9-0000F81FE221}", "XML DOM Document 3.0",               "Msxml2.DOMDocument.3.0",              "Msxml2.DOMDocument" },
+        { "{F5078F33-C551-11D3-89B9-0000F81FE221}", "Free Threaded XML DOM Document 3.0", "Msxml2.FreeThreadedDOMDocument.3.0",  "Msxml2.FreeThreadedDOMDocument" },
+        { "{88D96A05-F192-11D4-A65F-0040963251E5}", "XML DOM Document 6.0",               "Msxml2.DOMDocument.6.0",              0 },
+        { "{88D96A06-F192-11D4-A65F-0040963251E5}", "Free Threaded XML DOM Document 6.0", "Msxml2.FreeThreadedDOMDocument.6.0",  0 },
+        { "{ED8C108E-4349-11D2-91A4-00C04F7969E8}", "XML HTTP Request",                   "Microsoft.XMLHTTP",                   0 },
+        { "{F6D90F16-9C73-11D3-B32E-00C04F990BB4}", "XML HTTP",                           "Msxml2.XMLHTTP",                      0 },
+        { "{F5078F1E-C551-11D3-89B9-0000F81FE221}", "XML HTTP 2.6",                       "Msxml2.XMLHTTP.2.6",                  "Msxml2.XMLHTTP" },
+        { "{F5078F35-C551-11D3-89B9-0000F81FE221}", "XML HTTP 3.0",                       "Msxml2.XMLHTTP.3.0",                  "Msxml2.XMLHTTP" },
+        { "{88D96A0A-F192-11D4-A65F-0040963251E5}", "XML HTTP 6.0",                       "Msxml2.XMLHTTP.6.0",                  0 },
+        { "{88D96A09-F192-11D4-A65F-0040963251E5}", "Free Threaded XML HTTP 6.0",         0,                                     0 },
+        { "{AFBA6B42-5692-48EA-8141-DC517DCF0EF1}", "Server XML HTTP",                    "Msxml2.ServerXMLHTTP",                0 },
+        { "{AFB40FFD-B609-40A3-9828-F88BBE11E4E3}", "Server XML HTTP 3.0",                "Msxml2.ServerXMLHTTP.3.0",            "Msxml2.ServerXMLHTTP" },
+        { "{88D96A0B-F192-11D4-A65F-0040963251E5}", "Server XML HTTP 6.0",                "Msxml2.ServerXMLHTTP.6.0",            0 },
+        { "{079AA557-4A18-424A-8EEE-E39F0A8D41B9}", "SAX XML Reader",                     "Msxml2.SAXXMLReader",                 0 },
+        { "{3124C396-FB13-4836-A6AD-1317F1713688}", "SAX XML Reader 3.0",                 "Msxml2.SAXXMLReader.3.0",             "Msxml2.SAXXMLReader" },
+        { "{88D96A0C-F192-11D4-A65F-0040963251E5}", "SAX XML Reader 6.0",                 "Msxml2.SAXXMLReader.6.0",             0 },
+    };
+    for (unsigned i = 0; i < sizeof cls / sizeof cls[0]; i++) {
+        char path[160];
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s", cls[i][0]);
+        RegKey *c = kpath(path, false);
+        if (!has_value(c, "")) kset_sz(c, "", cls[i][1], 1);
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\InprocServer32", cls[i][0]);
+        RegKey *ip = kpath(path, false);
+        if (!has_value(ip, "")) { kset_sz(ip, "", "msxml6.dll", 1); kset_sz(ip, "ThreadingModel", "Both", 1); }
+        if (!cls[i][2]) continue;
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\ProgID", cls[i][0]);
+        RegKey *pk = kpath(path, false);
+        if (!has_value(pk, "")) kset_sz(pk, "", cls[i][2], 1);
+        if (cls[i][3]) {
+            ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\CLSID\\%s\\VersionIndependentProgID", cls[i][0]);
+            RegKey *vk = kpath(path, false);
+            if (!has_value(vk, "")) kset_sz(vk, "", cls[i][3], 1);
+            ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\%s\\CurVer", cls[i][3]);
+            RegKey *cv = kpath(path, false);
+            if (!has_value(cv, "")) kset_sz(cv, "", cls[i][2], 1);
+        }
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\%s", cls[i][2]);
+        RegKey *p = kpath(path, false);
+        if (!has_value(p, "")) kset_sz(p, "", cls[i][1], 1);
+        ksnprintf(path, sizeof path, "Machine\\SOFTWARE\\Classes\\%s\\CLSID", cls[i][2]);
+        RegKey *pc = kpath(path, false);
+        if (!has_value(pc, "")) kset_sz(pc, "", cls[i][0], 1);
+    }
 }
 
 static void defaults(void)
@@ -450,6 +592,11 @@ static void defaults(void)
     /* the audio endpoints (mmdevapi's MMDeviceEnumerator) */
     RegKey *mmd = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\InprocServer32", false);
     if (!has_value(mmd, "")) { kset_sz(mmd, "", "mmdevapi.dll", 1); kset_sz(mmd, "ThreadingModel", "Both", 1); }
+    /* Task Scheduler 2.0 (taskschd.dll's TaskScheduler class) */
+    RegKey *ts = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{0F87369F-A4E5-4CFC-BD3E-73E6154572DD}\\InprocServer32", false);
+    if (!has_value(ts, "")) { kset_sz(ts, "", "taskschd.dll", 1); kset_sz(ts, "ThreadingModel", "Both", 1); }
+    RegKey *tsc = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{0F87369F-A4E5-4CFC-BD3E-73E6154572DD}", false);
+    if (!has_value(tsc, "")) kset_sz(tsc, "", "TaskScheduler class", 1);
     /* DirectSound and DirectSoundCapture (dsound.dll), so CoCreateInstance finds them */
     static const char *const ds_clsids[] = {
         "{47D4D946-62E8-11CF-93BC-444553540000}", "{3901CC3F-84B5-4FA4-BA35-AA8172B8A09B}",
@@ -472,6 +619,10 @@ static void defaults(void)
         RegKey *k = kpath(path, false);
         if (!has_value(k, "")) { kset_sz(k, "", "xaudio2_7.dll", 1); kset_sz(k, "ThreadingModel", "Both", 1); }
     }
+    /* DirectInput 8 (dinput8.dll), which programs may make with CoCreateInstance */
+    RegKey *di8 = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{25E609E4-B259-11CF-BFC7-444553540000}\\InprocServer32", false);
+    if (!has_value(di8, "")) { kset_sz(di8, "", "dinput8.dll", 1); kset_sz(di8, "ThreadingModel", "Both", 1); }
+    msxml_classes();
     RegKey *lnk = kpath("Machine\\SOFTWARE\\Classes\\.lnk", false);
     if (!has_value(lnk, "")) kset_sz(lnk, "", "lnkfile", 1);
     RegKey *txt = kpath("Machine\\SOFTWARE\\Classes\\.txt", false);
@@ -492,7 +643,24 @@ static void defaults(void)
     RegKey *cn = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName", false);
     if (!has_value(cn, "ComputerName")) kset_sz(cn, "ComputerName", "NOVA-PC", 1);
     RegKey *tz = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation", false);
-    if (!has_value(tz, "TimeZoneKeyName")) { kset_sz(tz, "TimeZoneKeyName", "UTC", 1); kset_dword(tz, "Bias", 0); }
+    if (!has_value(tz, "StandardStart")) {                /* (older hives held only the first two) */
+        const TzZone *utc = TzAt(TzFind("UTC"));
+        TzTzi tzi;
+        TzToTzi(utc, &tzi);
+        kset_sz(tz, "TimeZoneKeyName", utc->key, 1);
+        kset_dword(tz, "Bias", (UINT32)tzi.bias);
+        kset_sz(tz, "StandardName", utc->std, 1);
+        kset_dword(tz, "StandardBias", 0);
+        kset_sz(tz, "DaylightName", utc->dlt, 1);
+        kset_dword(tz, "DaylightBias", 0);
+        UINT16 ss[13] = { 'S','t','a','n','d','a','r','d','S','t','a','r','t' };
+        UINT16 ds[13] = { 'D','a','y','l','i','g','h','t','S','t','a','r','t' };
+        set_value(tz, ss, 13, 3 /* REG_BINARY */, &tzi.std_date, sizeof(tzi.std_date));
+        set_value(tz, ds, 13, 3 /* REG_BINARY */, &tzi.dst_date, sizeof(tzi.dst_date));
+        kset_dword(tz, "DynamicDaylightTimeDisabled", 0);
+    }
+    time_zones();
+    keyboard_layouts();
     RegKey *nls = kpath("Machine\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", false);
     if (!has_value(nls, "ACP")) { kset_sz(nls, "ACP", "65001", 1); kset_sz(nls, "OEMCP", "65001", 1); }
     kpath("Machine\\SYSTEM\\CurrentControlSet\\Services", false);
@@ -524,6 +692,9 @@ static void defaults(void)
             kset_sz(intl, "sTimeFormat", "h:mm:ss tt", 1);
             kset_sz(intl, "sCountry", "United States", 1);
         }
+        ksnprintf(p, sizeof(p), "%s\\Keyboard Layout\\Preload", users[i]);
+        RegKey *pre = kpath(p, false);
+        if (!has_value(pre, "1")) kset_sz(pre, "1", "00000409", 1);
         ksnprintf(p, sizeof(p), "%s\\Control Panel\\Desktop", users[i]);
         RegKey *desk = kpath(p, false);
         if (!has_value(desk, "WheelScrollLines")) { kset_sz(desk, "WheelScrollLines", "3", 1); kset_dword(desk, "LogPixels", 96); }
@@ -1157,6 +1328,8 @@ typedef struct Watch {
     bool tree;
     UmObject *ev;                           /* referenced */
     UmProcess *proc;
+    bool sync;                              /* a waiting caller's: it frees the watch itself */
+    bool spent;                             /* (sync) fired or dropped */
 } Watch;
 
 static Watch *g_watch;                      /* under g_wlock (and g_reg, shared or not) */
@@ -1172,6 +1345,8 @@ static void spend(Watch *w)
 {
     key_unref(w->key);
     w->key = NULL;
+    w->spent = true;
+    if (w->sync) return;                    /* its caller frees it once it wakes */
     w->next = g_spent;
     g_spent = w;
 }
@@ -1219,6 +1394,7 @@ void um_registry_process_gone(UmProcess *p)
         if (w->proc != p) { pp = &w->next; continue; }
         *pp = w->next;
         spend(w);
+        if (w->sync) { w->next = g_spent; g_spent = w; }   /* (its caller is gone) */
     }
     um_unlock(&g_wlock);
     release_spent();
@@ -1264,6 +1440,7 @@ static UINT64 sys_notify_change_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             w->tree = tree;
             w->ev = async ? ev : um_ob_ref(ev);             /* sync: the watch's reference and ours */
             w->proc = UmCurrent();
+            w->sync = !async;
             w->next = g_watch;
             __atomic_store_n(&g_watch, w, __ATOMIC_RELEASE);
         }
@@ -1275,10 +1452,16 @@ static UINT64 sys_notify_change_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (async) return 0x00000103u;                          /* STATUS_PENDING */
 
     st = um_wait_one(ev, -1);
-    um_lock(&g_wlock);                                      /* not fired (the process is ending): drop it */
-    for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next)
-        if (*pp == w) { *pp = w->next; spend(w); break; }
+    /* Fired, or not (the process is ending): then it is dropped.  The
+     * watch is this caller's to free either way, so no other watch can
+     * have taken its memory meanwhile and be dropped in its place. */
+    um_lock(&g_wlock);
+    if (!w->spent)
+        for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next)
+            if (*pp == w) { *pp = w->next; spend(w); break; }
     um_unlock(&g_wlock);
+    um_ob_unref(w->ev);                                     /* the watch's reference */
+    kfree(w);
     release_spent();
     um_ob_unref(ev);
     if (st) return st;

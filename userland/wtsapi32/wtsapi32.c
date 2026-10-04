@@ -47,3 +47,41 @@ WTSAPI BOOL WINAPI WTSQuerySessionInformationW(HANDLE server, DWORD session, int
     SetLastError(ERROR_NOT_SUPPORTED);
     return FALSE;
 }
+
+/* WTS_SESSION_INFOW: the services' session 0 (disconnected, as on Windows)
+ * and the console's session 1, active */
+typedef struct { DWORD SessionId; LPWSTR pWinStationName; int State; } SessionInfoW;
+
+WTSAPI BOOL WINAPI WTSEnumerateSessionsW(HANDLE server, DWORD reserved, DWORD version, SessionInfoW **out, DWORD *count)
+{
+    (void)server;
+    static const WCHAR services[] = L"Services", console[] = L"Console";
+    if (!out || !count || reserved || version != 1) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    SessionInfoW *s = LocalAlloc(LPTR, 2 * sizeof(SessionInfoW) + sizeof services + sizeof console);
+    if (!s) return FALSE;
+    WCHAR *names = (WCHAR *)(s + 2);
+    lstrcpyW(names, services);
+    lstrcpyW(names + 9, console);
+    s[0].SessionId = 0; s[0].pWinStationName = names;     s[0].State = 4;   /* WTSDisconnected */
+    s[1].SessionId = 1; s[1].pWinStationName = names + 9; s[1].State = 0;   /* WTSActive */
+    *out = s;
+    *count = 2;
+    return TRUE;
+}
+
+WTSAPI BOOL WINAPI WTSEnumerateSessionsA(HANDLE server, DWORD reserved, DWORD version, void **out, DWORD *count)
+{
+    typedef struct { DWORD SessionId; LPSTR pWinStationName; int State; } SessionInfoA;
+    if (!out || !count || reserved || version != 1) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    (void)server;
+    SessionInfoA *s = LocalAlloc(LPTR, 2 * sizeof(SessionInfoA) + 9 + 8);
+    if (!s) return FALSE;
+    char *names = (char *)(s + 2);
+    lstrcpyA(names, "Services");
+    lstrcpyA(names + 9, "Console");
+    s[0].SessionId = 0; s[0].pWinStationName = names;     s[0].State = 4;
+    s[1].SessionId = 1; s[1].pWinStationName = names + 9; s[1].State = 0;
+    *out = s;
+    *count = 2;
+    return TRUE;
+}

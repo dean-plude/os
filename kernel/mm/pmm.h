@@ -55,6 +55,12 @@ uintptr_t pmm_alloc_page(void);
 uintptr_t pmm_alloc_pages(size_t count);
 
 /*
+ * Take the `count` pages starting at @pa, when every one of them is free.
+ * False (and nothing taken) otherwise.
+ */
+bool pmm_claim_pages(uintptr_t pa, size_t count);
+
+/*
  * Free a single physical page previously returned by pmm_alloc_page().
  * @pa must be 4 KiB-aligned.
  */
@@ -71,6 +77,18 @@ void pmm_free_pages(uintptr_t pa, size_t count);
 void pmm_stats(uint64_t *total_pages_out,
                uint64_t *free_pages_out,
                uint64_t *used_pages_out);
+
+/*
+ * The free page count without taking the lock (a snapshot for figures
+ * programs see, such as KUSER_SHARED_DATA's; safe with interrupts off).
+ */
+size_t pmm_free_now(void);
+
+/*
+ * The machine's RAM in pages: the firmware's conventional memory (the
+ * total pmm_stats gives also counts the holes below the highest address).
+ */
+size_t pmm_ram_pages(void);
 
 /*
  * Mark a physical range as used (prevents allocation of those pages).

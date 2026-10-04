@@ -19,6 +19,7 @@
  */
 
 #include <windows.h>
+#include <avrt.h>
 #include <winternl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -315,6 +316,8 @@ static DWORD WINAPI synth_thread(LPVOID unused)
     (void)unused;
     static SHORT out[AHEAD * 2];
     SetThreadPriority(GetCurrentThread(), 15);
+    DWORD mm = 0;
+    AvSetMmThreadCharacteristicsW(L"Audio", &mm);   /* (MMCSS: above any busy or boosted program thread) */
     do {
         StreamStatus st;
         if (NtNovaAudioCtl(g.stream, 0, 0, &st)) continue;

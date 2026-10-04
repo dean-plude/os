@@ -387,6 +387,7 @@ NTSYSAPI NTSTATUS NTAPI RtlAbsoluteToSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PS
  * NtFilterToken, NtAccessCheck, NtQuery/SetSecurityObject are system calls);
  * these few still only pretend.
  * ----------------------------------------------------------------------- */
+#ifndef _WIN64                                      /* (NtQuerySystemInformation) */
 static NTSTATUS put_info(const void *data, ULONG n, PVOID buf, ULONG cap, PULONG ret)
 {
     if (ret) *ret = n;
@@ -394,7 +395,9 @@ static NTSTATUS put_info(const void *data, ULONG n, PVOID buf, ULONG cap, PULONG
     memcpy(buf, data, n);
     return ST_SUCCESS;
 }
+#endif
 
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtSetInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n) { (void)t; (void)cls; (void)buf; (void)n; return ST_SUCCESS; }
 
 /* Every privilege asked for is granted (nothing is checked) */
@@ -410,7 +413,54 @@ NTSYSAPI NTSTATUS NTAPI NtAdjustPrivilegesToken(HANDLE t, BOOLEAN disable_all, P
     }
     return ST_SUCCESS;
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
+/* RtlAcquirePrivilege: like NtAdjustPrivilegesToken, every privilege is
+ * there; the state only has to round-trip to RtlReleasePrivilege */
+NTSYSAPI NTSTATUS NTAPI RtlAcquirePrivilege(PULONG privs, ULONG n, ULONG flags, PVOID *state)
+{
+    (void)privs; (void)n; (void)flags;
+    if (!state) return ST_INVALID_PARAMETER;
+    *state = RtlAllocateHeap(heap(), 8 /* HEAP_ZERO_MEMORY */, 16);
+    return *state ? ST_SUCCESS : ST_NO_MEMORY;
+}
+NTSYSAPI VOID NTAPI RtlReleasePrivilege(PVOID state) { if (state) RtlFreeHeap(heap(), 0, state); }
+
+NTSYSAPI NTSTATUS NTAPI NtOpenThreadToken(HANDLE th, ACCESS_MASK access, BOOLEAN self, PHANDLE t);
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE p, ACCESS_MASK access, PHANDLE t);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n, PULONG ret);
+NTSYSAPI VOID NTAPI RtlFreeUnicodeString(PUNICODE_STRING s);
+
+/* "\REGISTRY\USER\S-1-5-21-..." for the thread's (else the process's) user;
+ * the caller frees it with RtlFreeUnicodeString */
+NTSYSAPI NTSTATUS NTAPI RtlFormatCurrentUserKeyPath(PUNICODE_STRING out)
+{
+    HANDLE t;
+    NTSTATUS st = NtOpenThreadToken((HANDLE)(LONG_PTR)-2, 8 /* TOKEN_QUERY */, TRUE, &t);
+    if (!NT_SUCCESS(st)) st = NtOpenProcessToken((HANDLE)(LONG_PTR)-1, 8, &t);
+    if (!NT_SUCCESS(st)) return st;
+    ULONG_PTR buf[32];
+    ULONG got;
+    st = NtQueryInformationToken(t, 1 /* TokenUser */, buf, sizeof(buf), &got);
+    NtClose(t);
+    if (!NT_SUCCESS(st)) return st;
+    UNICODE_STRING sid;
+    st = RtlConvertSidToUnicodeString(&sid, *(PSID *)buf, TRUE);
+    if (!NT_SUCCESS(st)) return st;
+    static const WCHAR prefix[] = L"\\REGISTRY\\USER\\";
+    USHORT pl = sizeof(prefix) - 2, n = (USHORT)(pl + sid.Length);
+    out->Buffer = RtlAllocateHeap(heap(), 0, n + 2u);
+    if (!out->Buffer) { RtlFreeUnicodeString(&sid); return ST_NO_MEMORY; }
+    memcpy(out->Buffer, prefix, pl);
+    memcpy((BYTE *)out->Buffer + pl, sid.Buffer, sid.Length);
+    out->Buffer[n / 2] = 0;
+    out->Length = n;
+    out->MaximumLength = (USHORT)(n + 2);
+    RtlFreeUnicodeString(&sid);
+    return ST_SUCCESS;
+}
+
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtPrivilegeCheck(HANDLE t, PPRIVILEGE_SET set, PBOOLEAN result)
 {
     (void)t;
@@ -426,6 +476,7 @@ NTSYSAPI NTSTATUS NTAPI NtAllocateLocallyUniqueId(PLUID luid)
     luid->HighPart = 0;
     return ST_SUCCESS;
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* -----------------------------------------------------------------------
  * Counted strings
@@ -977,10 +1028,19 @@ done:
 /* -----------------------------------------------------------------------
  * System information
  * ----------------------------------------------------------------------- */
+#ifndef _WIN64
 static ULONG cpu_count(void)
 {
     ULONG n = *(volatile ULONG *)(ULONG_PTR)0x7FFE03C0;             /* KUSER_SHARED_DATA.ActiveProcessorCount */
     return n ? n : 1;
+}
+
+/* The machine's RAM in pages: KUSER_SHARED_DATA.NumberOfPhysicalPages (the
+ * kernel keeps its free pages at 0x7FFE0F08, a NovaOS field) */
+static ULONG phys_pages(void)
+{
+    ULONG n = *(volatile ULONG *)(ULONG_PTR)0x7FFE02E8;
+    return n ? n : 2u << 18;                                        /* (2 GiB: a kernel without it) */
 }
 
 NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len, PULONG ret)
@@ -994,7 +1054,7 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len
         ULONG n = cpu_count();
         b.TimerResolution = 156250;
         b.PageSize = 4096;
-        b.NumberOfPhysicalPages = 2u << 18;                         /* 2 GiB */
+        b.NumberOfPhysicalPages = phys_pages();
         b.LowestPhysicalPageNumber = 1;
         b.HighestPhysicalPageNumber = b.NumberOfPhysicalPages;
         b.AllocationGranularity = 65536;
@@ -1011,9 +1071,11 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len
     case 2: {                                                       /* SystemPerformanceInformation */
         BYTE p[344];
         memset(p, 0, sizeof(p));
-        *(ULONG *)(p + 0x3C) = 1u << 18;                            /* AvailablePages */
-        *(ULONG *)(p + 0x40) = 1u << 17;                            /* CommittedPages */
-        *(ULONG *)(p + 0x44) = 1u << 19;                            /* CommitLimit */
+        ULONG total = phys_pages(), avail = *(volatile ULONG *)(ULONG_PTR)0x7FFE0F08;
+        if (avail > total) avail = total;
+        *(ULONG *)(p + 0x3C) = avail;                               /* AvailablePages */
+        *(ULONG *)(p + 0x40) = total - avail;                       /* CommittedPages */
+        *(ULONG *)(p + 0x44) = total;                               /* CommitLimit (no page file) */
         if (ret) *ret = sizeof(p);
         if (len < sizeof(p)) return ST_INFO_LENGTH_MISMATCH;
         memcpy(buf, p, sizeof(p));
@@ -1078,6 +1140,8 @@ NTSYSAPI NTSTATUS NTAPI NtQuerySystemInformation(ULONG cls, PVOID buf, ULONG len
         }
         return ST_SUCCESS;
     }
+    case 76:                                                        /* SystemFirmwareTableInformation */
+        return NtNovaFirmwareTable(buf, len, ret);
     case 8: {                                                       /* SystemProcessorPerformanceInformation */
         ULONG n = cpu_count(), need = 48 * n;
         if (ret) *ret = need;
@@ -1098,6 +1162,7 @@ NTSYSAPI NTSTATUS NTAPI NtQueryTimerResolution(PULONG max, PULONG min, PULONG cu
 }
 
 NTSYSAPI NTSTATUS NTAPI NtSetTimerResolution(ULONG want, BOOLEAN set, PULONG cur) { (void)want; (void)set; *cur = 156250; return ST_SUCCESS; }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* -----------------------------------------------------------------------
  * What NovaOS answers without a kernel object
@@ -1105,6 +1170,7 @@ NTSYSAPI NTSTATUS NTAPI NtSetTimerResolution(ULONG want, BOOLEAN set, PULONG cur
 /* Transactions (TxF): none */
 NTSYSAPI HANDLE NTAPI RtlGetCurrentTransaction(void) { return 0; }
 NTSYSAPI BOOLEAN NTAPI RtlSetCurrentTransaction(HANDLE t) { return t == 0; }
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtCreateTransaction(PHANDLE h, ACCESS_MASK a, POBJECT_ATTRIBUTES oa, LPGUID uow, HANDLE tm,
                                             ULONG opt, ULONG iso, ULONG isof, PLARGE_INTEGER timeout, PUNICODE_STRING d)
 {
@@ -1156,6 +1222,7 @@ NTSYSAPI NTSTATUS NTAPI NtSetVolumeInformationFile(HANDLE h, PIO_STATUS_BLOCK io
 /* Memory is never paged out, so locking it in is a no-op */
 NTSYSAPI NTSTATUS NTAPI NtLockVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type) { (void)p; (void)base; (void)size; (void)type; return ST_SUCCESS; }
 NTSYSAPI NTSTATUS NTAPI NtUnlockVirtualMemory(HANDLE p, PVOID *base, PSIZE_T size, ULONG type) { (void)p; (void)base; (void)size; (void)type; return ST_SUCCESS; }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* Process debug information (module and heap lists for a debugger): none */
 NTSYSAPI PVOID NTAPI RtlCreateQueryDebugBuffer(ULONG size, BOOLEAN event) { (void)size; (void)event; return 0; }
@@ -1173,17 +1240,23 @@ NTSYSAPI CHAR NTAPI RtlQueryProcessPlaceholderCompatibilityMode(void) { return 2
  * ----------------------------------------------------------------------- */
 static BOOL (*g_apc_runner)(void);
 NTSYSAPI VOID NTAPI RtlNovaSetApcRunner(BOOL (*fn)(void)) { g_apc_runner = fn; }
+/* The loader's NtTestAlert: on x64 NtTestAlert is a system call, and the
+ * kernel holds no user APCs (kernel32 does) */
+BOOL ntdll_run_apcs(void) { return g_apc_runner && g_apc_runner(); }
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtTestAlert(void)
 {
     if (g_apc_runner && g_apc_runner()) return 0x000000C0;       /* STATUS_USER_APC */
     return ST_SUCCESS;
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* Whether the process is shutting down (DLL_PROCESS_DETACH at exit) */
 NTSYSAPI BOOLEAN NTAPI RtlDllShutdownInProgress(void) { extern BOOLEAN g_shutdown; return g_shutdown; }
 
 /* Device I/O controls: no driver here answers them (pipes and the file
  * system use NtFsControlFile) */
+#ifndef _WIN64
 NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
                                               PVOID in, ULONG in_len, PVOID out, ULONG out_len)
 {
@@ -1191,6 +1264,7 @@ NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PV
     if (io) { io->Status = (NTSTATUS)0xC0000010; io->Information = 0; }
     return (NTSTATUS)0xC0000010;                         /* STATUS_INVALID_DEVICE_REQUEST */
 }
+#endif  /* x64: system calls (the stubs in ntdll.c) */
 
 /* The return addresses of the calling stack: @skip frames above this one,
  * at most @count; @hash (optional) gets their sum */

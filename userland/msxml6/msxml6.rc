@@ -1,0 +1,26 @@
+// msxml6.dll's version: Windows 10 1903's (installers that check MSXML 6
+// read FileVersion)
+1 VERSIONINFO
+FILEVERSION 6,30,18362,1
+PRODUCTVERSION 6,30,18362,1
+FILEOS 0x40004
+FILETYPE 2
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "NovaOS"
+            VALUE "FileDescription", "MSXML 6.0 SP3"
+            VALUE "FileVersion", "6.30.18362.1"
+            VALUE "InternalName", "MSXML6"
+            VALUE "OriginalFilename", "MSXML6.DLL"
+            VALUE "ProductName", "NovaOS"
+            VALUE "ProductVersion", "6.30.18362.1"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

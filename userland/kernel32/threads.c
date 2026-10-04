@@ -563,6 +563,26 @@ VOID WINAPI RaiseException(DWORD code, DWORD flags, DWORD nargs, const ULONG_PTR
         rec.NumberParameters = nargs;
         for (DWORD i = 0; i < nargs; i++) rec.ExceptionInformation[i] = args[i];
     }
+    if ((code == 0xC06D007E || code == 0xC06D007F) && nargs >= 1 && args[0]) {
+        /* the delay-load helper's "module/procedure not found": its
+         * DelayLoadInfo names what was missing, which the serial log shows */
+        struct { DWORD cb; const void *pidd; void *ppfn; const char *dll; BOOL by_name; const char *proc; } *dli = (void *)args[0];
+        char msg[200];
+        int k = 0;
+        const char *parts[4] = { "delay load failed: ", dli->dll ? dli->dll : "?", "!",
+                                 code == 0xC06D007E ? "(module not found)" : dli->by_name && dli->proc ? dli->proc : "(an ordinal)" };
+        for (int i = 0; i < 4; i++) for (const char *c = parts[i]; *c && k < 190; c++) msg[k++] = *c;
+        if (code == 0xC06D007F && !dli->by_name && k < 180) {
+            DWORD o = (DWORD)(ULONG_PTR)dli->proc;
+            char d[12];
+            int n = 0;
+            do d[n++] = (char)('0' + o % 10); while ((o /= 10) && n < 11);
+            msg[k++] = ' ';
+            while (n) msg[k++] = d[--n];
+        }
+        msg[k++] = '\n';
+        NtNovaDebugPrint(msg, (ULONG)k);
+    }
     RtlRaiseException(&rec);
 }
 

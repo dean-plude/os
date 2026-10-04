@@ -473,35 +473,53 @@ WINBASEAPI VOID WINAPI Sleep(DWORD ms);
 typedef struct { SOCKET s; WSAEVENT ev; long mask, pending; int closed; HWND hwnd; UINT msg; } EvSel;
 typedef BOOL (WINAPI *POSTMSG)(HWND, UINT, WPARAM, LPARAM);
 static POSTMSG g_post;                              /* user32's PostMessageW, found when first needed */
-static EvSel g_evsel[64];
+/* The registrations, as many as the program makes (a browser registers
+ * every socket it has open); grown on demand, never shrunk */
+static EvSel *g_evsel;
+static int g_nevsel;
 static volatile long g_evsel_lock, g_evsel_thread;
 
 static void es_lock(void)   { while (__atomic_exchange_n(&g_evsel_lock, 1, __ATOMIC_ACQUIRE)) Sleep(0); }
 static void es_unlock(void) { __atomic_store_n(&g_evsel_lock, 0, __ATOMIC_RELEASE); }
 
+/* An fd_set with room for @n sockets (select takes any fd_count) */
+static fd_set *fdset_new(int n)
+{
+    fd_set *f = HeapAlloc(GetProcessHeap(), 0, sizeof(u_int) + (n > FD_SETSIZE ? n : FD_SETSIZE) * sizeof(SOCKET));
+    if (f) f->fd_count = 0;
+    return f;
+}
+
 static DWORD WINAPI evsel_thread(void *arg)
 {
     (void)arg;
+    fd_set *rd = 0, *wr = 0;
+    int room = 0;
     for (;;) {
-        fd_set rd, wr;
-        rd.fd_count = wr.fd_count = 0;
         es_lock();
-        for (int i = 0; i < 64; i++) {
+        if (g_nevsel > room) {
+            HeapFree(GetProcessHeap(), 0, rd); HeapFree(GetProcessHeap(), 0, wr);
+            room = g_nevsel;
+            rd = fdset_new(room); wr = fdset_new(room);
+            if (!rd || !wr) { room = 0; es_unlock(); Sleep(20); continue; }
+        }
+        rd->fd_count = wr->fd_count = 0;
+        for (int i = 0; i < g_nevsel; i++) {
             if (!g_evsel[i].ev) continue;
-            if (g_evsel[i].mask & (FD_READ | FD_ACCEPT | FD_CLOSE)) rd.fd_array[rd.fd_count++] = g_evsel[i].s;
-            if (g_evsel[i].mask & (FD_WRITE | FD_CONNECT)) wr.fd_array[wr.fd_count++] = g_evsel[i].s;
+            if (g_evsel[i].mask & (FD_READ | FD_ACCEPT | FD_CLOSE)) rd->fd_array[rd->fd_count++] = g_evsel[i].s;
+            if (g_evsel[i].mask & (FD_WRITE | FD_CONNECT)) wr->fd_array[wr->fd_count++] = g_evsel[i].s;
         }
         es_unlock();
-        if (!rd.fd_count && !wr.fd_count) { Sleep(20); continue; }
+        if (!rd->fd_count && !wr->fd_count) { Sleep(20); continue; }
         struct timeval tv = { 0, 20000 };
-        int sr = select(0, &rd, &wr, 0, &tv);
+        int sr = select(0, rd, wr, 0, &tv);
         if (sr <= 0) { Sleep(5); continue; }
         es_lock();
-        for (int i = 0; i < 64; i++) {
+        for (int i = 0; i < g_nevsel; i++) {
             EvSel *e = &g_evsel[i];
             if (!e->ev) continue;
             long got = 0;
-            if (__WSAFDIsSet(e->s, &rd)) {
+            if (__WSAFDIsSet(e->s, rd)) {
                 long n = NtNovaSockCtl((INT_PTR)e->s, 7, 0, 0);    /* bytes waiting; bit 31: closed; bit 30: listening */
                 if (n > 0 && (n & 0x40000000)) got |= FD_ACCEPT;
                 else {
@@ -509,7 +527,7 @@ static DWORD WINAPI evsel_thread(void *arg)
                     if (n < 0 || (n & 0x80000000)) { got |= FD_CLOSE; e->closed = 1; }
                 }
             }
-            if (__WSAFDIsSet(e->s, &wr)) got |= (e->mask & (FD_CONNECT | FD_WRITE));
+            if (__WSAFDIsSet(e->s, wr)) got |= (e->mask & (FD_CONNECT | FD_WRITE));
             got &= e->mask & ~e->pending;
             if (e->closed) got &= ~FD_READ;
             if (!got) continue;
@@ -537,14 +555,23 @@ static int evsel_register(SOCKET s, WSAEVENT ev, HWND hwnd, UINT msg, long event
     if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }
     es_lock();
     int free = -1, at = -1;
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < g_nevsel; i++) {
         if (g_evsel[i].ev && g_evsel[i].s == s) at = i;
         if (!g_evsel[i].ev && free < 0) free = i;
     }
     if (at < 0) at = free;
-    if (at < 0) { es_unlock(); set_err(WSAENOBUFS); return SOCKET_ERROR; }
-    if (!ev || !events) memset(&g_evsel[at], 0, sizeof(EvSel));
-    else {
+    if (at < 0 && ev && events) {
+        int n = g_nevsel ? g_nevsel * 2 : 64;
+        EvSel *grown = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, n * sizeof(EvSel));
+        if (!grown) { es_unlock(); set_err(WSAENOBUFS); return SOCKET_ERROR; }
+        if (g_nevsel) memcpy(grown, g_evsel, g_nevsel * sizeof(EvSel));
+        HeapFree(GetProcessHeap(), 0, g_evsel);
+        g_evsel = grown;
+        at = g_nevsel;
+        g_nevsel = n;
+    }
+    if (at >= 0 && (!ev || !events)) memset(&g_evsel[at], 0, sizeof(EvSel));
+    else if (at >= 0) {
         g_evsel[at].s = s; g_evsel[at].ev = ev; g_evsel[at].mask = events; g_evsel[at].pending = 0; g_evsel[at].closed = 0;
         g_evsel[at].hwnd = hwnd; g_evsel[at].msg = msg;
     }
@@ -556,6 +583,17 @@ static int evsel_register(SOCKET s, WSAEVENT ev, HWND hwnd, UINT msg, long event
         if (t) CloseHandle(t);
     }
     return 0;
+}
+
+/* closesocket: the socket's WSAEventSelect/WSAAsyncSelect registration ends
+ * with it, as on Windows (the handle value is reused by the next socket) */
+void evsel_forget(SOCKET s)
+{
+    if (!g_evsel_thread) return;
+    es_lock();
+    for (int i = 0; i < g_nevsel; i++)
+        if (g_evsel[i].ev && g_evsel[i].s == s) memset(&g_evsel[i], 0, sizeof(EvSel));
+    es_unlock();
 }
 
 int WSAEventSelect(SOCKET s, WSAEVENT ev, long events) { return evsel_register(s, ev, 0, 0, events); }
@@ -579,7 +617,7 @@ void evsel_rearm(SOCKET s, long bits)
 {
     if (!g_evsel_thread) return;
     es_lock();
-    for (int i = 0; i < 64; i++)
+    for (int i = 0; i < g_nevsel; i++)
         if (g_evsel[i].ev && g_evsel[i].hwnd && g_evsel[i].s == s) { g_evsel[i].pending &= ~bits; break; }
     es_unlock();
 }
@@ -589,7 +627,7 @@ int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out)
     if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }   /* (gnulib's poll tells pipes this way) */
     memset(out, 0, sizeof(*out));
     es_lock();
-    for (int i = 0; i < 64; i++) {
+    for (int i = 0; i < g_nevsel; i++) {
         if (!g_evsel[i].ev || g_evsel[i].s != s) continue;
         out->lNetworkEvents = g_evsel[i].pending;
         g_evsel[i].pending = 0;
@@ -793,3 +831,25 @@ __declspec(dllexport) int WSAAPI WSARecvEx(SOCKET s, char *buf, int len, int *fl
     if (flags) *flags = 0;
     return r;
 }
+
+/* Name-space providers (NLA, DNS registration): none is installed, so a
+ * lookup finds no service, as on Windows with the provider missing */
+#define WSASERVICE_NOT_FOUND_ 10108
+#define WSA_E_NO_MORE_ 10110
+__declspec(dllexport) int WSAAPI WSAEnumNameSpaceProvidersW(LPDWORD len, void *buf) { (void)buf; if (len) *len = 0; return 0; }
+__declspec(dllexport) int WSAAPI WSAEnumNameSpaceProvidersA(LPDWORD len, void *buf) { (void)buf; if (len) *len = 0; return 0; }
+__declspec(dllexport) int WSAAPI WSALookupServiceBeginW(void *query, DWORD flags, LPHANDLE h)
+{
+    (void)query; (void)flags;
+    if (h) *h = 0;
+    WSASetLastError(WSASERVICE_NOT_FOUND_);
+    return SOCKET_ERROR;
+}
+__declspec(dllexport) int WSAAPI WSALookupServiceBeginA(void *query, DWORD flags, LPHANDLE h) { return WSALookupServiceBeginW(query, flags, h); }
+__declspec(dllexport) int WSAAPI WSALookupServiceNextW(HANDLE h, DWORD flags, LPDWORD len, void *results)
+{ (void)h; (void)flags; (void)len; (void)results; WSASetLastError(WSA_E_NO_MORE_); return SOCKET_ERROR; }
+__declspec(dllexport) int WSAAPI WSALookupServiceNextA(HANDLE h, DWORD flags, LPDWORD len, void *results)
+{ return WSALookupServiceNextW(h, flags, len, results); }
+__declspec(dllexport) int WSAAPI WSALookupServiceEnd(HANDLE h) { (void)h; WSASetLastError(6 /* WSA_INVALID_HANDLE */); return SOCKET_ERROR; }
+__declspec(dllexport) int WSAAPI WSASetServiceW(void *reg, int op, DWORD flags)
+{ (void)reg; (void)op; (void)flags; WSASetLastError(WSASERVICE_NOT_FOUND_); return SOCKET_ERROR; }

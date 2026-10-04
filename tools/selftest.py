@@ -16,8 +16,9 @@ order; --list prints them):
             "DXVK" and "Venus" with the App Store, then runs tools/gltest
             (on Mesa's virgl, which runs OpenGL on this machine's GPU, and
             on llvmpipe) and tools/d3dtest (DXVK on Venus, which runs
-            Vulkan there), 64- and 32-bit, the frame-rate tests (virgl
-            against llvmpipe, Venus against lavapipe), and NetSurf on a page
+            Vulkan there; also as ANGLE brings Direct3D 11 up), 64- and
+            32-bit, the frame-rate tests (virgl against llvmpipe, Venus
+            against lavapipe), and NetSurf on a page
             with an SVG and a script (nstest).  Needs --gfx DIR, made by
             tools/ci/stage-graphics.sh: 7-Zip, the three downloads and the
             test programs; and a QEMU with Venus with an OpenGL display
@@ -25,8 +26,9 @@ order; --list prints them):
             it under xvfb-run)
   network   two boots with a virtio-net adapter (tests/selftest/network4
             and network6).  IPv4 on QEMU's user-mode network: ipconfig, ping,
-            Winsock (netcat) and winhttp's HTTP/2 (httptest suite) against
-            tools/h2server.js (needs node and openssl).  IPv6 on an IPv6-only
+            Winsock (netcat), winhttp's HTTP/2 (httptest suite) and eight
+            long downloads at once (dltest -w) against tools/h2server.js
+            (needs node and openssl).  IPv6 on an IPv6-only
             network that is tools/v6peer.py: SLAAC and RDNSS (ipconfig),
             ping -6, curl -6 and Winsock over IPv6 (netcat).  Then a third
             boot with an Intel e1000e (82574L) instead of virtio-net
@@ -52,7 +54,15 @@ order; --list prints them):
             are behind an embedded controller (tests/acpi/laptop.asl): the
             battery, the lid sleeping it in low-power S0 idle and waking
             it, then NovaOS installed from a USB stick onto an NVMe disk
-            and started from there
+            and started from there; "update", an installed NovaOS on a
+            network serving update channels (tools/mkupdate.py): it
+            updates itself to a newer test build of this kernel, restarts
+            into it twice, and goes back to it when the next update is
+            reset while it first starts; "gamepad", a wired Xbox 360, an
+            Xbox One and a HID game pad on xHCI (tools/padpeer.py behind
+            usb-redir devices): padtest reads their buttons and sticks
+            through XInput and DirectInput 8 while the test moves them,
+            sets their motors, and one is unplugged
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -168,15 +178,20 @@ REC_HZ = 523          # what the core boot's microphone hears
 OUT = 'selftest-out'  # --out
 
 
-def recording(guest, hz, ms):
+def recording(guest, hz, ms, gapless=False):
     """A check on a WAV a test recorded at @guest (C:\\...): a tone of @hz
-    for @ms or longer (tools/wavcheck.py).  The file is copied to --out."""
+    for @ms or longer (tools/wavcheck.py), and with @gapless one that never
+    skips (no frames lost; wavcheck.gaps).  The file is copied to --out."""
     def check(nova):
         local = os.path.join(OUT, guest.replace('\\', '/').split('/')[-1])
         src = '::/NOVA/C/' + guest[3:].replace('\\', '/')
         r = subprocess.run(['mcopy', '-o', '-i', os.path.join(nova.work, 'data.img'), src, local], capture_output=True)
         if r.returncode:
             return f'no {guest} on the data disk'
+        skips = wavcheck.gaps(local, hz) if gapless else []
+        if skips:
+            return f'{guest} skips {len(skips)} time(s): frames went missing at ' + \
+                ', '.join(f'{t:.3f} s' for t, _ in skips[:5])
         if wavcheck.has_tone(local, hz, ms):
             return None
         return f'no {hz} Hz tone of {ms} ms in {guest} (heard: ' + \
@@ -263,6 +278,8 @@ MONITORS = load_suite('devices/monitors')
 USBBOOT = load_suite('devices/usbboot')
 CDBOOT = load_suite('devices/cdboot')
 LAPTOP = load_suite('devices/laptop')
+UPDATE = load_suite('devices/update')
+GAMEPAD = load_suite('devices/gamepad')
 
 
 def net4_boot(work):
@@ -354,6 +371,27 @@ def usbheadset_boot(work):
             '-audiodev', 'none,id=ac97snd', '-device', 'AC97,audiodev=ac97snd'], procs
 
 
+def gamepad_boot(work):
+    """Three USB game controllers on an xHCI controller, each
+    tools/padpeer.py behind a QEMU usb-redir device: a wired Xbox 360
+    controller (port 10710), an Xbox One controller (10711) and a HID game
+    pad (10712); the tests set their buttons and sticks through each
+    peer's control port (the port + 100) (tests/selftest/devices/gamepad)"""
+    args, procs = ['-device', 'qemu-xhci,id=xhci'], []
+    for port, kind, dev in ((10710, 'xbox360', 'pad360'), (10711, 'xboxone', 'padone'), (10712, 'hid', 'padhid')):
+        log = os.path.join(work, f'padpeer-{port}.log')
+        p = subprocess.Popen([sys.executable, '-u', os.path.join(ROOT, 'tools', 'padpeer.py'), '--port', str(port),
+                              '--kind', kind], stdout=open(log, 'w'), stderr=subprocess.STDOUT)
+        for _ in range(100):
+            if 'listening' in open(log).read() or p.poll() is not None:
+                break
+            time.sleep(0.05)
+        procs.append(p)
+        args += ['-chardev', f'socket,id={dev},host=127.0.0.1,port={port}',
+                 '-device', f'usb-redir,id={dev},chardev={dev},bus=xhci.0']
+    return args, procs
+
+
 def monitors_boot(work):
     """One card with three outputs: a virtio-vga (the boot display, on its
     first output) and a VNC server on each other output (work/vnc1.sock,
@@ -416,6 +454,26 @@ def laptop_boot(work):
         {'img': False, 'vga': ('-vga', 'none', '-device', 'ramfb')}
 
 
+def update_boot(work):
+    """build/nova.img as an installed NovaOS (its writes kept while QEMU runs,
+    across restarts) on QEMU's user-mode network, where 10.0.2.2:18090
+    serves two update channels made with tools/mkupdate.py from this build:
+    v1/ stamped one version newer, v2/ two (tests/selftest/devices/update)"""
+    test = os.path.join(ROOT, 'tests', 'selftest', 'devices', 'update', '010-update.py')
+    ns = {'Test': Test, '__file__': test}
+    exec(compile(open(test).read(), test, 'exec'), ns)          # (its V1 and V2)
+    root = os.path.join(work, 'channels')
+    for sub, ver in (('v1', ns['V1']), ('v2', ns['V2'])):
+        subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'mkupdate.py'), os.path.join(root, sub),
+                        '--version', ver, '--notes', f'Self-test build {ver}'], check=True, stdout=subprocess.DEVNULL)
+    srv = subprocess.Popen([sys.executable, '-m', 'http.server', '18090', '--bind', '127.0.0.1', '--directory', root],
+                           stdout=open(os.path.join(work, 'http.log'), 'w'), stderr=subprocess.STDOUT)
+    time.sleep(1)
+    if srv.poll() is not None:            # (another server on the port would serve other files)
+        raise RuntimeError('the update channels\' web server did not start (is port 18090 in use?)')
+    return ['-nic', 'user,model=virtio-net-pci'], [srv]
+
+
 # The suites that boot once per entry: (label, tests, setup(work) -> (QEMU arguments, processes[,
 # more Nova arguments]))
 BOOTS = {
@@ -423,7 +481,8 @@ BOOTS = {
     'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot),
                 ('usbheadset', USBHEADSET, usbheadset_boot),
                 ('monitors', MONITORS, monitors_boot), ('usbboot', USBBOOT, usbboot_boot),
-                ('cdboot', CDBOOT, cdboot_boot), ('laptop', LAPTOP, laptop_boot)],
+                ('cdboot', CDBOOT, cdboot_boot), ('laptop', LAPTOP, laptop_boot), ('update', UPDATE, update_boot),
+                ('gamepad', GAMEPAD, gamepad_boot)],
 }
 
 
@@ -523,7 +582,8 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)]:
+                for log in ['h2server.log', 'v6peer.log', 'http.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)] \
+                        + [f'padpeer-{p}.log' for p in range(10710, 10713)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)

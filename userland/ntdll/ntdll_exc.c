@@ -459,6 +459,7 @@ __asm__(
     "movw %cs, 0x38(%rcx)\n\t" "movw %ds, 0x3A(%rcx)\n\t" "movw %es, 0x3C(%rcx)\n\t"
     "movw %fs, 0x3E(%rcx)\n\t" "movw %gs, 0x40(%rcx)\n\t" "movw %ss, 0x42(%rcx)\n\t"
     "movq 0x78(%rcx), %rax\n\t"
+    "fxsave64 0x100(%rcx)\n\t"                      /* FltSave: x87 control word, MXCSR, registers */
     "stmxcsr 0x34(%rcx)\n\t"
     "movdqa %xmm0, 0x1A0(%rcx)\n\t" "movdqa %xmm1, 0x1B0(%rcx)\n\t"
     "movdqa %xmm2, 0x1C0(%rcx)\n\t" "movdqa %xmm3, 0x1D0(%rcx)\n\t"

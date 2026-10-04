@@ -25,6 +25,7 @@
 #include "../fs/setup.h"
 #include "wm.h"
 #include "input.h"
+#include "kbdlayout.h"
 #include "tablet.h"
 #include "../gdi/gdi.h"
 #include "../ke/printf.h"
@@ -33,6 +34,7 @@
 #include "../lib/string.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
+#include "../ke/timezone.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../ke/sleep.h"
@@ -99,8 +101,6 @@ static void glass(GdiRect r, int rad)
 
 static bool g_ready;
 
-/* User identity shown on the Start menu bar. */
-static const char *USER_NAME = "Dean Plude";
 
 static bool pt_in(GdiRect r, int x, int y)
 {
@@ -912,12 +912,19 @@ static void draw_start_menu(void)
     int by = my + mh - 62;
     GdiFillRect(RECT(mx + 1, by, mw - 2, 1), SH_LINE);
     RtcTime t;
-    rtc_read(&t);
+    TzLocalNow(&t);
     const char *greet = t.hour < 12 ? "Good morning" : t.hour < 18 ? "Good afternoon" : "Good evening";
+    char user[32], initials[3] = "";
+    AppUserName(user, sizeof(user));              /* the name given at first boot */
+    for (int i = 0, n = 0; user[i] && n < 2; i++) {   /* "Dean Plude": "DP" */
+        if (user[i] == ' ' || (i && user[i - 1] != ' ')) continue;
+        initials[n++] = user[i] >= 'a' && user[i] <= 'z' ? (char)(user[i] - 32) : user[i];
+        initials[n] = '\0';
+    }
     GdiFillCircle(cx + 18, by + 31, 17, GDI_C(0x6A, 0x4A, 0xC8));
-    GdiTextCenter(cx + 1, by + 24, 36, "DP", GDI_WHITE);
+    GdiTextCenter(cx + 1, by + 24, 36, initials, GDI_WHITE);
     GdiTextT(cx + 46, by + 14, greet, SH_TEXT2);
-    GdiTextBold(cx + 46, by + 31, USER_NAME, SH_TEXT);
+    GdiTextBold(cx + 46, by + 31, user, SH_TEXT);
 
     /* Files, Settings and power: line glyphs, 20px in 36px targets */
     static const struct { Glyph g; ActKind k; int arg; } foot[] = {
@@ -1056,6 +1063,21 @@ static bool net_up(char *tip, int cap)
     ksnprintf(tip, cap, st.present ? (st.link ? "Ethernet: getting an address..." : "Ethernet: cable unplugged")
                                    : "No network adapter");
     return false;
+}
+
+/* Whether the dock (and the tray beside it) steps aside for a full-screen
+ * program: the active window covers the whole primary display, as a game
+ * in full-screen mode does (SDL's borderless full-screen window, or a
+ * captionless window the size of the screen).  Windows' taskbar does the
+ * same.  It comes back when the program goes to a window, loses the focus
+ * or Start opens (the Windows key). */
+static bool dock_hidden(void)
+{
+    if (g_start_open || g_menu.open) return false;
+    WND *w = WmActiveWindow();
+    if (!w || !w->visible || w->minimized) return false;
+    GdiRect f = w->frame;
+    return f.x <= 0 && f.y <= 0 && f.x + f.w >= GdiScreenW() && f.y + f.h >= GdiScreenH();
 }
 
 static void draw_dock(void)
@@ -1242,7 +1264,7 @@ static void shell_overlay(void)
     if (files) FsLock();
     draw_start_menu();
     if (files) FsUnlock();
-    draw_dock();
+    if (!dock_hidden()) draw_dock();
     draw_menu();
     draw_switcher();
 }
@@ -1418,11 +1440,20 @@ void DesktopSetMonitorDpi(int head, int dpi, bool save)
 
 void DesktopToggleStart(void) { start_open(!g_start_open); }
 
-/* Refresh the dock clock strings from the RTC. */
+static void update_clock(void);
+
+/* The time zone changed: the dock clock shows the new local time now */
+void DesktopClockChanged(void)
+{
+    update_clock();
+    WmInvalidate();
+}
+
+/* Refresh the dock clock strings: local time (ke/timezone.c). */
 static void update_clock(void)
 {
     RtcTime t;
-    rtc_read(&t);
+    TzLocalNow(&t);
     static const char *const months[12] = {
         "January", "February", "March", "April", "May", "June", "July",
         "August", "September", "October", "November", "December",
@@ -1562,7 +1593,7 @@ static void desktop_press(int x, int y, bool dbl)
         WmInvalidate();
         return;
     }
-    if (pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) {
+    if ((pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) && !dock_hidden()) {
         if (h) {
             switch (h->kind) {
             case ACT_START:  start_open(!(g_start_open && !g_query_len)); break;
@@ -1599,7 +1630,7 @@ static void desktop_right_press(int x, int y)
     g_menu.open = false;
     if (g_start_open && pt_in(L_start, x, y)) { WmInvalidate(); return; }
     if (g_start_open) start_open(false);
-    if (pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) {
+    if ((pt_in(L_dock, x, y) || pt_in(L_tray, x, y)) && !dock_hidden()) {
         if (h) menu_for_dock(h, x, L_dock.y - 6);
         if (g_menu.open) g_menu.y = L_dock.y - 6 - (8 + g_menu.n * MENU_ROW + 20);
         WmInvalidate();
@@ -1626,6 +1657,7 @@ static void desktop_right_press(int x, int y)
 static void desktop_hover(int x, int y)
 {
     int hover = -1;
+    if (dock_hidden()) x = y = -1;      /* (nothing of the dock to light up) */
     if (!WmMouseCaptured() && pt_in(L_dock, x, y)) {
         for (int i = 0; i < g_ndock; i++) {
             GdiRect r = g_dock[i].r;
@@ -1882,6 +1914,8 @@ void DesktopRun(void *arg)
     /* Started from the installation disc: offer to install */
     if (SetupIsLive()) AppLaunch(APP_SETUP);
     else {
+        /* Installed and started for the first time: the first-boot setup */
+        if (WelcomeNeeded()) WelcomeFirstBoot();
         /* An installed system starts its automatic services (services.c) */
         RamNode *svc = RamfsResolve(NULL, "\\Windows\\System32\\services.exe");
         if (!svc || !UmSpawnDetached(svc, "services /autostart", svc->parent))
@@ -1988,6 +2022,7 @@ void DesktopRun(void *arg)
         WmTick();                               /* (takes the file-system lock as needed) */
         UmPoll();                               /* reclaim exited programs */
         UmUpdateForeground();                   /* (the active window's process) */
+        KbdCurrent();                           /* follow a program's change to the keyboard layout */
 
         rtc_read(&t);
         if (t.minute != last_min) {

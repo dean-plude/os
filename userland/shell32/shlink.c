@@ -1,6 +1,7 @@
 /*
  * shlink.c — shortcuts: the ShellLink class (CLSID_ShellLink) with
- * IShellLinkW, IShellLinkA and IPersistFile, reading and writing .lnk
+ * IShellLinkW, IShellLinkA, IPersistFile and IPropertyStore (kept with
+ * the object, not written to the file), reading and writing .lnk
  * files in the Windows format (MS-SHLLINK), and shell32's
  * DllGetClassObject that hands it out.
  *
@@ -36,6 +37,7 @@ static const GUID IID_IShellLinkW_ = { 0x000214F9, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 
 static const GUID IID_IShellLinkA_ = { 0x000214EE, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
 static const GUID IID_IPersistFile_ = { 0x0000010B, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
 static const GUID IID_IPersist_    = { 0x0000010C, 0, 0, { 0xC0, 0, 0, 0, 0, 0, 0, 0x46 } };
+static const GUID IID_IPropertyStore_ = { 0x886D8EEB, 0x8CF2, 0x4446, { 0x8D, 0x02, 0xCD, 0xBA, 0x1D, 0xBD, 0xCF, 0x99 } };
 
 static int same_guid(const GUID *a, const GUID *b)
 {
@@ -74,8 +76,18 @@ static void w2a(const WCHAR *w, char *s, int cap)
 typedef struct Link Link;
 typedef struct { void *vtbl; Link *self; } Face;
 
+/* A property (a PROPERTYKEY and a PROPVARIANT's bytes) set through
+ * IPropertyStore, such as the System.AppUserModel.ID an installer gives
+ * its shortcut */
+#define LINK_PROPS 16
+typedef struct { GUID fmtid; DWORD pid; } PropKey;
+typedef struct { WORD vt, r1, r2, r3; BYTE val[sizeof(void *) * 2]; } PropVar;
+typedef struct { PropKey key; PropVar v; } Prop;
+
 struct Link {
-    Face w, a, pf;                           /* IShellLinkW, IShellLinkA, IPersistFile */
+    Face w, a, pf, ps;                       /* IShellLinkW, IShellLinkA, IPersistFile, IPropertyStore */
+    Prop props[LINK_PROPS];
+    int nprops;
     volatile LONG refs;
     WCHAR path[MAX_PATH], args[LNK_STR], dir[MAX_PATH], desc[LNK_STR], icon[MAX_PATH], relative[MAX_PATH];
     WCHAR file[MAX_PATH];                    /* the .lnk it was loaded from or saved to */
@@ -92,8 +104,54 @@ static HRESULT link_qi(Link *l, REFIID riid, void **ppv)
     if (same_guid(riid, &IID_IUnknown_) || same_guid(riid, &IID_IShellLinkW_)) *ppv = &l->w;
     else if (same_guid(riid, &IID_IShellLinkA_)) *ppv = &l->a;
     else if (same_guid(riid, &IID_IPersistFile_) || same_guid(riid, &IID_IPersist_)) *ppv = &l->pf;
+    else if (same_guid(riid, &IID_IPropertyStore_)) *ppv = &l->ps;
     else { *ppv = 0; return E_NOINTERFACE_; }
     InterlockedIncrement(&l->refs);
+    return S_OK_;
+}
+
+/* VT_LPWSTR (31) and VT_CLSID (72) point at memory of their own, VT_BSTR
+ * (8) at oleaut32's; the other types kept are plain values */
+static BOOL prop_points(WORD vt) { return vt == 31 || vt == 72; }
+
+/* VT_BSTR (8), as Inno Setup gives the AppUserModelID: oleaut32's */
+static void *oleaut(const char *fn) { return (void *)GetProcAddress(LoadLibraryW(L"oleaut32.dll"), fn); }
+static BOOL prop_plain(WORD vt)
+{
+    return vt == 0 || vt == 2 || vt == 3 || vt == 11 || (vt >= 16 && vt <= 23) || vt == 64;
+}
+
+static void prop_free(PropVar *v)
+{
+    if (prop_points(v->vt)) LocalFree(*(void **)v->val);
+    else if (v->vt == 8 && *(void **)v->val) {
+        void(WINAPI * fr)(void *) = (void(WINAPI *)(void *))oleaut("SysFreeString");
+        if (fr) fr(*(void **)v->val);
+    }
+    v->vt = 0;
+}
+
+/* a copy of @src whose memory (a string or GUID) is its own: LocalAlloc,
+ * which is CoTaskMemAlloc's heap */
+static HRESULT prop_copy(PropVar *dst, const PropVar *src)
+{
+    *dst = *src;
+    if (src->vt == 8) {
+        const WCHAR *b = *(WCHAR *const *)src->val;
+        if (!b) return S_OK_;
+        void *(WINAPI * al)(const WCHAR *, UINT) = (void *(WINAPI *)(const WCHAR *, UINT))oleaut("SysAllocStringLen");
+        void *c = al ? al(b, ((const DWORD *)b)[-1] / 2) : NULL;
+        if (!c) { dst->vt = 0; return E_OUTOFMEMORY_; }
+        *(void **)dst->val = c;
+        return S_OK_;
+    }
+    if (!prop_points(src->vt)) return prop_plain(src->vt) ? S_OK_ : E_NOTIMPL_;
+    const void *from = *(void *const *)src->val;
+    SIZE_T n = src->vt == 31 ? 2 * ((SIZE_T)wlen(from) + 1) : sizeof(GUID);
+    void *to = from ? LocalAlloc(0, n) : NULL;
+    if (from && !to) { dst->vt = 0; return E_OUTOFMEMORY_; }
+    if (to) CopyMemory(to, from, n);
+    *(void **)dst->val = to;
     return S_OK_;
 }
 
@@ -102,7 +160,10 @@ static ULONG link_addref(Link *l) { return (ULONG)InterlockedIncrement(&l->refs)
 static ULONG link_release(Link *l)
 {
     LONG r = InterlockedDecrement(&l->refs);
-    if (!r) HeapFree(GetProcessHeap(), 0, l);
+    if (!r) {
+        for (int i = 0; i < l->nprops; i++) prop_free(&l->props[i].v);
+        HeapFree(GetProcessHeap(), 0, l);
+    }
     return (ULONG)r;
 }
 
@@ -529,6 +590,57 @@ static void *const g_link_pf_vtbl[] = {
     w_qi, w_addref, w_release, pf_classid, pf_isdirty, pf_load, pf_save, pf_savecompleted, pf_getcurfile,
 };
 
+/* ---- IPropertyStore ---- */
+static Prop *prop_find(Link *l, const PropKey *k)
+{
+    for (int i = 0; i < l->nprops; i++)
+        if (l->props[i].key.pid == k->pid && same_guid(&l->props[i].key.fmtid, &k->fmtid)) return &l->props[i];
+    return NULL;
+}
+static HRESULT STDMETHODCALLTYPE ps_getcount(void *t, DWORD *n)
+{
+    if (!n) return E_INVALIDARG_;
+    *n = (DWORD)LINK(t)->nprops;
+    return S_OK_;
+}
+static HRESULT STDMETHODCALLTYPE ps_getat(void *t, DWORD i, PropKey *k)
+{
+    Link *l = LINK(t);
+    if (!k || i >= (DWORD)l->nprops) return E_INVALIDARG_;
+    *k = l->props[i].key;
+    return S_OK_;
+}
+static HRESULT STDMETHODCALLTYPE ps_getvalue(void *t, const PropKey *k, PropVar *v)
+{
+    if (!k || !v) return E_INVALIDARG_;
+    Prop *p = prop_find(LINK(t), k);
+    if (!p) { ZeroMemory(v, sizeof *v); return S_OK_; }     /* VT_EMPTY, as Windows */
+    return prop_copy(v, &p->v);
+}
+static HRESULT STDMETHODCALLTYPE ps_setvalue(void *t, const PropKey *k, const PropVar *v)
+{
+    Link *l = LINK(t);
+    if (!k || !v) return E_INVALIDARG_;
+    PropVar c;
+    HRESULT hr = prop_copy(&c, v);
+    if (hr != S_OK_) return hr;
+    Prop *p = prop_find(l, k);
+    if (!p) {
+        if (l->nprops == LINK_PROPS) { prop_free(&c); return E_OUTOFMEMORY_; }
+        p = &l->props[l->nprops++];
+        p->key = *k;
+    } else
+        prop_free(&p->v);
+    p->v = c;
+    l->dirty = TRUE;
+    return S_OK_;
+}
+static HRESULT STDMETHODCALLTYPE ps_commit(void *t) { (void)t; return S_OK_; }
+
+static void *const g_link_ps_vtbl[] = {
+    w_qi, w_addref, w_release, ps_getcount, ps_getat, ps_getvalue, ps_setvalue, ps_commit,
+};
+
 static HRESULT link_create(REFIID riid, void **ppv)
 {
     Link *l = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof *l);
@@ -536,6 +648,7 @@ static HRESULT link_create(REFIID riid, void **ppv)
     l->w.vtbl = (void *)g_link_w_vtbl;   l->w.self = l;
     l->a.vtbl = (void *)g_link_a_vtbl;   l->a.self = l;
     l->pf.vtbl = (void *)g_link_pf_vtbl; l->pf.self = l;
+    l->ps.vtbl = (void *)g_link_ps_vtbl; l->ps.self = l;
     l->refs = 1;
     l->show = SW_SHOWNORMAL;
     HRESULT hr = link_qi(l, riid, ppv);

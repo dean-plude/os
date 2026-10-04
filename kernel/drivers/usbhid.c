@@ -14,9 +14,12 @@
  * (Generic Desktop 0x81-0x83), usually in reports of their own or on an
  * interface of their own; both become the E0-prefixed scancodes a PS/2
  * keyboard sends for those keys.  Touchpads (a Touch Pad application
- * collection, Windows precision touchpads) run in their default mouse
- * mode: the pointer comes from their mouse collection and the finger
- * reports are left alone.  The same parser serves I2C-HID devices
+ * collection, Windows precision touchpads) are switched to touchpad mode
+ * when they take it (the Input Mode feature, as Windows does): their
+ * finger reports then make the pointer motion, taps, clicks and
+ * two-finger scrolling (the gestures below).  One that refuses stays in
+ * its default mouse mode: the pointer comes from its mouse collection and
+ * the finger reports are left alone.  The same parser serves I2C-HID devices
  * (i2chid.c) through HidAttach() and HidInput().  A boot-class device whose report descriptor can't be
  * read or understood is put in boot protocol and parsed with the boot
  * descriptors from appendix B instead.
@@ -120,6 +123,7 @@ typedef struct {
     INT8   uexp;               /* the unit exponent */
     UINT8  coll;               /* the innermost collection it is in (numbered from 1 in order) */
     UINT16 app;                /* its application collection: page << 8 | usage */
+    UINT8  unit;               /* the Unit item's system and length nibbles (0x11: cm, 0x13: inch) */
 } HidField;
 
 typedef struct {
@@ -132,6 +136,11 @@ typedef struct {
      * @led_id (@led_bytes long, without the ID byte) */
     INT16    led_bit[3];       /* -1: no such LED */
     UINT8    led_id, led_bytes;
+    /* Precision touchpads: the Input Mode feature (in feature report
+     * @mode_id, @mode_bytes long without the ID byte) and the Surface and
+     * Button Switches when that report has them (-1: not there) */
+    INT16    mode_bit, surf_bit, btn_bit;
+    UINT8    mode_size, mode_id, mode_bytes;
 } HidLayout;
 
 static UINT32 item_u(const UINT8 *p, int n)
@@ -149,7 +158,7 @@ static INT32 item_s(const UINT8 *p, int n)
     return (INT32)v;
 }
 
-typedef struct { UINT16 page; INT32 lmin, lmax, pmin, pmax; INT8 uexp; UINT8 size, count, id; } Globals;
+typedef struct { UINT16 page; INT32 lmin, lmax, pmin, pmax; INT8 uexp; UINT8 size, count, id, unit; } Globals;
 
 static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
 {
@@ -160,10 +169,13 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
     int nusage = 0;
     UINT32 umin = 0, umax = 0;
     bool have_range = false;
-    UINT16 bits[256], obits[256];       /* input and output bits so far, per report ID */
+    UINT16 bits[256], obits[256], fbits[256];   /* input, output and feature bits so far, per report ID */
     memset(bits, 0, sizeof(bits));
     memset(obits, 0, sizeof(obits));
+    memset(fbits, 0, sizeof(fbits));
     L->led_bit[0] = L->led_bit[1] = L->led_bit[2] = -1;
+    L->mode_bit = L->surf_bit = L->btn_bit = -1;
+    UINT8 surf_id = 0, btn_id = 0;
     int depth = 0;
     UINT8 colls = 0, cstack[16] = { 0 };   /* collections so far; the open ones */
     UINT16 app = 0;                     /* the application collection we are in */
@@ -207,6 +219,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
                         f->relative = relative;
                         f->lmin = g.lmin; f->lmax = g.lmax;
                         f->pmin = g.pmin; f->pmax = g.pmax; f->uexp = g.uexp;
+                        f->unit = g.unit;
                     }
                 } else if (L->n < MAX_FIELDS) {
                     HidField *f = &L->f[L->n++];
@@ -249,9 +262,26 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
             nusage = 0; have_range = false;
             break;
         }
-        case 0xB0:                                       /* Feature */
+        case 0xB0: {                                     /* Feature: a touchpad's configuration */
+            UINT32 flags = item_u(v, n);
+            UINT16 *pos = &fbits[g.id];
+            if (!(flags & 1) && (flags & 2) && app == 0x0D0E)
+                for (int k = 0; k < g.count; k++) {
+                    UINT32 u;
+                    if (k < nusage) u = usages[k];
+                    else if (have_range && umin + (UINT32)k - (UINT32)nusage <= umax) u = umin + (UINT32)k - (UINT32)nusage;
+                    else continue;
+                    if (((u >> 16) ? (u >> 16) : g.page) != PAGE_DIGITIZER) continue;
+                    INT16 at = (INT16)(*pos + k * g.size);
+                    if ((UINT16)u == 0x52 && L->mode_bit < 0) {                          /* Input Mode */
+                        L->mode_bit = at; L->mode_size = g.size; L->mode_id = g.id;
+                    } else if ((UINT16)u == 0x57 && L->surf_bit < 0) { L->surf_bit = at; surf_id = g.id; }   /* Surface Switch */
+                    else if ((UINT16)u == 0x58 && L->btn_bit < 0) { L->btn_bit = at; btn_id = g.id; }        /* Button Switch */
+                }
+            *pos = (UINT16)(*pos + g.size * g.count);
             nusage = 0; have_range = false;
             break;
+        }
         case 0xA0:                                       /* Collection */
             if (depth == 0 && item_u(v, n) == 1 && nusage) {
                 app = (UINT16)((((usages[0] >> 16) ? (usages[0] >> 16) : g.page) << 8) | (usages[0] & 0xFF));
@@ -272,6 +302,7 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
             break;
         case 0x34: g.pmin = item_s(v, n); break;
         case 0x44: g.pmax = item_s(v, n); break;
+        case 0x64: g.unit = (UINT8)item_u(v, n); break;  /* Unit (its low byte: system, length) */
         case 0x54: {                                     /* Unit Exponent: a 4-bit signed nibble (or a signed byte) */
             UINT32 x = item_u(v, n);
             g.uexp = (INT8)(n != 1 ? item_s(v, n) : x <= 7 ? (INT32)x : x <= 15 ? (INT32)x - 16 : (INT8)x);
@@ -292,6 +323,11 @@ static bool parse_report_desc(const UINT8 *d, int len, HidLayout *L)
         }
     }
     L->led_bytes = (UINT8)((obits[L->led_id] + 7) / 8);
+    if (L->mode_bit >= 0) {
+        L->mode_bytes = (UINT8)((fbits[L->mode_id] + 7) / 8);
+        if (surf_id != L->mode_id) L->surf_bit = -1;     /* (in a report of their own: on by default) */
+        if (btn_id != L->mode_id) L->btn_bit = -1;
+    }
     return L->n > 0;
 }
 
@@ -316,12 +352,16 @@ static INT32 get_bits(const UINT8 *r, int len, int bit, int size, INT32 lmin)
 
 #define MAX_CC 8                       /* consumer and system keys held at once */
 
+#define TP_MAX 5                       /* touchpad contacts followed at once */
+typedef struct { INT32 cid, x, y; } TpContact;
+
 typedef struct {
     UsbDev    *dev;
     UsbPipe   *pipe;
     HidLayout  L;
     bool       keyboard, pointer, absolute, boot, wake, media, touch, pen;
-    bool       touchpad;             /* a precision touchpad in mouse mode */
+    bool       touchpad;             /* a precision touchpad (in mouse mode unless @ptp) */
+    bool       ptp;                  /* ... in touchpad mode: its fingers make the gestures */
     int        pen_caps;             /* TABLET_CAP_*: the pen's X/Y Tilt, Twist */
     UINT8      kbd_id;               /* the report the keys come in */
     UINT8      keys[32];             /* keyboard usages held down (bitmap) */
@@ -339,6 +379,19 @@ typedef struct {
     INT32      t_cid[TOUCH_MAX];
     bool       t_down[TOUCH_MAX], t_seen[TOUCH_MAX];
     int        t_left;
+    /* Touchpad mode: the frame being read and the last one's contacts
+     * (positions in micrometres), and the gesture under way */
+    TpContact  tp_cur[TP_MAX], tp_prev[TP_MAX];
+    int        tp_ncur, tp_nprev;
+    bool       tp_click;             /* this frame: the pad's button is down */
+    UINT8      tp_btn;               /* what the press became (MOUSE_LEFT or MOUSE_RIGHT); 0: up */
+    UINT64     tp_start;             /* when the gesture's first finger touched (ticks) */
+    int        tp_most;              /* the most fingers at once in it */
+    INT32      tp_travel;            /* how far its fingers moved (um) */
+    bool       tp_scrolled, tp_pressed;
+    INT32      tp_rx, tp_ry;         /* pointer motion not yet a pixel (um) */
+    INT32      tp_sx, tp_sy;         /* scrolling not yet a notch (um) */
+    UINT8      tp_axis;              /* scrolling locked to: 0 not yet, 1 vertical, 2 horizontal */
     bool       dead;
 } Hid;
 
@@ -717,20 +770,189 @@ static void touch_report(Hid *h, UINT8 id, const UINT8 *r, int len)
     if (h->t_left <= 0) touch_frame_end(h);
 }
 
-static bool on_report(UsbPipe *p, const UINT8 *data, int len, void *ctx)
+/* ---- precision touchpads in touchpad mode ----
+ *
+ * A Windows precision touchpad reports its fingers (Tip Switch,
+ * Confidence, Contact Identifier, X/Y with a physical size) and the pad's
+ * button, and leaves the gestures to the host.  These are Windows' basic
+ * ones (its defaults), worked out from each finished frame:
+ *
+ *   - one finger moving moves the pointer (a pixel per TP_UM_PER_PX);
+ *   - a short touch that hardly moves (TP_TAP_TICKS, TP_TAP_UM) is a left
+ *     click when it lifts, and with two fingers a right click;
+ *   - two fingers moving scroll: mouse wheel notches (one per
+ *     TP_UM_PER_NOTCH), so every program's WM_MOUSEWHEEL and
+ *     WM_MOUSEHWHEEL handling works; the content follows the fingers
+ *     (Windows' default direction), up and down or sideways, whichever
+ *     way the fingers went first;
+ *   - pressing the pad is a left click, or a right click with two fingers
+ *     on it; a finger dragging while it is held moves the pointer.
+ *
+ * Contacts the device does not trust (Confidence off: a palm) are left
+ * out.  Frames come as touch screens send them: in hybrid mode a frame
+ * with more fingers than a report holds spans several reports. */
+
+#define TP_TAP_TICKS    18            /* 180 ms */
+#define TP_TAP_UM       2000          /* 2 mm */
+#define TP_UM_PER_PX    80
+#define TP_UM_PER_NOTCH 3000
+
+/* Where a touchpad coordinate is, in micrometres from the pad's edge:
+ * through the field's physical range, unit exponent and unit (centimetres
+ * or inches, as Windows requires); a field without a physical range is
+ * taken as 10 counts a millimetre */
+static INT32 pad_um(const HidField *f, INT32 v)
 {
-    Hid *h = ctx;
-    if (h->dead) return false;
+    if (v < f->lmin) v = f->lmin;
+    if (v > f->lmax && f->lmax > f->lmin) v = f->lmax;
+    INT64 lr = f->lmax > f->lmin ? (INT64)f->lmax - f->lmin : 1;
+    INT64 ext = (INT64)f->pmax - f->pmin;
+    if (ext <= 0) return (INT32)((INT64)(v - f->lmin) * 100);
+    INT64 num = (INT64)(v - f->lmin) * ext * ((f->unit & 0xF) == 3 ? 25400 : 10000), den = lr;
+    for (int e = f->uexp; e > 0; e--) num *= 10;
+    for (int e = f->uexp; e < 0; e++) den *= 10;
+    return (INT32)(num / den);
+}
+
+static INT32 iabs(INT32 v) { return v < 0 ? -v : v; }
+
+/* A frame is complete: make the gesture's next step */
+static void tp_frame(Hid *h, UINT64 now)
+{
+    int n = h->tp_ncur;
+    InputEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = INPUT_MOUSE;
+    if (n && !h->tp_nprev) {                              /* the first finger touched */
+        h->tp_start = now;
+        h->tp_most = 0;
+        h->tp_travel = 0;
+        h->tp_scrolled = h->tp_pressed = false;
+        h->tp_rx = h->tp_ry = h->tp_sx = h->tp_sy = 0;
+        h->tp_axis = 0;
+    }
+    if (n > h->tp_most) h->tp_most = n;
+
+    /* How the fingers moved since the last frame: on average, and the one
+     * that moved most */
+    INT32 mx = 0, my = 0, bx = 0, by = 0;
+    int moved = 0;
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < h->tp_nprev; j++) {
+            if (h->tp_cur[i].cid != h->tp_prev[j].cid) continue;
+            INT32 dx = h->tp_cur[i].x - h->tp_prev[j].x, dy = h->tp_cur[i].y - h->tp_prev[j].y;
+            mx += dx; my += dy; moved++;
+            if (iabs(dx) + iabs(dy) > iabs(bx) + iabs(by)) { bx = dx; by = dy; }
+        }
+    if (moved) { mx /= moved; my /= moved; }
+    h->tp_travel += iabs(mx) + iabs(my);
+
+    /* The pad's button: which click it is goes by the fingers on it */
+    if (h->tp_click && !h->tp_btn) { h->tp_btn = n >= 2 ? MOUSE_RIGHT : MOUSE_LEFT; h->tp_pressed = true; }
+    else if (!h->tp_click) h->tp_btn = 0;
+
+    if (moved && (n == 1 || (h->tp_btn && n >= 2))) {     /* the pointer */
+        h->tp_rx += n == 1 ? mx : bx;
+        h->tp_ry += n == 1 ? my : by;
+        ev.dx = h->tp_rx / TP_UM_PER_PX; h->tp_rx -= ev.dx * TP_UM_PER_PX;
+        ev.dy = h->tp_ry / TP_UM_PER_PX; h->tp_ry -= ev.dy * TP_UM_PER_PX;
+    } else if (moved == 2 && n == 2) {                    /* scrolling */
+        h->tp_sx += mx;
+        h->tp_sy += my;
+        if (!h->tp_axis && (iabs(h->tp_sx) >= TP_UM_PER_NOTCH || iabs(h->tp_sy) >= TP_UM_PER_NOTCH))
+            h->tp_axis = iabs(h->tp_sy) >= iabs(h->tp_sx) ? 1 : 2;
+        if (h->tp_axis == 1) {                            /* fingers down: the content down, the view up */
+            ev.dz = h->tp_sy / TP_UM_PER_NOTCH;
+            h->tp_sy -= ev.dz * TP_UM_PER_NOTCH;
+            h->tp_sx = 0;
+        } else if (h->tp_axis == 2) {                     /* fingers right: the view left */
+            ev.dw = -(h->tp_sx / TP_UM_PER_NOTCH);
+            h->tp_sx += ev.dw * TP_UM_PER_NOTCH;
+            h->tp_sy = 0;
+        }
+        if (ev.dz || ev.dw) h->tp_scrolled = true;
+    }
+    ev.buttons = h->tp_btn;
+    if (ev.dx || ev.dy || ev.dz || ev.dw || ev.buttons != h->buttons) hid_post(h, &ev);
+    h->buttons = ev.buttons;
+
+    /* Every finger lifted: was it a tap? */
+    if (!n && h->tp_nprev && !h->tp_pressed && !h->tp_scrolled && h->tp_travel < TP_TAP_UM &&
+        now - h->tp_start <= TP_TAP_TICKS && h->tp_most <= 2) {
+        ev.dx = ev.dy = ev.dz = ev.dw = 0;
+        ev.buttons = h->tp_most == 2 ? MOUSE_RIGHT : MOUSE_LEFT;
+        hid_post(h, &ev);
+        ev.buttons = 0;
+        hid_post(h, &ev);
+    }
+    for (int i = 0; i < n; i++) h->tp_prev[i] = h->tp_cur[i];
+    h->tp_nprev = n;
+    h->tp_ncur = 0;
+    h->tp_click = false;
+}
+
+static void tp_report(Hid *h, UINT8 id, const UINT8 *r, int len, UINT64 now)
+{
+    UINT8 fingers[TOUCH_MAX];
+    int nf = 0;
+    const HidField *count = NULL, *button = NULL;
+    for (int i = 0; i < h->L.n; i++) {
+        const HidField *f = &h->L.f[i];
+        if (f->id != id || f->array || f->app != 0x0D05) continue;
+        if (f->page == PAGE_DIGITIZER && f->usage == 0x54) count = f;                   /* Contact Count */
+        if (f->page == PAGE_DIGITIZER && f->usage == 0x42 && nf < TOUCH_MAX) fingers[nf++] = f->coll;
+        if (f->page == PAGE_BUTTON && f->usage == 1) button = f;
+    }
+    if (!nf) return;
+    int valid = nf;
+    if (count) {
+        INT32 c = get_bits(r, len, count->bit, count->size, 0);
+        if (c > 0) h->t_left = c;                                 /* a new frame */
+        else if (h->t_left <= 0) h->t_left = nf;
+        valid = h->t_left < nf ? h->t_left : nf;
+    } else {
+        h->t_left = nf;
+    }
+    if (button && get_bits(r, len, button->bit, button->size, 0)) h->tp_click = true;
+    for (int k = 0; k < valid; k++) {
+        const HidField *tip = finger_field(h, id, fingers[k], PAGE_DIGITIZER, 0x42);
+        const HidField *conf = finger_field(h, id, fingers[k], PAGE_DIGITIZER, 0x47);
+        const HidField *cid = finger_field(h, id, fingers[k], PAGE_DIGITIZER, 0x51);
+        const HidField *fx = finger_field(h, id, fingers[k], PAGE_DESKTOP, 0x30);
+        const HidField *fy = finger_field(h, id, fingers[k], PAGE_DESKTOP, 0x31);
+        if (!tip || !fx || !fy || !get_bits(r, len, tip->bit, tip->size, 0)) continue;
+        if (conf && !get_bits(r, len, conf->bit, conf->size, 0)) continue;           /* (a palm) */
+        if (h->tp_ncur >= TP_MAX) continue;
+        TpContact *c = &h->tp_cur[h->tp_ncur++];
+        c->cid = cid ? get_bits(r, len, cid->bit, cid->size, 0) : k;
+        c->x = pad_um(fx, get_bits(r, len, fx->bit, fx->size, fx->lmin));
+        c->y = pad_um(fy, get_bits(r, len, fy->bit, fy->size, fy->lmin));
+    }
+    h->t_left -= valid;
+    if (h->t_left <= 0) tp_frame(h, now);
+}
+
+static void hid_report(Hid *h, const UINT8 *data, int len, UINT64 now)
+{
     UINT8 id = 0;
     if (h->L.ids) {
-        if (len < 1) return true;
+        if (len < 1) return;
         id = data[0];
         data++; len--;
     }
-    if (h->keyboard && id == h->kbd_id) keyboard_report(h, data, len, sched_ticks());
-    if (h->media) media_report(h, id, data, len, sched_ticks());
-    if (h->touch) touch_report(h, id, data, len);
+    if (h->keyboard && id == h->kbd_id) keyboard_report(h, data, len, now);
+    if (h->media) media_report(h, id, data, len, now);
+    if (h->ptp) tp_report(h, id, data, len, now);
+    else if (h->touch) touch_report(h, id, data, len);
     else if (h->pointer) pointer_report(h, id, data, len);
+}
+
+static bool on_report(UsbPipe *p, const UINT8 *data, int len, void *ctx)
+{
+    (void)p;
+    Hid *h = ctx;
+    if (h->dead) return false;
+    hid_report(h, data, len, sched_ticks());
     return true;
 }
 
@@ -796,9 +1018,11 @@ static void hid_gone(void *inst)
 
 static void classify(Hid *h)
 {
-    if (h->L.touchpad) {                 /* a touchpad: its mouse collection, if it has one */
+    if (h->L.touchpad) {                 /* a touchpad: its mouse collection, or the touchpad mode */
+        if (h->L.mode_bit >= 0) h->touchpad = true;
         for (int i = 0; i < h->L.n; i++)
             if (h->L.f[i].app == 0x0102 && h->L.f[i].page == PAGE_DESKTOP && h->L.f[i].relative) h->touchpad = true;
+        if (h->touchpad) h->pointer = true;
     }
     for (int i = 0; i < h->L.n; i++) {
         const HidField *f = &h->L.f[i];
@@ -849,6 +1073,10 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
             if (ok) classify(h);
             ok = ok && (h->keyboard || h->pointer || h->media);
             if (ok && f->sub == 1) UsbControl(d, 0x21, 0x0B, 1, f->number, 0, NULL);   /* SET_PROTOCOL(report) */
+            UINT8 mode[32], mid;
+            int mlen = ok ? HidTouchpadModeReport(h, &mid, mode, sizeof(mode)) : 0;
+            if (mlen && UsbControl(d, 0x21, 0x09, (UINT16)(0x0300 | mid), f->number, (UINT16)mlen, mode) >= 0)
+                HidTouchpadMode(h, true);                                               /* SET_REPORT(feature) */
         }
         kfree(desc);
     }
@@ -885,7 +1113,8 @@ void *UsbHidProbe(UsbDev *d, const UsbIface *f)
         InputTouchScreen(most > fingers ? most : fingers);
     }
     if (h->pen) TabletDevice(NULL, 1, h->pen_caps);
-    const char *kind = h->touchpad ? "touchpad (mouse mode)" : h->touch ? "multi-touch screen" : h->pen ? "pen tablet" :
+    const char *kind = h->ptp ? "precision touchpad" : h->touchpad ? "touchpad (mouse mode)" :
+                       h->touch ? "multi-touch screen" : h->pen ? "pen tablet" :
                        h->keyboard && h->pointer ? "keyboard + pointer" : h->keyboard ? "keyboard" :
                        !h->pointer ? "media keys" :
                        h->absolute ? (h->L.app == 0x0D04 ? "touch screen" : "absolute pointer") : "mouse";
@@ -936,7 +1165,53 @@ void HidStart(void *hid)
 
 void HidInput(void *hid, const UINT8 *report, int len)
 {
-    if (hid) on_report(NULL, report, len, hid);
+    HidInputAt(hid, report, len, sched_ticks());
+}
+
+void HidInputAt(void *hid, const UINT8 *report, int len, UINT64 tick)
+{
+    Hid *h = hid;
+    if (h && !h->dead) hid_report(h, report, len, tick);
+}
+
+static void set_bits(UINT8 *r, int bit, int size, UINT32 v)
+{
+    for (int k = 0; k < size && k < 32; k++, bit++)
+        if (v & (1u << k)) r[bit / 8] |= (UINT8)(1u << (bit % 8));
+        else               r[bit / 8] &= (UINT8)~(1u << (bit % 8));
+}
+
+int HidTouchpadModeReport(void *hid, UINT8 *id, UINT8 *out, int cap)
+{
+    Hid *h = hid;
+    if (!h || !h->touchpad || h->L.mode_bit < 0 || !h->L.mode_bytes) return 0;
+    int at = h->L.ids ? 1 : 0, n = at + h->L.mode_bytes;
+    if (n > cap) return 0;
+    memset(out, 0, (size_t)n);
+    if (at) out[0] = h->L.mode_id;
+    set_bits(out + at, h->L.mode_bit, h->L.mode_size, 3);          /* 3: touchpad */
+    if (h->L.surf_bit >= 0) set_bits(out + at, h->L.surf_bit, 1, 1);
+    if (h->L.btn_bit >= 0) set_bits(out + at, h->L.btn_bit, 1, 1);
+    *id = h->L.mode_id;
+    return n;
+}
+
+void HidTouchpadMode(void *hid, bool on)
+{
+    Hid *h = hid;
+    if (!h || !h->touchpad) return;
+    h->ptp = on;
+    h->t_left = 0;
+    h->tp_ncur = h->tp_nprev = 0;
+    h->tp_click = false;
+    h->tp_btn = 0;
+    if (h->buttons) {                                  /* (nothing stays held across the switch) */
+        InputEvent ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.type = INPUT_MOUSE;
+        hid_post(h, &ev);
+        h->buttons = 0;
+    }
 }
 
 void HidCaptureBegin(void *hid)

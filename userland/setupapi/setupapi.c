@@ -57,5 +57,91 @@ SETUPAPI HKEY WINAPI SetupDiOpenDevRegKey(HANDLE set, PVOID dev, DWORD scope, DW
     SetLastError(ERROR_INVALID_PARAMETER);
     return INVALID_HANDLE_VALUE;
 }
+SETUPAPI BOOL WINAPI SetupDiGetDeviceInstanceIdA(HANDLE set, PVOID dev, LPSTR id, DWORD n, PDWORD need)
+{ (void)set; (void)dev; (void)id; (void)n; (void)need; return no_device(); }
+
+/* Device setup classes exist without devices: the class GUIDs Windows
+ * defines for the names programs ask about (no device ever matches them) */
+static const struct { const char *name; GUID guid; } g_classes[] = {
+    { "Bluetooth",    { 0xe0cbf06c, 0xcd8b, 0x4647, { 0xbb, 0x8a, 0x26, 0x3b, 0x43, 0xf0, 0xf9, 0x74 } } },
+    { "Display",      { 0x4d36e968, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } } },
+    { "HIDClass",     { 0x745a17a0, 0x74d3, 0x11d0, { 0xb6, 0xfe, 0x00, 0xa0, 0xc9, 0x0f, 0x57, 0xda } } },
+    { "Image",        { 0x6bdd1fc6, 0x810f, 0x11d0, { 0xbe, 0xc7, 0x08, 0x00, 0x2b, 0xe2, 0x09, 0x2f } } },
+    { "Keyboard",     { 0x4d36e96b, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } } },
+    { "Media",        { 0x4d36e96c, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } } },
+    { "Mouse",        { 0x4d36e96f, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } } },
+    { "Net",          { 0x4d36e972, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } } },
+    { "Ports",        { 0x4d36e978, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } } },
+    { "System",       { 0x4d36e97d, 0xe325, 0x11ce, { 0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18 } } },
+    { "USB",          { 0x36fc9e60, 0xc465, 0x11cf, { 0x80, 0x56, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00 } } },
+    { "XnaComposite", { 0x05f5cfe2, 0x4733, 0x4950, { 0xa6, 0xbb, 0x07, 0xaa, 0xd0, 0x1a, 0x3a, 0x84 } } },
+};
+
+SETUPAPI BOOL WINAPI SetupDiClassGuidsFromNameA(LPCSTR name, GUID *list, DWORD n, PDWORD need)
+{
+    if (!name || !need) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    DWORD k = 0;
+    for (DWORD i = 0; i < sizeof(g_classes) / sizeof(g_classes[0]); i++)
+        if (!lstrcmpiA(name, g_classes[i].name)) { if (list && k < n) list[k] = g_classes[i].guid; k++; }
+    *need = k;
+    if (k > n) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    return TRUE;
+}
+
+SETUPAPI HKEY WINAPI SetupDiOpenDeviceInterfaceRegKey(HANDLE set, PVOID iface, DWORD reserved, REGSAM sam)
+{
+    (void)set; (void)iface; (void)reserved; (void)sam;
+    SetLastError(ERROR_INVALID_PARAMETER);
+    return INVALID_HANDLE_VALUE;
+}
+SETUPAPI BOOL WINAPI SetupDiGetDeviceInterfaceAlias(HANDLE set, PVOID iface, const GUID *cls, PVOID alias)
+{ (void)set; (void)iface; (void)cls; (void)alias; return no_device(); }
+
+/* setupapi.dll carries Configuration Manager calls too (as cfgmgr32.dll's):
+ * with no device tree, no device node is found */
+#define CR_NO_SUCH_DEVNODE_ 0x0D
+SETUPAPI DWORD WINAPI CM_Locate_DevNodeW(PDWORD dn, LPCWSTR id, ULONG flags)
+{ (void)id; (void)flags; if (dn) *dn = 0; return CR_NO_SUCH_DEVNODE_; }
+
 SETUPAPI BOOL WINAPI SetupDiClassGuidsFromNameW(LPCWSTR name, GUID *list, DWORD n, PDWORD need)
-{ (void)name; (void)list; (void)n; if (need) *need = 0; return TRUE; }
+{
+    char a[64];
+    if (!name || !WideCharToMultiByte(CP_ACP, 0, name, -1, a, sizeof(a), 0, 0)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return SetupDiClassGuidsFromNameA(a, list, n, need);
+}
+
+/* The CM_* calls setupapi exports for cfgmgr32 (forwarders on Windows) */
+typedef DWORD (WINAPI *cm_status_fn)(PULONG, PULONG, DWORD, ULONG);
+typedef DWORD (WINAPI *cm_locate_fn)(PDWORD, LPCSTR, ULONG);
+static FARPROC cfgmgr(const char *fn)
+{
+    HMODULE m = LoadLibraryA("cfgmgr32.dll");
+    return m ? GetProcAddress(m, fn) : 0;
+}
+SETUPAPI DWORD WINAPI CM_Get_DevNode_Status(PULONG status, PULONG problem, DWORD dn, ULONG flags)
+{
+    cm_status_fn f = (cm_status_fn)cfgmgr("CM_Get_DevNode_Status");
+    return f ? f(status, problem, dn, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}
+SETUPAPI DWORD WINAPI CM_Locate_DevNodeA(PDWORD dn, LPCSTR id, ULONG flags)
+{
+    cm_locate_fn f = (cm_locate_fn)cfgmgr("CM_Locate_DevNodeA");
+    return f ? f(dn, id, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}
+typedef DWORD (WINAPI *cm_parent_fn)(PDWORD, DWORD, ULONG);
+typedef DWORD (WINAPI *cm_id_fn)(DWORD, void *, ULONG, ULONG);
+SETUPAPI DWORD WINAPI CM_Get_Parent(PDWORD parent, DWORD dn, ULONG flags)
+{
+    cm_parent_fn f = (cm_parent_fn)cfgmgr("CM_Get_Parent");
+    return f ? f(parent, dn, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}
+SETUPAPI DWORD WINAPI CM_Get_Device_IDA(DWORD dn, char *buf, ULONG len, ULONG flags)
+{
+    cm_id_fn f = (cm_id_fn)cfgmgr("CM_Get_Device_IDA");
+    return f ? f(dn, buf, len, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}
+SETUPAPI DWORD WINAPI CM_Get_Device_IDW(DWORD dn, WCHAR *buf, ULONG len, ULONG flags)
+{
+    cm_id_fn f = (cm_id_fn)cfgmgr("CM_Get_Device_IDW");
+    return f ? f(dn, buf, len, flags) : 0x0D /* CR_NO_SUCH_DEVNODE */;
+}

@@ -878,6 +878,16 @@ bool FatDelete(FatVol *v, UINT32 dir, const char *name)
     return delete_entry(v, &fe, 0);
 }
 
+bool FatRename(FatVol *v, UINT32 dir, const char *from, const char *to)
+{
+    FatEntry fe, other;
+    if (!FatLookup(v, dir, from, &fe) || fe.dir || FatLookup(v, dir, to, &other)) return false;
+    if (!create_entry(v, dir, to, fe.attr, fe.cluster, fe.size)) return false;
+    /* (creating may have grown the directory, but not moved @from's entries) */
+    erase_entry(v, &fe);
+    return true;
+}
+
 /* ---------------------------------------------------------------------------
  * Reclaiming clusters no file reaches (after a crash in the middle of a change)
  * ------------------------------------------------------------------------- */
@@ -1109,6 +1119,14 @@ FatVol *FatMount(BlockDev *dev, UINT64 lba)
 out:
     kfree(bs);
     return v;
+}
+
+void FatForget(FatVol *v)
+{
+    if (!v) return;
+    kfree(v->pending);
+    kfree(v->cbuf);
+    kfree(v);
 }
 
 void FatUnmount(FatVol *v)

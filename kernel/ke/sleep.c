@@ -45,6 +45,7 @@
 #include "../drivers/nvme.h"
 #include "../net/net.h"
 #include "../drivers/hda.h"
+#include "../drivers/sof.h"
 #include "../drivers/usb.h"
 #include "../drivers/i2chid.h"
 #include "../drivers/virtio_input.h"
@@ -397,6 +398,7 @@ bool SleepEnter(void)
     UsbResume();
     VirtioInputResume();                 /* touch screens */
     HdaResume();
+    SofResume();                         /* (the audio DSP boots again on its thread) */
     I2cHidResume();                      /* (its thread sets the controllers up again) */
     ps2_resume();
     DisplayResume();

@@ -1,5 +1,6 @@
 {
-  "deps": ["kernel32", "ntdll"],
+  "deps": ["msvcrt", "kernel32", "ntdll"],
   "base": "0x7FFC10000000",
-  "base_x86": "0x81000000"
+  "base_x86": "0x81000000",
+  "sources": ["crypt32", "common"]
 }

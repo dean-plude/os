@@ -66,6 +66,28 @@ POWRPROF DWORD WINAPI PowerReadACValueIndex(HKEY root, const GUID *s, const GUID
 { (void)root; (void)s; (void)sub; (void)set; *v = 0; return ERROR_SUCCESS; }
 POWRPROF DWORD WINAPI PowerReadDCValueIndex(HKEY root, const GUID *s, const GUID *sub, const GUID *set, LPDWORD v)
 { (void)root; (void)s; (void)sub; (void)set; *v = 0; return ERROR_SUCCESS; }
+/* The value of a setting by type: every setting reads as the DWORD 0 */
+static DWORD read_value(LPDWORD type, LPBYTE buf, LPDWORD size)
+{
+    if (type) *type = REG_DWORD;
+    if (!size) return buf ? ERROR_INVALID_PARAMETER : ERROR_SUCCESS;
+    if (!buf) { *size = sizeof(DWORD); return ERROR_SUCCESS; }
+    if (*size < sizeof(DWORD)) { *size = sizeof(DWORD); return ERROR_MORE_DATA; }
+    *size = sizeof(DWORD);
+    ZeroMemory(buf, sizeof(DWORD));
+    return ERROR_SUCCESS;
+}
+POWRPROF DWORD WINAPI PowerReadACValue(HKEY root, const GUID *s, const GUID *sub, const GUID *set, LPDWORD type, LPBYTE buf, LPDWORD size)
+{ (void)root; (void)s; (void)sub; (void)set; return read_value(type, buf, size); }
+POWRPROF DWORD WINAPI PowerReadDCValue(HKEY root, const GUID *s, const GUID *sub, const GUID *set, LPDWORD type, LPBYTE buf, LPDWORD size)
+{ (void)root; (void)s; (void)sub; (void)set; return read_value(type, buf, size); }
+/* POWER_PLATFORM_ROLE: Mobile (2) with a battery, else Desktop (1) */
+POWRPROF int WINAPI PowerDeterminePlatformRoleEx(ULONG version)
+{
+    (void)version;
+    SYSTEM_POWER_STATUS ps;
+    return GetSystemPowerStatus(&ps) && !(ps.BatteryFlag & 128) && ps.BatteryFlag != 255 ? 2 : 1;
+}
 POWRPROF DWORD WINAPI PowerRegisterSuspendResumeNotification(DWORD flags, HANDLE recipient, PVOID *h)
 { (void)flags; (void)recipient; *h = (PVOID)(ULONG_PTR)0x5E01; return ERROR_SUCCESS; }
 POWRPROF DWORD WINAPI PowerUnregisterSuspendResumeNotification(PVOID h) { (void)h; return ERROR_SUCCESS; }

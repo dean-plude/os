@@ -1,0 +1,12 @@
+libxml2 2.13.8 (https://gitlab.gnome.org/GNOME/libxml2), used under the MIT
+licence (Copyright).  Source: the release tarball libxml2-2.13.8.tar.xz from
+download.gnome.org.  Kept: Copyright, README.md, libxml.h, timsort.h,
+include/libxml/*.h, include/private/*.h and the sources msxml6.dll needs
+(SAX2 buf chvalid dict encoding entities error globals hash list parser
+parserInternals threads tree uri valid xmlIO xmlmemory xmlsave xmlstring
+xpath).  No source file is changed.
+
+include/libxml/xmlversion.h is generated from the tarball's xmlversion.h.in
+with threads, tree, output, push, valid, xpath and ISO-8859-x enabled and
+everything else off.  msxml6.dll (userland/msxml6) builds it with the
+config.h and Windows headers in userland/msxml6/libxml.

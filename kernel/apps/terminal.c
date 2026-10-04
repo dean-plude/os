@@ -16,17 +16,20 @@
 #include "../ke/kpcr.h"
 #include "../ke/printf.h"
 #include "../hal/rtc.h"
+#include "../ke/timezone.h"
 #include "../ke/scheduler.h"
 #include "../net/net.h"
 #include "../drivers/usb.h"
 #include "../drivers/virtio_input.h"
 #include "../drivers/hda.h"
+#include "../drivers/sof.h"
 #include "../drivers/i2chid.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
 #include "../hal/serial.h"
 #include "../hal/pci.h"
 #include "../fs/setup.h"
+#include "../fs/update.h"
 #include "../drivers/nvme.h"
 #include "vterm.h"
 
@@ -54,7 +57,7 @@ static void mirror(const char *s, int n)
 }
 
 /* A network command in progress (advanced by term_tick) */
-typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC, JOB_SETUP } JobKind;
+typedef enum { JOB_NONE, JOB_PING, JOB_LOOKUP, JOB_FETCH, JOB_PROC, JOB_SETUP, JOB_UPDATE } JobKind;
 enum { PH_RESOLVE, PH_SEND, PH_WAIT, PH_SLEEP, PH_FETCH };
 
 typedef struct {
@@ -250,11 +253,15 @@ static void cmd_help(Term *t)
         "  store install <name>  get a program from the App Store\n"
         "  store open          open the App Store window\n"
         "  store close         close the App Store window\n"
+        "  store updates       open the App Store's updates for NovaOS\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
         "  devices             the PCI devices and the driver each one has (also: lspci)\n"
-        "  hwcheck             test the laptop drivers on modelled devices (codec, touchpad)\n"
+        "  hwcheck             test the laptop drivers on modelled devices (codec, DSP, touchpad)\n"
+        "  hwcheck mic [sleep] a modelled audio DSP as a live microphone array (then a sleep)\n"
         "  vol  sync           where drive C: is saved; save it now\n"
         "  install [disk] [/fat]  install NovaOS on a disk (no disk: list them)\n"
+        "  update [install]    check for a newer NovaOS (and install it)\n"
+        "  update channel [url]  where updates come from\n"
         "  ipconfig            show the network configuration\n"
         "  ping [-4|-6] <host> [-n N]  test a connection (ICMP echo)\n"
         "  nslookup <host>     look up a host name (DNS)\n"
@@ -263,7 +270,7 @@ static void cmd_help(Term *t)
         "  certutil            list trusted root certificates\n"
         "  tasklist            list running programs\n"
         "  crashes [last]      list the crash reports; show the newest one\n"
-        "  taskkill /PID <n>   stop a program\n"
+        "  taskkill /PID <n>   stop a program (/IM name.exe: every one of that name)\n"
         "  <program> [args]    run a Windows program (C:\\Programs: hello, mandel,\n"
         "                      primes, guess, wc, crttest, filetest, crash, spin)\n"
         "  netsurf [url]       the NetSurf web browser (http, https)\n"
@@ -471,19 +478,38 @@ static void cmd_mem(Term *t)
 {
     uint64_t total, free_p, used;
     pmm_stats(&total, &free_p, &used);
+    total = pmm_ram_pages();                    /* (pmm_stats' total counts the holes too) */
+    used = total > free_p ? total - free_p : 0;
     tprintf(t, "Physical memory: %u MB total, %u MB used, %u MB free",
             (unsigned)(total * 4 / 1024), (unsigned)(used * 4 / 1024),
             (unsigned)(free_p * 4 / 1024));
+    UINT64 files, bytes, held;
+    FsLock();
+    RamfsUsage(&files, &bytes, &held);
+    FsUnlock();
+    tprintf(t, "Drive C: (kept in memory): %u files, %u MB, taking %u MB",
+            (unsigned)files, (unsigned)(bytes >> 20), (unsigned)(held >> 20));
 }
 
 static void cmd_date(Term *t, bool time)
 {
     RtcTime r;
-    rtc_read(&r);
+    TzLocalNow(&r);                             /* local time, as cmd.exe shows it */
     if (time) tprintf(t, "The current time is: %02u:%02u:%02u",
                       r.hour, r.minute, r.second);
     else      tprintf(t, "The current date is: %04u-%02u-%02u",
                       r.year, r.month, r.day);
+}
+
+/* whoami: as Windows prints it, nova-pc\name in lower case (USERNAME: the
+ * name given at first boot, apps/welcome.c) */
+static void cmd_whoami(Term *t)
+{
+    char user[40] = "dean", line[64];
+    um_registry_get_sz(UM_SETUP_KEY, "UserName", user, sizeof(user));
+    ksnprintf(line, sizeof(line), "nova-pc\\%s", user[0] ? user : "dean");
+    for (char *p = line; *p; p++) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+    tprint(t, line);
 }
 
 static void cmd_sysinfo(Term *t)
@@ -498,7 +524,7 @@ static void cmd_sysinfo(Term *t)
     char b[8][96];
     ksnprintf(b[0], 96, "dean@nova-pc");
     ksnprintf(b[1], 96, "------------");
-    ksnprintf(b[2], 96, "OS:      NovaOS " NOVA_VERSION " x86_64");
+    ksnprintf(b[2], 96, "OS:      NovaOS %s x86_64", NovaVersion());
     ksnprintf(b[3], 96, "Kernel:  Nova (NT-compatible), SMP %s, %u CPU%s",
               g_cpu_count > 1 ? "on" : "off", (unsigned)g_cpu_count, g_cpu_count == 1 ? "" : "s");
     ksnprintf(b[4], 96, "Uptime:  %s", up);
@@ -660,13 +686,23 @@ static void cmd_usbcheck(Term *t)
 
 /* hwcheck: the drivers for the reference laptop's devices QEMU can't
  * show (Phase 21.4), against modelled devices: the HD Audio controller
- * matching and a Realtek ALC257 codec with its headphone jack, and an
- * I2C-HID touchpad */
-static void cmd_hwcheck(Term *t)
+ * matching and a Realtek ALC257 codec with its headphone jack, the audio
+ * DSP's boot (NHLT, SOF firmware, IPC4) on a modelled DSP, and an I2C-HID
+ * touchpad; then what the real DSP did at boot.  hwcheck mic [sleep]:
+ * SofModelMicrophones, SofModelSleep */
+static void cmd_hwcheck(Term *t, const char *a1, const char *a2)
 {
+    if (a1 && is(a1, "mic")) {                      /* the modelled DSP live, as a recording device */
+        bool sleep = a2 && is(a2, "sleep");
+        int failed = sleep ? SofModelSleep(usbcheck_say, t) : SofModelMicrophones(usbcheck_say, t);
+        tprintf(t, "hwcheck mic%s: %s, %d failed", sleep ? " sleep" : "", failed ? "done" : "all passed", failed);
+        return;
+    }
     int failed = HdaSelfCheck(usbcheck_say, t);
+    int sfailed = SofSelfCheck(usbcheck_say, t);
     int ifailed = I2cHidSelfCheck(usbcheck_say, t);
-    failed = failed < 0 || ifailed < 0 ? -1 : failed + ifailed;
+    failed = failed < 0 || sfailed < 0 || ifailed < 0 ? -1 : failed + sfailed + ifailed;
+    tprintf(t, "     audio DSP on this machine: %s", SofStatus());
     tprintf(t, "hwcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
 }
 
@@ -772,6 +808,42 @@ static void cmd_install(Term *t, int argc, char **argv)
     memset(j, 0, sizeof(*j));
     j->kind = JOB_SETUP;
     tprintf(t, "Installing NovaOS on %s (everything on it is erased)...", pick->dev->name);
+}
+
+/* update [check | install | channel [<url> | default]]: NovaOS's own
+ * updates (fs/update.c), as the App Store's Updates page has them */
+static void cmd_update(Term *t, int argc, char **argv)
+{
+    const char *sub = argc > 1 ? argv[1] : "check";
+    char ch[512];
+    if (is(sub, "channel")) {
+        if (argc > 2) UpdateSetChannel(is(argv[2], "default") ? NULL : argv[2]);
+        UpdateGetChannel(ch, sizeof(ch));
+        tprintf(t, "Update channel: %s", ch);
+        return;
+    }
+    if (!is(sub, "check") && !is(sub, "install")) {
+        terr(t, "Usage: update [check | install | channel [<url> | default]]");
+        return;
+    }
+    if (UpdateBootNotice()[0]) tprint(t, UpdateBootNotice());
+    UpdateStatus st;
+    UpdateGetStatus(&st);
+    if (st.state == UPDATE_READY) {
+        tprintf(t, "NovaOS %s is ready: restart to finish the update (shutdown /r).", st.version);
+        return;
+    }
+    bool inst = is(sub, "install");
+    if (!(inst ? UpdateInstall() : UpdateCheck())) {
+        UpdateGetStatus(&st);
+        terr(t, st.error[0] ? st.error : "The updater is busy.");
+        return;
+    }
+    UpdateGetChannel(ch, sizeof(ch));
+    tprintf(t, "This is NovaOS %s. Checking %s ...", NovaVersion(), ch);
+    Job *j = &t->job;
+    memset(j, 0, sizeof(*j));
+    j->kind = JOB_UPDATE;
 }
 
 static void cmd_ping(Term *t, int argc, char **argv)
@@ -1052,6 +1124,35 @@ static bool term_tick_files(WND *w)
             return true;
         }
         return changed;
+    }
+    if (j->kind == JOB_UPDATE) {
+        UpdateStatus st;
+        UpdateGetStatus(&st);
+        if (st.busy) {
+            if (st.state != UPDATE_DOWNLOADING || !st.step[0] || !strcmp(st.step, j->path)) return false;
+            strncpy(j->path, st.step, sizeof(j->path) - 1);
+            tprint(t, st.step);
+            return true;
+        }
+        char sz[24];
+        switch (st.state) {
+        case UPDATE_CURRENT:
+            tprintf(t, "NovaOS %s is up to date.", NovaVersion());
+            break;
+        case UPDATE_AVAILABLE:
+            AppFormatSize(st.size, sz, sizeof(sz));
+            tprintf(t, "NovaOS %s is available (%s)%s%s", st.version, sz, st.notes[0] ? ": " : ".", st.notes);
+            tprint(t, "Type 'update install' to install it.");
+            break;
+        case UPDATE_READY:
+            tprintf(t, "NovaOS %s is ready: restart to finish the update (shutdown /r).", st.version);
+            break;
+        default:
+            terr(t, st.error[0] ? st.error : "The update failed.");
+            break;
+        }
+        job_end(t);
+        return true;
     }
     if (j->kind == JOB_SETUP) {
         SetupStatus st;
@@ -1502,10 +1603,25 @@ static void cmd_tasklist(Term *t)
 static void cmd_taskkill(Term *t, int argc, char **argv)
 {
     UINT32 pid = 0;
-    for (int i = 1; i + 1 < argc; i++)
+    const char *image = NULL;
+    for (int i = 1; i + 1 < argc; i++) {
         if (is(argv[i], "/pid") || is(argv[i], "-pid"))
             for (const char *d = argv[i + 1]; *d >= '0' && *d <= '9'; d++) pid = pid * 10 + (UINT32)(*d - '0');
-    if (!pid) { terr(t, "Usage: taskkill /PID <pid>"); return; }
+        if (is(argv[i], "/im") || is(argv[i], "-im")) image = argv[i + 1];
+    }
+    if (image && !pid) {                         /* every process of that image name, as Windows' taskkill /IM */
+        UmProcInfo list[32];
+        int n = UmList(list, 32), hit = 0;
+        for (int i = 0; i < n; i++) {
+            if (list[i].exited || !is(list[i].name, image)) continue;
+            hit++;
+            if (UmKillPid(list[i].pid))
+                tprintf(t, "SUCCESS: Sent termination signal to the process \"%s\" with PID %u.", list[i].name, list[i].pid);
+        }
+        if (!hit) tprintf(t, "ERROR: The process \"%s\" not found.", image);
+        return;
+    }
+    if (!pid) { terr(t, "Usage: taskkill /PID <pid> | /IM <image name>"); return; }
     if (UmKillPid(pid)) tprintf(t, "SUCCESS: Sent termination signal to the process with PID %u.", pid);
     else tprintf(t, "ERROR: The process \"%u\" not found.", pid);
 }
@@ -1653,15 +1769,16 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
         UmSaveAll();
         tprint(t, PersistActive() ? "Drive C: and the registry are saved." : "There is no disk to save to.");
     }
-    else if (is(c, "ver"))                      tprint(t, "NovaOS [Version " NOVA_VERSION "]");
-    else if (is(c, "whoami"))                   tprint(t, "nova-pc\\dean");
+    else if (is(c, "ver"))                      tprintf(t, "NovaOS [Version %s]", NovaVersion());
+    else if (is(c, "whoami"))                   cmd_whoami(t);
     else if (is(c, "sysinfo") || is(c, "neofetch")) cmd_sysinfo(t);
     else if (is(c, "dmesg"))                    cmd_dmesg(t);
     else if (is(c, "start") || is(c, "open"))   cmd_start(t, argc, argv);
     else if (is(c, "store")) {
         if (argc == 2 && is(argv[1], "close")) tprint(t, StoreClose());
         else if (argc == 2 && is(argv[1], "open")) { StoreOpen(); tprint(t, "Opened the App Store."); }
-        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store close");
+        else if (argc == 2 && is(argv[1], "updates")) { StoreShowUpdates(); tprint(t, "Opened the App Store's updates."); }
+        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store updates | store close");
         else {
             char name[64];
             int n = 0;
@@ -1681,9 +1798,10 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "tasklist"))                 cmd_tasklist(t);
     else if (is(c, "crashes"))                  cmd_crashes(t, a1);
     else if (is(c, "usbcheck"))                 cmd_usbcheck(t);
-    else if (is(c, "hwcheck"))                  cmd_hwcheck(t);
+    else if (is(c, "hwcheck"))                  cmd_hwcheck(t, argc > 1 ? argv[1] : NULL, argc > 2 ? argv[2] : NULL);
     else if (is(c, "devices") || is(c, "lspci")) cmd_devices(t);
     else if (is(c, "install"))                  cmd_install(t, argc, argv);
+    else if (is(c, "update"))                   cmd_update(t, argc, argv);
     else if (is(c, "taskkill"))                 cmd_taskkill(t, argc, argv);
     else if (is(c, "exit"))                     WmDestroyWindow(t->w);
     else {
@@ -1834,6 +1952,7 @@ static void paste(Term *t)
         memset(&k, 0, sizeof(k));
         k.pressed = true;
         k.ch = c;
+        k.wch = (UINT8)c;
         term_key(w, &k);
         if (WmWindowById(id) != w) break;          /* "exit" closed it */
     }
@@ -2032,8 +2151,8 @@ static void send_key(Term *t, const KeyEvent *k)
     UmConsole *con = t->job.con;
     UINT32 vk = UmScancodeToVk(k->scancode, k->extended) & 0xFF;
     if (vk == 0x10 || vk == 0x11 || vk == 0x12 || vk == 0x14) return;   /* modifiers alone */
-    if (!vk && !k->ch) return;                          /* (pasted text has characters only) */
-    UINT32 ch = (UINT8)k->ch;
+    if (!vk && !k->wch) return;                         /* (pasted text has characters only) */
+    UINT32 ch = k->wch;                                 /* (in the user's layout: ä, é...) */
     if (ch == '\n') ch = '\r';
     if (vk == 0x1B) ch = 0x1B;
     if (vk == 0x08) ch = 0x08;
@@ -2207,7 +2326,9 @@ static Term *term_new_ex(RamNode *cwd, bool banner)
     w->on_tick  = term_tick;
     w->tick_lock_free = true;
     if (!banner) return t;
-    tprint_ex(t, K_DIM, 0, "NovaOS Terminal [Version " NOVA_VERSION "]");
+    char ver[64];
+    ksnprintf(ver, sizeof(ver), "NovaOS Terminal [Version %s]", NovaVersion());
+    tprint_ex(t, K_DIM, 0, ver);
     tprint_ex(t, K_DIM, 0, "Type 'help' to see what you can do.");
     tprint(t, "");
     return t;

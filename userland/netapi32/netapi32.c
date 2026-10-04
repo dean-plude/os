@@ -191,6 +191,25 @@ NETAPI NET_API_STATUS WINAPI NetGroupEnum(LPCWSTR server, DWORD level, LPBYTE *b
     *buf = 0; *read = 0; *total = 0;                       /* no global groups on a workstation */
     return NERR_Success;
 }
+/* Shares: NovaOS runs no file server, so this machine shares nothing, and
+ * with no SMB client another machine's shares cannot be listed */
+NETAPI NET_API_STATUS WINAPI NetShareEnum(LPWSTR server, DWORD level, LPBYTE *buf, DWORD pref, LPDWORD read,
+                                          LPDWORD total, LPDWORD resume)
+{
+    (void)pref;
+    if (!buf || !read || !total) return ERROR_INVALID_PARAMETER;
+    *buf = 0; *read = *total = 0;
+    if (resume) *resume = 0;
+    if (level > 2 && level != 502 && level != 503) return ERROR_INVALID_LEVEL;
+    if (server && server[0]) {
+        WCHAR me[64];
+        DWORD n = 64;
+        const WCHAR *s = server;
+        while (*s == '\\') s++;
+        if (!GetComputerNameW(me, &n) || !weq(s, me)) return 53;    /* ERROR_BAD_NETPATH */
+    }
+    return NERR_Success;
+}
 NETAPI NET_API_STATUS WINAPI NetUserEnum(LPCWSTR server, DWORD level, DWORD filter, LPBYTE *buf, DWORD pref,
                                          LPDWORD read, LPDWORD total, PDWORD resume)
 {
@@ -238,6 +257,17 @@ NETAPI DWORD WINAPI DsGetDcNameA(LPCSTR comp, LPCSTR dom, GUID *guid, LPCSTR sit
 NETAPI DWORD WINAPI DsEnumerateDomainTrustsW(LPWSTR server, ULONG flags, PVOID *doms, PULONG n)
 { (void)server; (void)flags; *doms = 0; *n = 0; return ERROR_NO_SUCH_DOMAIN_; }
 NETAPI NET_API_STATUS WINAPI NetGetDCName(LPCWSTR server, LPCWSTR dom, LPBYTE *buf) { (void)server; (void)dom; *buf = 0; return 2453; /* NERR_DCNotFound */ }
+/* not joined to Azure AD (Entra ID): no information, S_OK, as on a
+ * workgroup PC */
+NETAPI HRESULT WINAPI NetGetAadJoinInformation(LPCWSTR tenant, PVOID *info)
+{
+    (void)tenant;
+    if (!info) return E_INVALIDARG;
+    *info = 0;
+    return S_OK;
+}
+NETAPI VOID WINAPI NetFreeAadJoinInformation(PVOID info) { (void)info; }
+
 NETAPI NET_API_STATUS WINAPI NetGetJoinInformation(LPCWSTR server, LPWSTR *name, PDWORD status)
 {
     (void)server;

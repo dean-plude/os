@@ -254,12 +254,28 @@ static LRESULT call_conv(Wnd *w, WNDPROC proc, int wide, HWND h, UINT msg, WPARA
 /* -----------------------------------------------------------------------
  * Sending
  * ----------------------------------------------------------------------- */
+/* Take a sent message back off its queue (if nobody has taken it) */
+static void unsend(TQ *q, Sent *s)
+{
+    LOCK();
+    for (Sent **pp = &q->sent; *pp; pp = &(*pp)->next)
+        if (*pp == s) { *pp = s->next; break; }
+    UNLOCK();
+}
+
 static LRESULT send_cross(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, int wide, DWORD timeout, int *timed_out)
 {
     TQ *q = tq_for(w->tid, 1);
     if (!q) return 0;
+    /* A window whose thread has ended answers nothing, as on Windows (where
+     * the thread's windows go with it): without this a parent destroyed
+     * after its child's thread ended waited for that thread for ever (VLC's
+     * Qt window thread, destroying the video widget whose child window
+     * VLC's ended event thread had made, so VLC never closed) */
+    HANDLE th = OpenThread(SYNCHRONIZE, FALSE, w->tid);
+    if (!th) return 0;
     Sent *s = calloc(1, sizeof(Sent));
-    if (!s) return 0;
+    if (!s) { CloseHandle(th); return 0; }
     s->h = w->h; s->msg = msg; s->wp = wp; s->lp = lp; s->wide = wide;
     s->ev = CreateEventW(NULL, TRUE, FALSE, NULL);
     LOCK();
@@ -271,15 +287,27 @@ static LRESULT send_cross(Wnd *w, UINT msg, WPARAM wp, LPARAM lp, int wide, DWOR
     ULONGLONG until = timeout == INFINITE ? ~0ULL : GetTickCount64() + timeout;
     while (!s->done) {
         process_sent();
-        WaitForSingleObject(s->ev, 10);
+        HANDLE hs[2] = { s->ev, th };
+        DWORD got = WaitForMultipleObjects(2, hs, FALSE, 10);
         if (!s->done && GetTickCount64() >= until) {
             /* give up: it may still run; it frees itself then */
             s->notify = 1;
+            CloseHandle(th);
             if (timed_out) *timed_out = 1;
+            return 0;
+        }
+        if (!s->done && got == WAIT_OBJECT_0 + 1) {
+            /* its thread ended without answering: the message goes too
+             * (one the thread had taken went with the thread) */
+            unsend(q, s);
+            CloseHandle(s->ev);
+            free(s);
+            CloseHandle(th);
             return 0;
         }
         if (!s->done && !W_quiet(s->h)) break;
     }
+    CloseHandle(th);
     LRESULT r = s->result;
     CloseHandle(s->ev);
     free(s);
@@ -1036,7 +1064,7 @@ USERAPI DWORD MsgWaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL all, DWO
     return MsgWaitForMultipleObjectsEx(n, hs, ms, wake, all ? MWMO_WAITALL : 0);
 }
 
-/* WM_KEYDOWN -> WM_CHAR (and WM_SYSKEYDOWN -> WM_SYSCHAR), next in the queue */
+/* WM_KEYDOWN -> WM_CHAR (and WM_SYSKEYDOWN -> WM_SYSCHAR; a dead key's WM_DEADCHAR), next in the queue */
 static void q_push_front(TQ *q, const MSG *m)
 {
     if (!q_push(q, m)) return;                              /* grows the queue; then rotate it to the front */
@@ -1055,9 +1083,16 @@ USERAPI BOOL TranslateMessage(const MSG *m)
     memcpy(keys, g_keys, 256);
     if (m->message == WM_SYSKEYDOWN) keys[VK_CONTROL] &= ~0x80;
     int n = ToUnicode((UINT)m->wParam, (UINT)(m->lParam >> 16) & 0xFF, keys, c, 4, 0);
-    if (n <= 0) return FALSE;
+    if (!n) return FALSE;
     TQ *q = my_tq();
     if (!q) return FALSE;
+    if (n < 0) {                                            /* a dead key: WM_DEADCHAR with its accent */
+        MSG cm = *m;
+        cm.message = m->message == WM_SYSKEYDOWN ? WM_SYSDEADCHAR : WM_DEADCHAR;
+        cm.wParam = c[0];
+        q_push_front(q, &cm);
+        return TRUE;
+    }
     for (int i = n - 1; i >= 0; i--) {
         MSG cm = *m;
         cm.message = m->message == WM_SYSKEYDOWN ? WM_SYSCHAR : WM_CHAR;

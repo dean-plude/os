@@ -1,0 +1,1 @@
+| `syscalltest` (x64) | The system-call table as code that calls the kernel without ntdll sees it (Roblox's Hyperion): ntdll's `Zw` exports ranked by address give each service its Windows 10 1903 number, and the kernel answers that number (and `STATUS_INVALID_SYSTEM_SERVICE`, not the wrong service, for one it lacks) |

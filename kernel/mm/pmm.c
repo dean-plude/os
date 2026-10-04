@@ -42,6 +42,7 @@ static struct {
     uint64_t  bitmap_phys;    /* Physical address of bitmap */
     size_t    total_pages;    /* Total number of physical pages tracked */
     size_t    free_pages;     /* Current free page count */
+    size_t    ram_pages;      /* Pages of RAM (the firmware's conventional memory) */
     size_t    bitmap_words;   /* Number of uint64_t words in bitmap */
     uintptr_t highest_phys;   /* Highest physical address + 1 */
     size_t    hint;           /* No free page in the words below this one */
@@ -178,6 +179,8 @@ void pmm_init(const BootInfo *info)
         }
     }
 
+    pmm.ram_pages = pmm.free_pages;
+
     /* 5. Re-mark the kernel image as USED */
     {
         uintptr_t kstart = info->kernel_physical_base;
@@ -313,6 +316,23 @@ uintptr_t pmm_alloc_pages(size_t count)
 }
 
 /* -----------------------------------------------------------------------
+ * pmm_claim_pages — the free pages at @pa, if all of them are free
+ * (a contiguous block grows where it is: kresize)
+ * ----------------------------------------------------------------------- */
+bool pmm_claim_pages(uintptr_t pa, size_t count)
+{
+    size_t idx = pa / PAGE_SIZE;
+    if (!IS_ALIGNED(pa, PAGE_SIZE) || idx + count > pmm.total_pages || idx + count < idx) return false;
+    lock_acquire(&pmm.lock);
+    for (size_t i = idx; i < idx + count; i++)
+        if (bitmap_test(i)) { lock_release(&pmm.lock); return false; }
+    for (size_t i = idx; i < idx + count; i++) bitmap_set(i);
+    pmm.free_pages -= count;
+    lock_release(&pmm.lock);
+    return true;
+}
+
+/* -----------------------------------------------------------------------
  * pmm_free_page
  * ----------------------------------------------------------------------- */
 void pmm_free_page(uintptr_t pa)
@@ -408,4 +428,14 @@ void pmm_stats(uint64_t *total_out, uint64_t *free_out, uint64_t *used_out)
     if (free_out)  *free_out  = (uint64_t)pmm.free_pages;
     if (used_out)  *used_out  = (uint64_t)(pmm.total_pages - pmm.free_pages);
     lock_release(&pmm.lock);
+}
+
+size_t pmm_free_now(void)
+{
+    return *(volatile size_t *)&pmm.free_pages;
+}
+
+size_t pmm_ram_pages(void)
+{
+    return pmm.ram_pages;
 }

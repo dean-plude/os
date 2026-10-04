@@ -92,18 +92,18 @@ class PE:
 # kernel/um/um.c): first matching prefix wins
 API_SETS = [
     ('api-ms-win-crt-', 'ucrtbase.dll'),
-    ('api-ms-win-core-synch-', 'kernel32.dll'),
+    ('api-ms-win-core-synch-', 'kernelbase.dll'),
     ('api-ms-win-core-com-', 'ole32.dll'),
     ('api-ms-win-core-winrt-', 'ole32.dll'),
     ('combase.dll', 'ole32.dll'),
     ('api-ms-win-core-', 'kernel32.dll'),
     ('api-ms-win-security-', 'advapi32.dll'),
     ('api-ms-win-eventing-', 'advapi32.dll'),
+    ('api-ms-win-power-', 'powrprof.dll'),
     ('api-ms-win-shell-', 'shell32.dll'),
     ('api-ms-win-shcore-', 'shlwapi.dll'),
     ('shcore.dll', 'shlwapi.dll'),
     ('ext-ms-win-', 'kernel32.dll'),
-    ('kernelbase.dll', 'kernel32.dll'),
     ('api-ms-win-', 'kernel32.dll'),
     ('msvcrt40.dll', 'msvcrt.dll'),
 ]
@@ -129,7 +129,7 @@ def main():
         return 0
     have = {}
     for f in os.listdir(dlldir):
-        if f.lower().endswith(('.dll', '.drv')):
+        if f.lower().endswith(('.dll', '.drv', '.cpl')):
             have[f.lower()] = PE(os.path.join(dlldir, f)).exports()
     missing_total = 0
     for prog in args:
@@ -151,7 +151,15 @@ def main():
                     print(f'  missing DLL {dll}{tag}: {len(fns)} functions')
                     missing_total += len(fns)
                     continue
-                gone = [f for f in fns if not f.startswith('#') and f not in here[real]]
+                # kernel32 and kernelbase share the core API sets (the loader
+                # looks in the other when one lacks a function), and ucrtbase's
+                # "_o_" names are its plain functions
+                alt = {'kernelbase.dll': 'kernel32.dll', 'kernel32.dll': 'kernelbase.dll'}.get(real)
+                if real == 'kernel32.dll' and not dll.lower().startswith(('api-ms-win-core-', 'ext-ms-win-')):
+                    alt = None
+                also = here.get(alt, set())
+                gone = [f for f in fns if not f.startswith('#') and f not in here[real] and f not in also and
+                        not (real == 'ucrtbase.dll' and f.startswith('_o_') and f[3:] in here[real])]
                 for f in gone:
                     print(f'  {dll}!{f}{tag}')
                 missing_total += len(gone)

@@ -1,0 +1,10 @@
+{
+  "deps": ["msvcrt", "kernel32", "ntdll"],
+  "ordinals": {
+    "FDICreate": 20,
+    "FDIIsCabinet": 21,
+    "FDICopy": 22,
+    "FDIDestroy": 23,
+    "FDITruncateCabinet": 24
+  }
+}

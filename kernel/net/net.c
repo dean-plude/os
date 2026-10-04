@@ -40,7 +40,7 @@
 #include "netif/etharp.h"
 #include "netif/ethernet.h"
 
-#define NET_OPS         32
+#define NET_OPS         128
 #define PING_ID         0x4E4F                 /* "NO" */
 #define PING_TIMEOUT    200                    /* ticks (2 s) */
 #define NET_STACK       (64 * 1024)            /* net thread: room for TLS crypto */
@@ -99,10 +99,20 @@ void net_assert_fail(const char *msg, const char *file, int line)
 /* -----------------------------------------------------------------------
  * Lock
  * ----------------------------------------------------------------------- */
+/* Yielding alone can starve the holder: waiters of higher priority hand
+ * the CPU to each other round and round, never to a holder of lower
+ * priority queued behind them (Firefox's processes asking for random
+ * bytes as they start froze the whole desktop this way under KVM, run #52
+ * of nightly.yml).  After a few yields a waiter sleeps briefly instead:
+ * off the run queue, it lets the holder have the CPU. */
+#define NET_LOCK_YIELDS     8
+#define NET_LOCK_NAP_100NS  1000            /* 0.1 ms */
 void net_lock(void)
 {
-    while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
-        sched_yield();
+    for (int tries = 0; __atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE); tries++) {
+        if (tries < NET_LOCK_YIELDS) sched_yield();
+        else sched_sleep_until_tsc(NULL, sched_tsc_after(NET_LOCK_NAP_100NS));
+    }
 }
 
 void net_unlock(void)

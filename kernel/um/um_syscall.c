@@ -27,8 +27,10 @@
 #include "../apps/apps.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
+#include "../hal/firmware.h"
 #include "../fs/fsec.h"
 #include "../ke/sleep.h"
+#include "../ke/kpcr.h"
 
 #define ST_SUCCESS                 0x00000000u
 #define ST_PENDING                 0x00000103u
@@ -189,16 +191,28 @@ void UmSetTrace(const char *name)
     g_trace[i] = 0;
 }
 
+/* Is @p a program "trace NAME" names (@all: and every call is wanted)? */
+bool UmTraced(const UmProcess *p, bool all)
+{
+    if (!g_trace[0] || !p || (all && !g_trace_all)) return false;
+    const char *n = p->name;
+    int i = 0;
+    while (g_trace[i] && n[i] && (n[i] | 0x20) == (g_trace[i] | 0x20)) i++;
+    return !g_trace[i] && (!n[i] || n[i] == '.');
+}
+
+static bool get_u64(UINT64 ptr, UINT64 *v);
+
 UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmThread *t = UmCurrentThread();
     if (t) { t->park = 1; t->last_sys = (UINT16)num; t->last_a1 = a1; }   /* park: cleared on the way out (UmReturnToUser) */
+    UINT64 asked = 0;                                       /* (trace: the base a view was asked at) */
+    if (g_trace_all && num == SYSCALL_NtMapViewOfSection) get_u64(a3, &asked);
     UINT64 r = g_um[num](a1, a2, a3, a4);
     if (g_trace[0] && t && (g_trace_all || ((r & 0x80000000u) && (UINT32)r == r))) {
         const char *n = t->proc->name;
-        int i = 0;
-        while (g_trace[i] && n[i] && (n[i] | 0x20) == (g_trace[i] | 0x20)) i++;
-        if (!g_trace[i] && (!n[i] || n[i] == '.')) {
+        if (UmTraced(t->proc, false)) {
             /* the file name of the calls that take one */
             char path[RAMFS_PATH_MAX] = "";
             RamNode *root;
@@ -219,9 +233,33 @@ UINT64 UmSyscall(UINT64 num, UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                     }
                 }
             }
-            kprintf("[TRACE] %s %u/%u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx%s%s\n", n,
+            /* the caller: the user RIP syscall_entry.asm pushed below the kernel stack's top */
+            UINT64 rip = *(const UINT64 *)(uintptr_t)(KiGetCurrentKpcr()->KernelRsp - 16);
+            /* memory services: the base and size they hand back */
+            if (g_trace_all && (num == SYSCALL_NtAllocateVirtualMemory || num == SYSCALL_NtFreeVirtualMemory ||
+                                num == SYSCALL_NtProtectVirtualMemory)) {
+                UINT64 b = 0, z = 0;
+                get_u64(a2, &b);
+                get_u64(num == SYSCALL_NtAllocateVirtualMemory ? a4 : a3, &z);
+                ksnprintf(path, sizeof(path), "base %llx size %llx, %llx %llx", (unsigned long long)b,
+                          (unsigned long long)z, (unsigned long long)um_stack_arg(5), (unsigned long long)um_stack_arg(6));
+            } else if (g_trace_all && !path[0]) {             /* the stack arguments */
+                ksnprintf(path, sizeof(path), "[%llx %llx %llx %llx %llx %llx]", (unsigned long long)um_stack_arg(5),
+                          (unsigned long long)um_stack_arg(6), (unsigned long long)um_stack_arg(7),
+                          (unsigned long long)um_stack_arg(8), (unsigned long long)um_stack_arg(9),
+                          (unsigned long long)um_stack_arg(10));
+                if (num == SYSCALL_NtMapViewOfSection) {
+                    UINT64 b = 0, z = 0;
+                    get_u64(a3, &b);
+                    get_u64(um_stack_arg(7), &z);
+                    int k = (int)strlen(path);
+                    ksnprintf(path + k, sizeof(path) - k, " view %llx (asked %llx) size %llx", (unsigned long long)b,
+                              (unsigned long long)asked, (unsigned long long)z);
+                }
+            }
+            kprintf("[TRACE] %s %u/%u: syscall %03llx(%llx, %llx, %llx, %llx) -> %08llx at %llx%s%s\n", n,
                     (unsigned)t->proc->pid, (unsigned)t->tid, (unsigned long long)num, (unsigned long long)a1, (unsigned long long)a2,
-                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r,
+                    (unsigned long long)a3, (unsigned long long)a4, (unsigned long long)r, (unsigned long long)rip,
                     path[0] ? " " : "", path);
         }
     }
@@ -1567,7 +1605,7 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
             }
         }
     }
-    if (restart) h->pos = 0;
+    if (restart) { h->pos = 0; h->last = NULL; }
     UINT8 *b = kzalloc(len < 65536 ? len + 8 : 65536 + 8);
     if (!b) return iosb(iosb_ptr, ST_NO_MEMORY, 0);
     UINT32 cap = len < 65536 ? len : 65536, used = 0, last = 0, count = 0;
@@ -1576,6 +1614,16 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
      * every directory but a drive's root */
     UINT64 dots = h->node->parent ? 2 : 0, k = h->pos;
     RamNode *c = h->node->child;
+    if (k > dots && h->last) {
+        /* Resume after the entry listed last, wherever it is now; when it was
+         * deleted or moved away (a program emptying the folder as it lists
+         * it), the next one has taken its place.  NTFS lists by name, so
+         * Windows never skips an entry there either */
+        UINT64 i = dots;
+        RamNode *x = c;
+        while (x && x != h->last) { x = x->next; i++; }
+        k = x ? i + 1 : k - 1;
+    }
     for (UINT64 i = dots; c && i < k; i++) c = c->next;
     for (;; k++) {
         RamNode *n = k < dots ? (k == 0 ? h->node : h->node->parent) : c;
@@ -1617,6 +1665,7 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         last = at;
         used = at + need;
         count++;
+        h->last = k >= dots ? n : NULL;
         if (single) { k++; break; }
     }
     h->pos = k;
@@ -2263,6 +2312,36 @@ static UINT64 sys_nova_process_list(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return st;
 }
 
+/* NtNovaFirmwareTable(SYSTEM_FIRMWARE_TABLE_INFORMATION *Info, ULONG Length,
+ * PULONG ReturnLength): NtQuerySystemInformation(SystemFirmwareTableInformation).
+ * Info is { ULONG ProviderSignature, Action, TableID, TableBufferLength;
+ * UCHAR TableBuffer[] }; a TableBufferLength too small for the table gets
+ * STATUS_BUFFER_TOO_SMALL with the size it needs, as on Windows. */
+static UINT64 sys_nova_firmware_table(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
+{
+    (void)a4;
+    UINT32 hdr[4];
+    if (a2 < sizeof(hdr)) return ST_INFO_LENGTH_MISMATCH;
+    if (!NT_SUCCESS(CopyFromUser(hdr, (const void *)(uintptr_t)a1, sizeof(hdr)))) return UM_STATUS_ACCESS_VIOLATION;
+    UINT32 cap = hdr[3] < a2 - sizeof(hdr) ? hdr[3] : (UINT32)(a2 - sizeof(hdr));
+    UINT32 need = FirmwareTable(hdr[0], hdr[1], hdr[2], NULL, 0);
+    if (!need) return hdr[1] > 1 ? ST_INVALID_PARAMETER : 0xC0000225u;    /* STATUS_NOT_FOUND */
+    UINT32 st = ST_SUCCESS;
+    hdr[3] = need;
+    if (cap < need) st = ST_BUFFER_TOO_SMALL;
+    else {
+        UINT8 *buf = kmalloc(need);
+        if (!buf) return ST_NO_MEMORY;
+        FirmwareTable(hdr[0], hdr[1], hdr[2], buf, need);
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)(a1 + sizeof(hdr)), buf, need))) st = UM_STATUS_ACCESS_VIOLATION;
+        kfree(buf);
+    }
+    UINT32 ret = (UINT32)sizeof(hdr) + need;
+    if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a1, hdr, sizeof(hdr)))) return UM_STATUS_ACCESS_VIOLATION;
+    if (a3 && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &ret, 4))) return UM_STATUS_ACCESS_VIOLATION;
+    return st;
+}
+
 static UINT64 sys_terminate_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
@@ -2289,6 +2368,11 @@ static UINT64 g_tsc0, g_tsc_hz;
 UINT64 um_now_100ns(void)
 {
     return g_boot_time + (sched_ticks() - g_boot_ticks) * 100000ULL;
+}
+
+UINT64 um_boot_time_100ns(void)
+{
+    return g_boot_time;
 }
 
 /* After S3: the tick count stood still while the machine slept; the
@@ -2840,6 +2924,11 @@ void um_install(UINT32 num, SYSCALL_HANDLER h)
     g_um[num] = h;
 }
 
+SYSCALL_HANDLER um_service(UINT32 num)
+{
+    return g_um[num];
+}
+
 /* -----------------------------------------------------------------------
  * Directory watches: FindFirstChangeNotification's event is signaled when
  * the watched directory (or, with subtree, anything below it) changes.
@@ -2956,6 +3045,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtNovaCreateProcess,        sys_nova_create_process);
     um_install(SYSCALL_NtNovaProcessInfo,          sys_nova_process_info);
     um_install(SYSCALL_NtNovaProcessList,          sys_nova_process_list);
+    um_install(SYSCALL_NtNovaFirmwareTable,        sys_nova_firmware_table);
     um_install(SYSCALL_NtQuerySystemTime,          sys_query_system_time);
     um_install(SYSCALL_NtShutdownSystem,           sys_shutdown_system);
     um_install(SYSCALL_NtSetSystemPowerState,      sys_power_action);
@@ -2966,6 +3056,7 @@ void um_syscall_init(void)
     um_install(SYSCALL_NtYieldExecution,           sys_yield);
     um_thread_syscalls_init();
     um_security_syscalls_init();
+    um_services_init();
     um_exception_syscalls_init();
     um_registry_syscalls_init();
     um_socket_syscalls_init();

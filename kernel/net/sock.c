@@ -22,7 +22,7 @@
 #include "lwip/ip6_addr.h"
 #include "lwip/pbuf.h"
 
-#define NSOCK        64
+#define NSOCK        1024           /* system-wide (each takes its ring only while open) */
 #define RXBUF        (32 * 1024)
 #define ACCEPT_MAX   8
 #define DGRAM_HDR    (2 + (int)sizeof(NetSockAddr))
@@ -73,23 +73,33 @@ static Sock g_sock[NSOCK];
  * ----------------------------------------------------------------------- */
 static UINT32 rx_used(Sock *s) { return s->rx_head - s->rx_tail; }
 
+/* Up to @n bytes in or out, in at most two pieces (the ring wraps once) */
 static int rx_put(Sock *s, const UINT8 *d, int n)
 {
-    int done = 0;
-    while (done < n && rx_used(s) < RXBUF) {
-        s->rx[s->rx_head % RXBUF] = d[done++];
-        s->rx_head++;
-    }
-    return done;
+    UINT32 room = RXBUF - rx_used(s);
+    if ((UINT32)n > room) n = (int)room;
+    UINT32 at = s->rx_head % RXBUF, first = RXBUF - at < (UINT32)n ? RXBUF - at : (UINT32)n;
+    memcpy(s->rx + at, d, first);
+    memcpy(s->rx, d + first, (UINT32)n - first);
+    s->rx_head += (UINT32)n;
+    return n;
+}
+
+/* The next @cap bytes without taking them */
+static int rx_peek(Sock *s, UINT8 *d, int cap)
+{
+    UINT32 n = rx_used(s);
+    if ((UINT32)cap < n) n = (UINT32)cap;
+    UINT32 at = s->rx_tail % RXBUF, first = RXBUF - at < n ? RXBUF - at : n;
+    memcpy(d, s->rx + at, first);
+    memcpy(d + first, s->rx, n - first);
+    return (int)n;
 }
 
 static int rx_get(Sock *s, UINT8 *d, int cap)
 {
-    int n = 0;
-    while (n < cap && rx_used(s) > 0) {
-        d[n++] = s->rx[s->rx_tail % RXBUF];
-        s->rx_tail++;
-    }
+    int n = rx_peek(s, d, cap);
+    s->rx_tail += (UINT32)n;
     return n;
 }
 
@@ -322,6 +332,21 @@ int NetSockUdp(int family)
 /* -----------------------------------------------------------------------
  * Connect / send / recv
  * ----------------------------------------------------------------------- */
+/* What a refused tcp_connect means to the program: only a real shortage is
+ * WSAENOBUFS (no local port left, no memory for the SYN) */
+static int connect_err(err_t e)
+{
+    switch (e) {
+    case ERR_RTE:     return -SOCK_EHOSTUNREACH;             /* no route (no interface for the family) */
+    case ERR_USE:     return -SOCK_EADDRINUSE;               /* the address pair is taken */
+    case ERR_ISCONN:  return -SOCK_EISCONN;
+    case ERR_ALREADY: return -SOCK_EWOULDBLOCK;              /* already connecting */
+    case ERR_VAL:
+    case ERR_ARG:     return -SOCK_EINVAL;
+    default:          return -SOCK_ENOBUFS;
+    }
+}
+
 int NetSockConnect(int sd, const NetSockAddr *to, SockCancelFn c, void *ca)
 {
     net_lock();
@@ -334,7 +359,7 @@ int NetSockConnect(int sd, const NetSockAddr *to, SockCancelFn c, void *ca)
     s->connecting = true;
     err_t e = tcp_connect(s->tcp, &ip, lwip_htons(to->port_be), tcp_connected_cb);
     net_unlock();
-    if (e != ERR_OK) { s->connecting = false; return -SOCK_ENOBUFS; }
+    if (e != ERR_OK) { s->connecting = false; return connect_err(e); }
     if (s->nonblock) return -SOCK_EWOULDBLOCK;
     UINT64 deadline = sched_ticks() + 1000;                  /* 10 s */
     for (;;) {
@@ -451,7 +476,7 @@ int NetSockRecvFrom(int sd, void *buf, int len, NetSockAddr *from, SockCancelFn 
             if (from) memcpy(from, hdr + 2, sizeof(*from));
             int take = dlen < len ? dlen : len;
             int got = rx_get(s, buf, take);
-            for (int drop = got; drop < dlen; drop++) { UINT8 t; rx_get(s, &t, 1); }  /* truncate */
+            s->rx_tail += (UINT32)(dlen - got);                 /* truncate */
             net_unlock();
             return got;
         }
@@ -608,10 +633,7 @@ int NetSockPeek(int sd, void *buf, int len, bool *closed)
     Sock *s = slot(sd);
     if (!s) { net_unlock(); return -SOCK_ENOTSOCK; }
     int n = (int)rx_used(s);
-    if (buf) {
-        if (n > len) n = len;
-        for (int i = 0; i < n; i++) ((UINT8 *)buf)[i] = s->rx[(s->rx_tail + (UINT32)i) % RXBUF];
-    }
+    if (buf) n = rx_peek(s, buf, len);
     if (closed) *closed = s->peer_closed || s->reset;
     net_unlock();
     return n;

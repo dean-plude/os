@@ -18,6 +18,13 @@
  *                               (the kernel mixer adds them)
  *   soundtest record FILE [MS]  waveIn at 44.1 kHz mono 16-bit (the
  *                               resampling path) into a WAV file
+ *   soundtest mme FILE [MS] [STALL]  waveIn the way PortAudio's MME host
+ *                               (Audacity) records: 8 buffers of 630 frames
+ *                               (100 ms) at 44.1 kHz mono taken by a
+ *                               TIME_CRITICAL thread, held up STALL ms once
+ *                               a second; fails on an input overflow (every
+ *                               buffer done before the thread got to them:
+ *                               a dropout in Audacity)
  *   soundtest capture FILE [MS] WASAPI capture (IAudioCaptureClient, mix
  *                               format) into a 16-bit WAV file: MS at full
  *                               recording volume, then MS at a quarter
@@ -976,6 +983,95 @@ static int dscapture(const char *path, DWORD ms)
     return save_wav(path, all, got * 2, f.nSamplesPerSec, 1) ? 0 : 1;
 }
 
+/* PortAudio's MME host (what Audacity records through): 8 buffers of 630
+ * frames (its sizing for 100 ms at 44.1 kHz), a TIME_CRITICAL thread woken
+ * by CALLBACK_EVENT that takes the done buffers in order, and its overflow
+ * rule: when it finds every buffer done, it skips all but the newest (the
+ * frames in them are lost) and reports paInputOverflow, which Audacity
+ * marks as a dropout */
+#define MME_BUFS   8
+#define MME_FRAMES 630
+typedef struct {
+    HANDLE wi, ev;
+    WAVEHDR h[MME_BUFS];
+    int cur, overflows, skipped;
+    DWORD stall;                                    /* ms the thread is held up once a second */
+    short *all;
+    DWORD total, got;
+} Mme;
+static void mme_requeue(Mme *m)
+{
+    m->h[m->cur].dwFlags &= ~WHDR_DONE;
+    waveInAddBuffer(m->wi, &m->h[m->cur], sizeof(WAVEHDR));
+    m->cur = (m->cur + 1) % MME_BUFS;
+}
+
+static DWORD WINAPI mme_thread(LPVOID p)
+{
+    Mme *m = p;
+    DWORD t0 = GetTickCount(), stalls = 0;
+    while (m->got < m->total && GetTickCount() - t0 < m->total / 44 + 5000) {
+        WaitForSingleObject(m->ev, 100);
+        if (m->stall && GetTickCount() - t0 >= 1000 * (stalls + 1)) {   /* a busy machine */
+            Sleep(m->stall);
+            stalls++;
+        }
+        while (m->got < m->total && (m->h[m->cur].dwFlags & WHDR_DONE)) {
+            BOOL queued = FALSE;
+            for (int i = 0; i < MME_BUFS; i++) queued |= !(m->h[i].dwFlags & WHDR_DONE);
+            if (!queued) {                          /* CatchUpInputBuffers */
+                m->overflows++;
+                for (int i = 0; i < MME_BUFS - 1; i++, m->skipped++) mme_requeue(m);
+            }
+            DWORD n = m->h[m->cur].dwBytesRecorded / 2;
+            if (n > m->total - m->got) n = m->total - m->got;
+            memcpy(m->all + m->got, m->h[m->cur].lpData, n * 2);
+            m->got += n;
+            mme_requeue(m);
+        }
+    }
+    return 0;
+}
+
+/* Record @ms the way PortAudio's MME host does, its thread held up for
+ * @stall ms once a second (as a busy machine holds it up); every buffer
+ * must arrive (no overflow) and the WAV goes to @path */
+static int mme(const char *path, DWORD ms, DWORD stall)
+{
+    static Mme m;
+    WAVEFORMATEX f = { 1, 1, 44100, 88200, 2, 16, 0 };
+    m.ev = CreateEventW(0, FALSE, FALSE, 0);
+    UINT id = wave_id(TRUE);
+    if (id == (UINT)-2) return 1;
+    MMRESULT r = waveInOpen(&m.wi, id, &f, (DWORD_PTR)m.ev, 0, CALLBACK_EVENT);
+    if (r) { printf("FAIL waveInOpen: %u\n", r); return 1; }
+    m.total = f.nSamplesPerSec * ms / 1000;
+    m.all = calloc(m.total + MME_FRAMES, 2);
+    for (int i = 0; i < MME_BUFS; i++) {
+        m.h[i].lpData = malloc(MME_FRAMES * 2);
+        m.h[i].dwBufferLength = MME_FRAMES * 2;
+        waveInPrepareHeader(m.wi, &m.h[i], sizeof(WAVEHDR));
+        waveInAddBuffer(m.wi, &m.h[i], sizeof(WAVEHDR));
+    }
+    m.stall = stall;
+    HANDLE t = CreateThread(0, 0, mme_thread, &m, CREATE_SUSPENDED, 0);
+    SetThreadPriority(t, THREAD_PRIORITY_TIME_CRITICAL);
+    DWORD t0 = GetTickCount();
+    waveInStart(m.wi);
+    ResumeThread(t);
+    WaitForSingleObject(t, INFINITE);
+    DWORD elapsed = GetTickCount() - t0;
+    waveInReset(m.wi);
+    for (int i = 0; i < MME_BUFS; i++) waveInUnprepareHeader(m.wi, &m.h[i], sizeof(WAVEHDR));
+    waveInClose(m.wi);
+    printf("recorded %lu samples in %lu ms, held up %lu ms a second; %d overflows, %d buffers skipped\n",
+           m.got, elapsed, stall, m.overflows, m.skipped);
+    if (!save_wav(path, m.all, m.got * 2, f.nSamplesPerSec, 1)) return 1;
+    if (m.got < m.total) { printf("FAIL recorded %lu of %lu samples\n", m.got, m.total); return 1; }
+    if (m.overflows) { printf("FAIL %d input overflows (dropouts)\n", m.overflows); return 1; }
+    return 0;
+}
+
 static double g_hz;
 static DWORD g_ms;
 static DWORD WINAPI wasapi_thread(LPVOID p) { (void)p; return (DWORD)wasapi(g_hz, g_ms); }
@@ -998,6 +1094,8 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "float")) return tone(hz, ms, TRUE);
     if (!strcmp(cmd, "wasapi")) return wasapi(hz, ms);
     if (!strcmp(cmd, "record") && argc > 2) return record(argv[2], argc > 3 ? (DWORD)atoi(argv[3]) : 2000);
+    if (!strcmp(cmd, "mme") && argc > 2)
+        return mme(argv[2], argc > 3 ? (DWORD)atoi(argv[3]) : 3000, argc > 4 ? (DWORD)atoi(argv[4]) : 0);
     if (!strcmp(cmd, "capture") && argc > 2) return capture(argv[2], argc > 3 ? (DWORD)atoi(argv[3]) : 1000);
     if (!strcmp(cmd, "volume")) return volume();
     if (!strcmp(cmd, "endpoints")) return endpoints();
@@ -1044,7 +1142,7 @@ int main(int argc, char **argv)
         return !ok;
     }
     printf("usage: soundtest info | tone [HZ] [MS] | float [HZ] [MS] | play FILE | ding | wasapi [HZ] [MS] | beep [HZ] [MS]\n"
-           "       | record FILE [MS] | capture FILE [MS] | volume | dsound [HZ] [MS] | dscapture FILE [MS]\n"
+           "       | record FILE [MS] | mme FILE [MS] [STALL] | capture FILE [MS] | volume | dsound [HZ] [MS] | dscapture FILE [MS]\n"
            "       | endpoints | default out|in NAME | level out|in [LEVEL] | wovolume | dsenum\n"
            "       (dev=NAME: use that device; rate=N: tone at N Hz)\n");
     return 1;

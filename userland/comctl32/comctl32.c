@@ -331,7 +331,8 @@ CC LRESULT WINAPI DefSubclassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 
 
 /* -----------------------------------------------------------------------
- * Task dialogs: a message box with the same parts
+ * Task dialogs: a message box with the same parts, or a dialog of their
+ * own for custom buttons
  * ----------------------------------------------------------------------- */
 /* TASKDIALOGCONFIG is byte-packed in the Windows headers */
 #pragma pack(push, 1)
@@ -390,22 +391,187 @@ CC HRESULT WINAPI TaskDialog(HWND owner, HINSTANCE inst, LPCWSTR title, LPCWSTR 
     return 0;
 }
 
-/* Custom buttons cannot be shown by a message box: the dialog's default
- * button (else its first custom button) is taken as pressed, after the
- * text has been shown with OK */
+/* A task dialog with custom buttons: its own window (the instruction and
+ * content, the icon, then the custom buttons, as command links stacked
+ * one per row when TDF_USE_COMMAND_LINKS, and the common buttons in a row
+ * at the bottom right).  Radio buttons, the verification check box and
+ * the callback are not shown or called. */
+typedef struct {
+    const TASKDIALOGCONFIG_ *c;
+    LPCWSTR text;
+    HICON icon;
+    int ids[16];
+    LPCWSTR labels[16];
+    int n, ncustom, cancel;
+} TaskDlg;
+
+#define TD_BUTTON_ID0 0x7000
+
+static void td_layout(HWND h, TaskDlg *t)
+{
+    int k = cc_k(h), pad = 12 * k, ico = t->icon ? 32 * k + 10 * k : 0, w = 420 * k;
+    HFONT f = cc_font_for(h);
+    HDC dc = GetDC(h);
+    HGDIOBJ of = SelectObject(dc, f);
+    RECT tr = { 0, 0, w - 2 * pad - ico, 0 };
+    DrawTextW(dc, t->text, -1, &tr, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    int y = pad, th = tr.bottom < 32 * k ? 32 * k : tr.bottom;
+    HWND st = CreateWindowExW(0, L"STATIC", t->text, WS_CHILD | WS_VISIBLE | SS_NOPREFIX, pad + ico, y, w - 2 * pad - ico, tr.bottom,
+                              h, (HMENU)(INT_PTR)-1, NULL, NULL);
+    SendMessageW(st, WM_SETFONT, (WPARAM)f, 0);
+    y += th + pad;
+    BOOL links = (t->c->dwFlags & 0x10) != 0;            /* TDF_USE_COMMAND_LINKS */
+    int bh = 24 * k, x = w - pad;
+    for (int i = 0; i < t->n; i++) {
+        BOOL custom = i < t->ncustom;
+        WCHAR label[256];
+        int j = 0;
+        for (LPCWSTR q = t->labels[i]; q && *q && j < 255; q++) label[j++] = *q == '\n' ? ' ' : *q;
+        label[j] = 0;
+        HWND b;
+        DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+                      (t->ids[i] == t->c->nDefaultButton || (!t->c->nDefaultButton && i == 0) ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON);
+        if (custom && links) {
+            b = CreateWindowExW(0, L"BUTTON", label, style | BS_LEFT, pad + ico, y, w - 2 * pad - ico, bh + 8 * k, h,
+                                (HMENU)(INT_PTR)(TD_BUTTON_ID0 + i), NULL, NULL);
+            y += bh + 8 * k + 4 * k;
+        } else {
+            RECT br = { 0, 0, 0, 0 };
+            DrawTextW(dc, label, -1, &br, DT_CALCRECT | DT_SINGLELINE);
+            int bw = br.right + 24 * k < 80 * k ? 80 * k : br.right + 24 * k;
+            if (bw > w - 2 * pad) bw = w - 2 * pad;
+            b = CreateWindowExW(0, L"BUTTON", label, style, 0, 0, bw, bh, h, (HMENU)(INT_PTR)(TD_BUTTON_ID0 + i), NULL, NULL);
+        }
+        SendMessageW(b, WM_SETFONT, (WPARAM)f, 0);
+    }
+    if (links && t->ncustom) y += 4 * k;
+    /* the row of push buttons, right-aligned, wrapping when it is full */
+    int row_y = y, any = 0;
+    for (int i = t->n - 1; i >= 0; i--) {
+        if (i < t->ncustom && links) continue;
+        HWND b = GetDlgItem(h, TD_BUTTON_ID0 + i);
+        RECT r;
+        GetWindowRect(b, &r);
+        int bw = r.right - r.left;
+        if (x - bw < pad) { x = w - pad; row_y += bh + 6 * k; }
+        SetWindowPos(b, NULL, x - bw, row_y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        x -= bw + 6 * k;
+        any = 1;
+    }
+    if (any) y = row_y + bh + pad;
+    SelectObject(dc, of);
+    ReleaseDC(h, dc);
+    RECT wr = { 0, 0, w, y };
+    AdjustWindowRectEx(&wr, (DWORD)GetWindowLongPtrW(h, GWL_STYLE), FALSE, (DWORD)GetWindowLongPtrW(h, GWL_EXSTYLE));
+    int cw = wr.right - wr.left, ch = wr.bottom - wr.top;
+    RECT pr;
+    HWND owner = t->c->hwndParent;
+    if (!owner || !GetWindowRect(owner, &pr)) SetRect(&pr, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    SetWindowPos(h, NULL, pr.left + (pr.right - pr.left - cw) / 2, pr.top + (pr.bottom - pr.top - ch) / 2, cw, ch,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    for (int i = 0; i < t->n; i++)
+        if (t->ids[i] == t->c->nDefaultButton || (!t->c->nDefaultButton && i == 0)) {
+            SetFocus(GetDlgItem(h, TD_BUTTON_ID0 + i));
+            break;
+        }
+}
+
+static INT_PTR CALLBACK td_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
+{
+    TaskDlg *t = (TaskDlg *)GetWindowLongPtrW(h, DWLP_USER);
+    switch (m) {
+    case WM_INITDIALOG:
+        SetWindowLongPtrW(h, DWLP_USER, lp);
+        td_layout(h, (TaskDlg *)lp);
+        return FALSE;
+    case WM_PAINT:
+        if (t && t->icon) {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(h, &ps);
+            int k = cc_k(h);
+            DrawIconEx(dc, 12 * k, 12 * k, t->icon, 32 * k, 32 * k, 0, NULL, DI_NORMAL);
+            EndPaint(h, &ps);
+            return TRUE;
+        }
+        return FALSE;
+    case WM_COMMAND: {
+        int id = LOWORD(wp);
+        if (t && id >= TD_BUTTON_ID0 && id < TD_BUTTON_ID0 + t->n) { EndDialog(h, t->ids[id - TD_BUTTON_ID0]); return TRUE; }
+        if (t && id == IDCANCEL && t->cancel) { EndDialog(h, IDCANCEL); return TRUE; }
+        return FALSE;
+    }
+    case WM_CLOSE:
+        if (t && t->cancel) EndDialog(h, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static int td_custom(const TASKDIALOGCONFIG_ *c)
+{
+    static const struct { DWORD bit; int id; LPCWSTR label; } common[] = {
+        { 1, IDOK, L"OK" }, { 2, IDYES, L"&Yes" }, { 4, IDNO, L"&No" }, { 0x10, IDRETRY, L"&Retry" },
+        { 8, IDCANCEL, L"Cancel" }, { 0x20, IDCLOSE, L"&Close" },
+    };
+    TaskDlg t;
+    memset(&t, 0, sizeof(t));
+    t.c = c;
+    WCHAR tb[256], mb[1024], cb[2048];
+    LPCWSTR title = res_str(c->hInstance, c->pszWindowTitle, tb, 256);
+    LPCWSTR main = res_str(c->hInstance, c->pszMainInstruction, mb, 1024);
+    LPCWSTR content = res_str(c->hInstance, c->pszContent, cb, 2048);
+    int n1 = wlen(main), n2 = wlen(content);
+    WCHAR *body = malloc(2 * ((size_t)n1 + n2 + 4));
+    if (!body) return IDCANCEL;
+    int o = 0;
+    if (n1) { memcpy(body, main, 2 * (size_t)n1); o = n1; }
+    if (n1 && n2) { body[o++] = '\n'; body[o++] = '\n'; }
+    if (n2) { memcpy(body + o, content, 2 * (size_t)n2); o += n2; }
+    body[o] = 0;
+    t.text = body;
+    for (UINT i = 0; i < c->cButtons && t.n < 10; i++) {
+        t.ids[t.n] = c->pButtons[i].nButtonID;
+        t.labels[t.n++] = c->pButtons[i].pszButtonText;
+    }
+    t.ncustom = t.n;
+    for (int i = 0; i < 6; i++)
+        if (c->dwCommonButtons & common[i].bit) { t.ids[t.n] = common[i].id; t.labels[t.n++] = common[i].label; }
+    t.cancel = (c->dwCommonButtons & 8) || (c->dwFlags & 8);   /* a Cancel button, TDF_ALLOW_DIALOG_CANCELLATION */
+    LPCWSTR icon = (c->dwFlags & 2) ? NULL : c->pszMainIcon;     /* (TDF_USE_HICON_MAIN: not shown) */
+    if (icon == MAKEINTRESOURCEW(-2)) t.icon = LoadIconW(NULL, IDI_ERROR);
+    else if (icon == MAKEINTRESOURCEW(-1)) t.icon = LoadIconW(NULL, IDI_WARNING);
+    else if (icon == MAKEINTRESOURCEW(-3)) t.icon = LoadIconW(NULL, IDI_INFORMATION);
+    else if (icon == MAKEINTRESOURCEW(-4)) t.icon = LoadIconW(NULL, IDI_SHIELD);
+    /* the template: no controls (td_layout makes them), the caption and font */
+    WORD tpl[512];
+    memset(tpl, 0, sizeof(tpl));
+    DLGTEMPLATE *d = (DLGTEMPLATE *)tpl;
+    d->style = DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    d->cx = 200;
+    d->cy = 60;
+    WORD *w = tpl + sizeof(DLGTEMPLATE) / 2;
+    *w++ = 0;                                                     /* no menu */
+    *w++ = 0;                                                     /* the dialog class */
+    for (int i = 0; title && title[i] && i < 200; i++) *w++ = title[i];
+    *w++ = 0;
+    *w++ = 9;
+    for (LPCWSTR q = L"Segoe UI"; *q; q++) *w++ = *q;
+    *w++ = 0;
+    INT_PTR r = DialogBoxIndirectParamW(NULL, (LPCDLGTEMPLATEW)tpl, c->hwndParent, td_proc, (LPARAM)&t);
+    free(body);
+    return r > 0 ? (int)r : IDCANCEL;
+}
+
+/* With custom buttons, the dialog of td_custom; else a message box */
 CC HRESULT WINAPI TaskDialogIndirect(const TASKDIALOGCONFIG_ *c, int *button, int *radio, BOOL *verify)
 {
     if (!c || c->cbSize < 36) return 0x80070057L;
-    DWORD common = c->dwCommonButtons;
-    int custom = 0;
-    if (c->cbSize >= sizeof(*c) && c->cButtons && c->pButtons) {
-        custom = c->pButtons[0].nButtonID;
-        for (UINT i = 0; i < c->cButtons; i++) if (c->pButtons[i].nButtonID == c->nDefaultButton) custom = c->nDefaultButton;
-        if (!common) common = 1;                                /* TDCBF_OK_BUTTON */
-    }
-    int r = show(c->hwndParent, c->hInstance, c->pszWindowTitle, c->pszMainInstruction, c->pszContent, common,
+    int r;
+    if (c->cbSize >= sizeof(*c) && c->cButtons && c->pButtons)
+        r = td_custom(c);
+    else
+        r = show(c->hwndParent, c->hInstance, c->pszWindowTitle, c->pszMainInstruction, c->pszContent, c->dwCommonButtons,
                  (c->dwFlags & 2) ? NULL : c->pszMainIcon);
-    if (custom && (r == IDOK || !c->dwCommonButtons)) r = custom;
     if (button) *button = r;
     if (radio) *radio = c->cbSize >= sizeof(*c) && c->cRadioButtons && c->pRadioButtons ? (c->nDefaultRadioButton ? c->nDefaultRadioButton : c->pRadioButtons[0].nButtonID) : 0;
     if (verify) *verify = FALSE;

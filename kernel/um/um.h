@@ -162,13 +162,21 @@ void um_registry_set_dword(const char *path, const char *name, UINT32 val);   /*
 bool um_registry_get_dword(const char *path, const char *name, UINT32 *out);
 void um_registry_set_sz(const char *path, const char *name, const char *val);
 bool um_registry_get_sz(const char *path, const char *name, char *out, int cap);
+/* Changes with every key or value written: a cheap "has anything changed?" */
+UINT32 um_registry_generation(void);
+void um_registry_set_bin(const char *path, const char *name, const void *data, UINT32 len);
+int  um_registry_get_bin(const char *path, const char *name, void *out, int cap);   /* its length, or -1 */
+/* The first-boot setup's answers (apps/welcome.c): UserName, FirstBootDone */
+#define UM_SETUP_KEY "Machine\\SOFTWARE\\NovaOS\\Setup"
+/* The user's SID: HKEY_CURRENT_USER is "User\\" UM_USER_SID */
+#define UM_USER_SID "S-1-5-21-1000-2000-3000-1001"
 void UmFault(UINT32 status, UINT64 rip, UINT64 addr) __attribute__((noreturn));
 void UmFaultAt(UINT32 status, UINT64 rip, UINT64 addr, UINT64 sp) __attribute__((noreturn));
 /* Crash reports in C:\NovaOS\Crashes (um_crash.c) */
 #define UM_CRASH_PATH 80
 const char *UmCrashReport(const UmProcess *p);   /* the crashed program's report ("" if none) */
 void UmCrashPoll(void);                 /* write the reports waiting (desktop thread, from UmPoll) */
-RamNode *UmCrashNewest(void);           /* the newest report, under the file-system lock (or NULL) */
+RamNode *UmCrashNewest(void);           /* the newest report; caller holds FsLock; writes the queued ones first */
 void UmCrashKernel(void);               /* a kernel fault is halting this CPU: save its report on the disk */
 void UmCrashKernelFound(const char *text, UINT32 len);   /* at boot: the last start's kernel crash report */
 /* A 32-bit program's system call (int 0x2E) keeps its registers in @frame */
@@ -199,6 +207,15 @@ struct Thread *DesktopLockOwner(void);     /* diagnostics */
 void UmSaveAll(void);
 /* Timer tick: advances the clocks in KUSER_SHARED_DATA. */
 void UmTimerTick(UINT64 ticks);
+/* The keyboard layout in effect (wm/kbdlayout.c): its HKL, published in
+ * KUSER_SHARED_DATA at UM_KUSD_KBD_HKL (past Windows' own fields: a
+ * NovaOS one), where user32 reads it on every key */
+#define UM_KUSD_KBD_HKL 0xF00
+/* The machine's free memory in pages, kept current on every timer tick
+ * (a NovaOS field too; the total is Windows' NumberOfPhysicalPages at
+ * 0x2E8): GlobalMemoryStatusEx and NtQuerySystemInformation read both */
+#define UM_KUSD_AVAIL_PAGES 0xF08
+void UmSharedKeyboard(UINT32 hkl);
 /* The number of online CPUs changed: update what programs see. */
 void UmCpuCountChanged(void);
 /* Log every program thread's state (serial), for diagnosing hangs. */
@@ -210,3 +227,5 @@ bool UmDemandFault(UINT64 va);
 
 /* Log the failing system calls of programs named @name ("" or NULL: off) */
 void UmSetTrace(const char *name);
+/* Is @p a program being traced ("trace +NAME" when @all: every call)? */
+bool UmTraced(const UmProcess *p, bool all);

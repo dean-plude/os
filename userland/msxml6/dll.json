@@ -1,0 +1,4 @@
+{
+  "deps": ["winhttp", "bcrypt", "oleaut32", "ole32", "advapi32", "msvcrt", "kernel32", "ntdll"],
+  "entry": "DllMain"
+}

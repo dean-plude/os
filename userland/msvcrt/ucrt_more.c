@@ -221,6 +221,11 @@ static struct utimbuf64_ *widen(const struct utimbuf32_ *t, struct utimbuf64_ *o
 CRTEXP int _utime32(const char *p, struct utimbuf32_ *t) { struct utimbuf64_ o; return _utime64(p, widen(t, &o)); }
 CRTEXP int _wutime32(const wchar_t *p, struct utimbuf32_ *t) { struct utimbuf64_ o; return _wutime64(p, widen(t, &o)); }
 CRTEXP int _futime32(int fd, struct utimbuf32_ *t) { struct utimbuf64_ o; return _futime64(fd, widen(t, &o)); }
+#ifdef _WIN64                                /* msvcrt.dll's own: time_t is 64-bit on x64, 32-bit on x86 */
+CRTEXP int _wutime(const wchar_t *p, struct utimbuf64_ *t) { return _wutime64(p, t); }
+#else
+CRTEXP int _wutime(const wchar_t *p, struct utimbuf32_ *t) { return _wutime32(p, t); }
+#endif
 
 /* -----------------------------------------------------------------------
  * _wspawnvp / _wspawnvpe: the narrow forms in UTF-8

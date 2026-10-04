@@ -383,6 +383,7 @@ WINBASEAPI VOID    WINAPI GetSystemTime(LPSYSTEMTIME st);
 WINBASEAPI VOID    WINAPI GetLocalTime(LPSYSTEMTIME st);
 WINBASEAPI BOOL    WINAPI FileTimeToSystemTime(const FILETIME *ft, LPSYSTEMTIME st);
 WINBASEAPI BOOL    WINAPI SystemTimeToFileTime(const SYSTEMTIME *st, LPFILETIME ft);
+WINBASEAPI LONG    WINAPI CompareFileTime(const FILETIME *a, const FILETIME *b);
 
 /* Strings */
 WINBASEAPI int     WINAPI MultiByteToWideChar(UINT cp, DWORD flags, LPCSTR s, int n, LPWSTR out, int cap);

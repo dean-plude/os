@@ -6,6 +6,7 @@
 #include "tls.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
+#include "../ke/spinlock.h"
 #include "../mm/vmm.h"
 #include "../lib/string.h"
 #include "../hal/rtc.h"
@@ -64,6 +65,10 @@ static struct {
 static mbedtls_sha256_context g_pool;
 static UINT64                 g_pool_ctr;
 static bool                   g_pool_ready;
+/* The pool's own lock (a leaf, held for one digest): programs asking for
+ * random bytes (NtNovaGetRandom, as every Firefox process does as it
+ * starts) need not queue for the network lock */
+static KSpinLock              g_pool_lock = KSPINLOCK_INIT;
 
 static bool rdrand64(UINT64 *out)
 {
@@ -88,15 +93,18 @@ static void pool_init(void)
 
 void TlsStirEntropy(const void *data, UINT32 len)
 {
+    IrqState s = spin_lock_irqsave(&g_pool_lock);
     pool_init();
     mbedtls_sha256_update(&g_pool, data, len);
+    spin_unlock_irqrestore(&g_pool_lock, s);
 }
 
 void TlsEntropyOutput(UINT8 *out, size_t len)
 {
-    pool_init();
     while (len) {
         UINT8 block[32];
+        IrqState s = spin_lock_irqsave(&g_pool_lock);
+        pool_init();
         mbedtls_sha256_context c;
         mbedtls_sha256_init(&c);
         mbedtls_sha256_clone(&c, &g_pool);
@@ -105,6 +113,7 @@ void TlsEntropyOutput(UINT8 *out, size_t len)
         mbedtls_sha256_finish(&c, block);
         mbedtls_sha256_free(&c);
         mbedtls_sha256_update(&g_pool, block, sizeof(block));   /* ratchet */
+        spin_unlock_irqrestore(&g_pool_lock, s);
         size_t n = len < sizeof(block) ? len : sizeof(block);
         memcpy(out, block, n);
         out += n; len -= n;

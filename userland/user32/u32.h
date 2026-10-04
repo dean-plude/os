@@ -43,7 +43,7 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
        CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH,
        CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
        CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD,
-       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH, CTL_TABLET, CTL_SET_DPI, CTL_SET_SCALE };
+       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH, CTL_TABLET, CTL_SET_DPI, CTL_SET_SCALE, CTL_GAMEPAD };
 /* display.c: the monitors (GetSystemMetrics' virtual screen) */
 int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
@@ -237,6 +237,7 @@ BOOL  post_thread(DWORD tid, UINT msg, WPARAM wp, LPARAM lp);
 int   pump_one(MSG *m, HWND h, UINT mn, UINT mx, UINT flags, int wait, DWORD timeout);
 void  process_sent(void);
 extern BYTE g_keys[256];
+BOOL kbd_set_default(HKL hkl);       /* kbd.c: SPI_SETDEFAULTINPUTLANG */
 extern int g_alt_tap;              /* msg.c: Alt pressed alone so far */
 extern POINT g_cursor;
 void  kill_window_timers(HWND h);

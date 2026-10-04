@@ -186,6 +186,10 @@ typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_OPEN)(
 typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_CLOSE)(
     EFI_FILE_PROTOCOL *This);
 
+/* Closes the file and deletes it (EFI_WARN_DELETE_FAILURE: closed, not deleted) */
+typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_DELETE)(
+    EFI_FILE_PROTOCOL *This);
+
 typedef EFI_STATUS (__attribute__((ms_abi)) *EFI_FILE_READ)(
     EFI_FILE_PROTOCOL *This,
     UINTN             *BufferSize,
@@ -233,7 +237,7 @@ struct _EFI_FILE_PROTOCOL {
     UINT64                Revision;
     EFI_FILE_OPEN         Open;
     EFI_FILE_CLOSE        Close;
-    void                 *Delete;
+    EFI_FILE_DELETE       Delete;
     EFI_FILE_READ         Read;
     EFI_FILE_WRITE        Write;
     EFI_FILE_GET_POSITION GetPosition;
@@ -454,6 +458,12 @@ typedef struct {
 
 #define EFI_ACPI_20_TABLE_GUID \
     { 0x8868e871, 0xe4f1, 0x11d3, { 0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81 } }
+
+/* SMBIOS entry points: the 64-bit "_SM3_" one (SMBIOS 3.x) and the older "_SM_" one */
+#define SMBIOS3_TABLE_GUID \
+    { 0xf2fd1544, 0x9794, 0x4a2c, { 0x99, 0x2e, 0xe5, 0xbb, 0xcf, 0x20, 0xe3, 0x94 } }
+#define SMBIOS_TABLE_GUID \
+    { 0xeb9d2d31, 0x2d88, 0x11d3, { 0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d } }
 
 /* -----------------------------------------------------------------------
  * System Table

@@ -139,6 +139,18 @@ NTSTATUS paging_map(uintptr_t va, uintptr_t pa, size_t size, MapFlags flags)
 }
 
 /* -----------------------------------------------------------------------
+ * paging_prepare
+ * ----------------------------------------------------------------------- */
+NTSTATUS paging_prepare(uintptr_t va, size_t size)
+{
+    for (uintptr_t cur = ALIGN_DOWN(va, PAGE_1GB); cur < va + size; cur += PAGE_1GB) {
+        pte_t *pdpt = get_or_create_table(kernel_pml4, PML4_IDX(cur), true);
+        if (!pdpt || !get_or_create_table(pdpt, PDPT_IDX(cur), true)) return STATUS_NO_MEMORY;
+    }
+    return STATUS_SUCCESS;
+}
+
+/* -----------------------------------------------------------------------
  * paging_unmap
  * ----------------------------------------------------------------------- */
 void paging_unmap(uintptr_t va, size_t size)
