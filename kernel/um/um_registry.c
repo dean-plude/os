@@ -363,8 +363,10 @@ bool um_registry_get_dword(const char *path, const char *name, UINT32 *out)
     um_lock_shared(&g_reg);
     RegKey *k = NULL;
     if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        um_lock(key_lock(k));                               /* (programs change values beside us) */
         RegValue *v = find_value(k, nm, m);
         if (v && v->type == 4 /* REG_DWORD */ && v->len == 4) { memcpy(out, v->data, 4); ok = true; }
+        um_unlock(key_lock(k));
     }
     um_unlock_shared(&g_reg);
     return ok;
@@ -382,6 +384,7 @@ bool um_registry_get_sz(const char *path, const char *name, char *out, int cap)
     um_lock_shared(&g_reg);
     RegKey *k = NULL;
     if (cap > 0 && walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        um_lock(key_lock(k));
         RegValue *v = find_value(k, nm, m);
         if (v && (v->type == 1 /* REG_SZ */ || v->type == 2 /* REG_EXPAND_SZ */)) {
             const UINT16 *d = (const UINT16 *)v->data;
@@ -390,6 +393,7 @@ bool um_registry_get_sz(const char *path, const char *name, char *out, int cap)
             out[i] = 0;
             ok = true;
         }
+        um_unlock(key_lock(k));
     }
     um_unlock_shared(&g_reg);
     return ok;
@@ -419,11 +423,13 @@ int um_registry_get_bin(const char *path, const char *name, void *out, int cap)
     um_lock_shared(&g_reg);
     RegKey *k = NULL;
     if (walk(g_root, w, n, false, false, &k, NULL) == ST_SUCCESS && k) {
+        um_lock(key_lock(k));
         RegValue *v = find_value(k, nm, m);
         if (v && v->type == 3 /* REG_BINARY */) {
             len = (int)v->len;
             memcpy(out, v->data, (size_t)(len < cap ? len : cap));
         }
+        um_unlock(key_lock(k));
     }
     um_unlock_shared(&g_reg);
     return len;
@@ -1319,6 +1325,8 @@ typedef struct Watch {
     bool tree;
     UmObject *ev;                           /* referenced */
     UmProcess *proc;
+    bool sync;                              /* a waiting caller's: it frees the watch itself */
+    bool spent;                             /* (sync) fired or dropped */
 } Watch;
 
 static Watch *g_watch;                      /* under g_wlock (and g_reg, shared or not) */
@@ -1334,6 +1342,8 @@ static void spend(Watch *w)
 {
     key_unref(w->key);
     w->key = NULL;
+    w->spent = true;
+    if (w->sync) return;                    /* its caller frees it once it wakes */
     w->next = g_spent;
     g_spent = w;
 }
@@ -1381,6 +1391,7 @@ void um_registry_process_gone(UmProcess *p)
         if (w->proc != p) { pp = &w->next; continue; }
         *pp = w->next;
         spend(w);
+        if (w->sync) { w->next = g_spent; g_spent = w; }   /* (its caller is gone) */
     }
     um_unlock(&g_wlock);
     release_spent();
@@ -1426,6 +1437,7 @@ static UINT64 sys_notify_change_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             w->tree = tree;
             w->ev = async ? ev : um_ob_ref(ev);             /* sync: the watch's reference and ours */
             w->proc = UmCurrent();
+            w->sync = !async;
             w->next = g_watch;
             __atomic_store_n(&g_watch, w, __ATOMIC_RELEASE);
         }
@@ -1437,10 +1449,16 @@ static UINT64 sys_notify_change_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (async) return 0x00000103u;                          /* STATUS_PENDING */
 
     st = um_wait_one(ev, -1);
-    um_lock(&g_wlock);                                      /* not fired (the process is ending): drop it */
-    for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next)
-        if (*pp == w) { *pp = w->next; spend(w); break; }
+    /* Fired, or not (the process is ending): then it is dropped.  The
+     * watch is this caller's to free either way, so no other watch can
+     * have taken its memory meanwhile and be dropped in its place. */
+    um_lock(&g_wlock);
+    if (!w->spent)
+        for (Watch **pp = &g_watch; *pp; pp = &(*pp)->next)
+            if (*pp == w) { *pp = w->next; spend(w); break; }
     um_unlock(&g_wlock);
+    um_ob_unref(w->ev);                                     /* the watch's reference */
+    kfree(w);
     release_spent();
     um_ob_unref(ev);
     if (st) return st;
