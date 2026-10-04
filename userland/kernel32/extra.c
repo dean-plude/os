@@ -1296,6 +1296,8 @@ WINBASEAPI UINT WINAPI SetErrorMode(UINT mode)
     return old;
 }
 WINBASEAPI UINT WINAPI GetErrorMode(void)      { return g_error_mode; }
+/* The old C runtimes' file handle count: Win32 has no such limit, and the call returns the count asked for */
+WINBASEAPI UINT WINAPI SetHandleCount(UINT n) { return n; }
 WINBASEAPI BOOL WINAPI SetThreadErrorMode(DWORD mode, LPDWORD old) { if (old) *old = g_error_mode; g_error_mode = mode; return TRUE; }
 WINBASEAPI DWORD WINAPI GetThreadErrorMode(void) { return g_error_mode; }
 
@@ -2280,7 +2282,15 @@ WINBASEAPI BOOL WINAPI GetVersionExW(LPVOID vi)
     return TRUE;
 }
 
-WINBASEAPI BOOL WINAPI VerifyVersionInfoW(LPVOID vi, DWORD mask, DWORDLONG cond) { (void)vi; (void)mask; (void)cond; return TRUE; }
+NTSYSAPI NTSTATUS NTAPI RtlVerifyVersionInfo(PVOID info, ULONG mask, ULONGLONG cond);
+/* ntdll's comparison; a version that falls short is ERROR_OLD_WIN_VERSION */
+WINBASEAPI BOOL WINAPI VerifyVersionInfoW(LPVOID vi, DWORD mask, DWORDLONG cond)
+{
+    NTSTATUS st = RtlVerifyVersionInfo(vi, mask, cond);
+    if (st == 0) return TRUE;
+    SetLastError(st == (NTSTATUS)0xC0000059 ? 1150 /* ERROR_OLD_WIN_VERSION */ : ERROR_INVALID_PARAMETER);
+    return FALSE;
+}
 WINBASEAPI ULONGLONG WINAPI VerSetConditionMask(ULONGLONG cond, DWORD mask, BYTE op)
 {
     for (int i = 0; i < 8; i++) if (mask & (1u << i)) cond |= (ULONGLONG)(op & 7) << (3 * i);

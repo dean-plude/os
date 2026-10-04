@@ -27,6 +27,7 @@ _CRTIMP char  *strtok_s(char *s, const char *delim, char **ctx);
 _CRTIMP char  *_strdup(const char *s);
 _CRTIMP int    _stricmp(const char *a, const char *b);
 _CRTIMP int    _strnicmp(const char *a, const char *b, size_t n);
+_CRTIMP int    _strcmpi(const char *a, const char *b);
 _CRTIMP char  *_strlwr(char *s);
 _CRTIMP char  *_strupr(char *s);
 _CRTIMP char  *strerror(int errnum);

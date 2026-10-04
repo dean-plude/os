@@ -177,3 +177,25 @@ __declspec(dllexport) void NAME(const T *path, T *drive, T *dir, T *fname, T *ex
 }
 SPLITPATH(_splitpath, char)
 SPLITPATH(_wsplitpath, wchar_t)
+
+/* _makepath/_wmakepath: the reverse of _splitpath, @path from drive,
+ * directory (a separator added after it when missing), base name and
+ * extension (a dot added before it when missing); any part may be NULL */
+#define MAKEPATH(NAME, T)                                                             \
+__declspec(dllexport) void NAME(T *path, const T *drive, const T *dir, const T *fname, const T *ext) \
+{                                                                                     \
+    T *p = path;                                                                      \
+    if (drive && *drive) { *p++ = drive[0]; *p++ = ':'; }                             \
+    if (dir && *dir) {                                                                \
+        while (*dir) *p++ = *dir++;                                                   \
+        if (p[-1] != '/' && p[-1] != '\\') *p++ = '\\';                          \
+    }                                                                                 \
+    if (fname) while (*fname) *p++ = *fname++;                                        \
+    if (ext && *ext) {                                                                \
+        if (*ext != '.') *p++ = '.';                                                  \
+        while (*ext) *p++ = *ext++;                                                   \
+    }                                                                                 \
+    *p = 0;                                                                           \
+}
+MAKEPATH(_makepath, char)
+MAKEPATH(_wmakepath, wchar_t)

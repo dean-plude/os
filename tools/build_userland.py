@@ -89,6 +89,7 @@ def cflags():
 #             (and userland/NAME/NAME.rc, if there is one, is linked in)
 #   tlssup    true: link lib/tlssup.c (implicit TLS)
 #   x64_only  true: not built for SysWOW64
+#   x86_only  true: built for SysWOW64 alone (ddraw.dll: cnc-ddraw is 32-bit code)
 #   ordinals  {name: ordinal}: Windows' export ordinals, for DLLs
 #             programs import from by number
 #   file      the file name when it is not NAME.dll ("bthprops.cpl")
@@ -134,7 +135,7 @@ def load_manifests():
                 taken[m[key]] = n
         slot = lo
         for n in sorted(found):
-            if key in found[n]:
+            if key in found[n] or (arch == 'x64' and found[n].get('x86_only')):
                 continue
             while any(b <= slot < b + SLOT or slot <= b < slot + SLOT for b in taken):
                 slot += SLOT
@@ -458,7 +459,7 @@ def build_pass(arch, all_tasks):
             hook(name, 'link')(me, odir, objs, deps, base)
         else:
             link_dll(odir, name, objs, deps, base)
-    dlls = [n for n, m in DLLS.items() if not (arch == 'x86' and m.get('x64_only'))]
+    dlls = [n for n, m in DLLS.items() if not (arch == 'x86' and m.get('x64_only')) and not (arch == 'x64' and m.get('x86_only'))]
     for name in dlls:
         task('dll:' + name, prelude + ['dll:' + d for d in DLLS[name].get('deps', [])],
              lambda name=name: build_dll(name, DLLS[name]))

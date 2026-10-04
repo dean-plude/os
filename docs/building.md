@@ -138,7 +138,7 @@ made in parallel add files rather than collide on the same lines.
   0x97000000 (x86), and the build checks that no two DLLs overlap.  The
   older DLLs keep the fixed addresses written in their `dll.json`.  Other
   keys: `sources` (directories its `.c` files come from, default its own),
-  `entry` (`"DllMain"`), `x64_only`, `ordinals` (`{"Name": 12}`, for
+  `entry` (`"DllMain"`), `x64_only`, `x86_only` (built for SysWOW64 alone), `ordinals` (`{"Name": 12}`, for
   DLLs programs import from by number), and `file` for a DLL whose file
   name is not `NAME.dll` (`"bthprops.cpl"`, a Control Panel item).
 - **When a DLL needs more** (a third-party library, extra flags, a
@@ -900,6 +900,7 @@ would do).
 | OpenTyrian 2.1.20260913 (the official 64-bit zip with the freeware Tyrian 2.1 data, the App Store's download) | `store install Mesa 3D`, `store install DXVK` and `store install OpenTyrian`; the game draws with Direct3D 9 (SDL2's renderer) through DXVK, its demo plays in a window, Alt+Enter switches it to full screen, and Enter goes through its menus (one-player game, episode 1, normal), pressed only once the screen stands still (the game fades between menus and takes no keys meanwhile), to its game menu, which must match `tests/reference/opentyrian.png`; the sound NovaOS played while it ran must hold at least 5 s of sound (its music) |
 | Blobby Volley 2 1.1.1 (the official 32-bit zip, the App Store's download) | `store install Mesa 3D`, `store install DXVK` and `store install Blobby Volley 2`; started from its folder, the game opens in an 800x600 window and the keyboard goes Options, Graphic Options, Fullscreen Mode, OK: SDL switches the display to 800x600 and draws with Direct3D 9 in exclusive full screen through DXVK; the screenshot must be 800x600 and, back in the main menu, match `tests/reference/blobby volley 2.png`; after Alt+F4 ends the game, `sysinfo` must report the display back at 2560x1600 |
 | LBreakout2 2.6.5 (the official 64-bit zip, the App Store's download) | `store install LBreakout2`; started from its folder, the game (SDL 1.2, drawn with GDI) opens in a 640x480 window and 'f' switches it to full screen: SDL changes the display to 640x480 and the window to `WS_POPUP`, so the desktop's frame goes; the screenshot must be 640x480 and match `tests/reference/lbreakout2.png`; after Alt+F4 ends the game, `sysinfo` must report the display back at 2560x1600 |
+| Cave Story 1.0.0.6 (Aeon Genesis' English translation, 32-bit, the App Store's download) | `store install Cave Story`; started from its folder, the game asks DirectDraw for 640x480 at 16 bits and NovaOS's `ddraw.dll` (cnc-ddraw) switches the display to 640x480; the title screen must show at 640x480, Z (held) starts a new game, and once its opening line is written the screenshot must match `tests/reference/cave story.png`; after Alt+F4 ends the game, `sysinfo` must report the display back at 2560x1600 |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 
