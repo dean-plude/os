@@ -211,6 +211,10 @@ void UmTimerTick(UINT64 ticks);
  * KUSER_SHARED_DATA at UM_KUSD_KBD_HKL (past Windows' own fields: a
  * NovaOS one), where user32 reads it on every key */
 #define UM_KUSD_KBD_HKL 0xF00
+/* The machine's free memory in pages, kept current on every timer tick
+ * (a NovaOS field too; the total is Windows' NumberOfPhysicalPages at
+ * 0x2E8): GlobalMemoryStatusEx and NtQuerySystemInformation read both */
+#define UM_KUSD_AVAIL_PAGES 0xF08
 void UmSharedKeyboard(UINT32 hkl);
 /* The number of online CPUs changed: update what programs see. */
 void UmCpuCountChanged(void);

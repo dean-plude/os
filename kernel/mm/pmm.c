@@ -42,6 +42,7 @@ static struct {
     uint64_t  bitmap_phys;    /* Physical address of bitmap */
     size_t    total_pages;    /* Total number of physical pages tracked */
     size_t    free_pages;     /* Current free page count */
+    size_t    ram_pages;      /* Pages of RAM (the firmware's conventional memory) */
     size_t    bitmap_words;   /* Number of uint64_t words in bitmap */
     uintptr_t highest_phys;   /* Highest physical address + 1 */
     size_t    hint;           /* No free page in the words below this one */
@@ -177,6 +178,8 @@ void pmm_init(const BootInfo *info)
             }
         }
     }
+
+    pmm.ram_pages = pmm.free_pages;
 
     /* 5. Re-mark the kernel image as USED */
     {
@@ -425,4 +428,14 @@ void pmm_stats(uint64_t *total_out, uint64_t *free_out, uint64_t *used_out)
     if (free_out)  *free_out  = (uint64_t)pmm.free_pages;
     if (used_out)  *used_out  = (uint64_t)(pmm.total_pages - pmm.free_pages);
     lock_release(&pmm.lock);
+}
+
+size_t pmm_free_now(void)
+{
+    return *(volatile size_t *)&pmm.free_pages;
+}
+
+size_t pmm_ram_pages(void)
+{
+    return pmm.ram_pages;
 }

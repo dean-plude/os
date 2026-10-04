@@ -655,6 +655,7 @@ static void kusd_init(void)
     *(UINT32 *)(g_kusd + 0x270) = 0;                      /* NtMinorVersion */
     static const int features[] = { 2, 6, 8, 10, 12, 13, 14 };   /* cmpxchg8b/16b, SSE, SSE2, SSE3, RDTSC, NX */
     for (unsigned i = 0; i < sizeof(features) / sizeof(features[0]); i++) g_kusd[0x274 + features[i]] = 1;
+    *(UINT32 *)(g_kusd + 0x2E8) = (UINT32)pmm_ram_pages();   /* NumberOfPhysicalPages */
     UmCpuCountChanged();
     UmSharedKeyboard(g_kbd_hkl);
     UmTimerTick(sched_ticks());
@@ -683,6 +684,7 @@ void UmTimerTick(UINT64 ticks)
     kusd_time(0x14, um_now_100ns());                      /* SystemTime */
     kusd_time(0x320, ticks);                              /* TickCount */
     *(volatile UINT32 *)g_kusd = (UINT32)ticks;           /* TickCountLowDeprecated */
+    *(volatile UINT32 *)(g_kusd + UM_KUSD_AVAIL_PAGES) = (UINT32)pmm_free_now();
 }
 
 static bool map_kusd(UmProcess *p)

@@ -429,7 +429,10 @@ def main():
                               if os.path.isdir(os.path.join(work, d))]
     t_boot = time.time()
     try:
-        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=4096, data_mb=3072,
+        # Drive C: is kept in memory and gets about 2.3 GB of programs before
+        # the first one starts: 6 GB leaves the programs room, and the data
+        # disk room to save drive C:
+        nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=6144, data_mb=6144,
                     extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
