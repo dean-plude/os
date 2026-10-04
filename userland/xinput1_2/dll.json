@@ -1,0 +1,17 @@
+{
+  "deps": ["kernel32", "ntdll"],
+  "sources": ["xinput1_4"],
+  "ordinals": {
+    "XInputGetState": 2,
+    "XInputSetState": 3,
+    "XInputGetCapabilities": 4,
+    "XInputEnable": 5,
+    "XInputGetDSoundAudioDeviceGuids": 6,
+    "XInputGetBatteryInformation": 7,
+    "XInputGetKeystroke": 8,
+    "XInputGetStateEx": 100,
+    "XInputWaitForGuideButton": 101,
+    "XInputCancelGuideButtonWait": 102,
+    "XInputPowerOffController": 103
+  }
+}

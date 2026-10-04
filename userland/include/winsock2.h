@@ -160,7 +160,9 @@ typedef struct addrinfo ADDRINFOA, *PADDRINFOA;
 #define EAI_NONAME      WSAHOST_NOT_FOUND
 #define EAI_FAMILY      WSAEAFNOSUPPORT
 
-#define FD_SETSIZE 64
+#ifndef FD_SETSIZE
+#define FD_SETSIZE 64                 /* (a program may define it larger first, as on Windows) */
+#endif
 typedef struct fd_set { UINT fd_count; SOCKET fd_array[FD_SETSIZE]; } fd_set;
 #ifndef _NOVA_TIMEVAL
 #define _NOVA_TIMEVAL

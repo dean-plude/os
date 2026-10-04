@@ -5,5 +5,7 @@
   COM in-process and local (`LocalServer32`) servers, type libraries,
   proxy/stub DLLs and calls between processes; drag and drop; a shared clipboard; `.lnk`
   shortcuts; Windows Installer packages; services (`advapi32`'s service
-  control manager); scheduled tasks (Task Scheduler 2.0, kept in
+  control manager); event tracing as Windows answers with no logging
+  session running (providers register, controllers and consumers find no
+  session); scheduled tasks (Task Scheduler 2.0, kept in
   `C:\Windows\System32\Tasks`); the Data Protection API.

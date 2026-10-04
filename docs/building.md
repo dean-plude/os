@@ -273,7 +273,14 @@ usb-ehci` (USB 2), `-device pci-ohci` or `-device piix3-usb-uhci` (USB
 1.1), or an ICH9 EHCI with UHCI companions (`ich9-usb-ehci1` plus
 `ich9-usb-uhci1..3` with `masterbus=`), then e.g. `-device usb-kbd
 -device usb-tablet`.  With `-machine q35,i8042=off` there is no PS/2
-keyboard, so typing goes over USB.
+keyboard, so typing goes over USB.  QEMU has no game controller of its
+own: pass the host's through (`-device
+usb-host,vendorid=0x045e,productid=0x028e` for a wired Xbox 360
+controller), or run `tools/padpeer.py --port 10710 --kind xbox360`
+(or `xboxone`, `hid`) and add `-chardev
+socket,id=pad,host=127.0.0.1,port=10710 -device
+usb-redir,chardev=pad`; the peer takes lines such as `buttons=0x1000
+lx=20000` on port 10810 and moves the controller.
 
 For sound add `-device intel-hda -device hda-output` (or `hda-duplex` or
 `hda-micro`, which add a line in or a microphone to record from);
@@ -550,7 +557,17 @@ the test closes the lid (pc-testdev port `0xE8`), NovaOS must sleep in
 low-power S0 idle, and opening it must wake it; then `install nvme0n1`
 installs NovaOS on the NVMe disk, and after `shutdown /r` it must start
 from that disk and add its firmware boot entry
-([install-and-power.md](install-and-power.md)):
+([install-and-power.md](install-and-power.md)).  The "gamepad" boot has
+three USB game controllers on an xHCI controller, each
+`tools/padpeer.py` behind a `usb-redir` device: a wired Xbox 360
+controller, an Xbox One controller and a HID game pad.  `padtest`
+checks what XInput and DirectInput 8 list; at each step it prints, the
+test sets a controller's buttons, triggers, sticks and hat through the
+peer's control port, and `padtest` must read them through both APIs
+(and DirectInput's buffered events); the motors it sets must reach the
+two Xbox controllers (the peers' logs), and the Xbox 360 one is
+unplugged while it runs.  The 32-bit `padtest still` then reads the two
+left.  To run the suite:
 
 ```bash
 python3 tools/selftest.py --suite devices
@@ -626,7 +643,8 @@ card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
 asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
-`localhost`); on an IPv6-only network made by `tools/v6peer.py` it checks
+`localhost`) and `loadtest` (hundreds of sockets open at once, parallel
+downloads); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 A third boot (`tests/selftest/network-e1000e`) has QEMU's e1000e (the
 82574L) instead of virtio-net: the boot log must show the PHY's ID, its

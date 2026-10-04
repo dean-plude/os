@@ -28,6 +28,7 @@
 #include "../ke/waitq.h"
 #include "../wm/desktop.h"
 #include "../wm/tablet.h"
+#include "../drivers/gamepad.h"
 #include "../wm/kbdlayout.h"
 #include "../hal/display.h"
 
@@ -962,6 +963,15 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  * MONITOR's ptr gets an eleventh value: the monitor's DPI (GdiMonitorDpi). */
 #define CTL_SET_DPI      31
 #define CTL_SET_SCALE    32
+/*  33 GAMEPAD    game controllers (drivers/gamepad.h; xinput1_4.dll and
+ *                dinput8.dll), by arg's low byte, with a slot (0-7) or an
+ *                XInput user (0-3) in arg >> 8:
+ *                0 returns which slots hold a controller (bit n: slot n);
+ *                1 ptr <- the slot's PadInfo; returns 0 if it is empty;
+ *                2 ptr <- the slot's PadState; returns 0 if it is empty;
+ *                3 ptr -> { left, right (0-65535) }: sets its motors;
+ *                4 XInput user's slot, or -1 */
+#define CTL_GAMEPAD      33
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -1156,6 +1166,32 @@ static UINT64 tablet_ctl(UmProcess *p, UINT64 op, UINT64 ptr)
         }
         return 1;
     }
+    }
+    return 0;
+}
+
+/* Game controllers (CTL_GAMEPAD) */
+static UINT64 gamepad_ctl(UINT64 arg, UINT64 ptr)
+{
+    int at = (int)((arg >> 8) & 0xFF);
+    switch (arg & 0xFF) {
+    case 0: return PadPresent();
+    case 1: {
+        PadInfo i;
+        if (!PadGetInfo(at, &i)) return 0;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, &i, sizeof(i))) ? 1 : 0;
+    }
+    case 2: {
+        PadState st;
+        if (!PadGetState(at, &st)) return 0;
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, &st, sizeof(st))) ? 1 : 0;
+    }
+    case 3: {
+        UINT16 m[2];
+        if (!NT_SUCCESS(CopyFromUser(m, (const void *)(uintptr_t)ptr, sizeof(m)))) return 0;
+        return PadSetRumble(at, m[0], m[1]) ? 1 : 0;
+    }
+    case 4: return (UINT64)(INT64)PadXInputSlot(at);
     }
     return 0;
 }
@@ -1443,6 +1479,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == CTL_HWND_TAG) return hwnd_tag(p);
     if (a2 == CTL_TOUCH) return (UINT64)InputTouchContacts();
     if (a2 == CTL_TABLET) return tablet_ctl(p, a3, a4);
+    if (a2 == CTL_GAMEPAD) return gamepad_ctl(a3, a4);
     if (a2 == CTL_FOREIGN) return hwnd_foreign((UINT32)a3, a4);
     if (a2 == CTL_SET_HWND) {
         INT32 uc[4] = { 0 };

@@ -40,7 +40,7 @@
 #include "netif/etharp.h"
 #include "netif/ethernet.h"
 
-#define NET_OPS         32
+#define NET_OPS         128
 #define PING_ID         0x4E4F                 /* "NO" */
 #define PING_TIMEOUT    200                    /* ticks (2 s) */
 #define NET_STACK       (64 * 1024)            /* net thread: room for TLS crypto */
