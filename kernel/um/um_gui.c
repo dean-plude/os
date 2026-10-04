@@ -31,6 +31,7 @@
 #include "../drivers/gamepad.h"
 #include "../wm/kbdlayout.h"
 #include "../hal/display.h"
+#include "../hal/pci.h"
 
 /* Win32 window messages we deliver */
 #define WM_DESTROY        0x0002
@@ -1018,6 +1019,12 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                 resizable (GUI_NOCLOSE, GUI_NOMINMAX, GUI_RESIZABLE's
  *                 meanings).  The client area stays where it is */
 #define CTL_SET_FRAME      36
+/*  37 ADAPTER     arg: n; ptr -> { vendor, device, subsystem (vendor |
+ *                 id << 16), revision, class << 8 | subclass }: the n-th
+ *                 display controller on the PCI bus, in bus order (what
+ *                 Direct3D's and DXGI's adapter identifiers report).
+ *                 0: no such adapter */
+#define CTL_ADAPTER        37
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -1073,6 +1080,21 @@ static UINT64 monitor_info(UINT64 which, UINT64 ptr)
     DesktopUnlock();
     if (!out[0]) return 0;
     return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) ? 1 : 0;
+}
+
+/* CTL_ADAPTER: the n-th PCI display controller's identity */
+static UINT64 adapter_info(UINT64 n, UINT64 ptr)
+{
+    PciDevice d;
+    const char *drv;
+    UINT64 k = 0;
+    for (int i = 0; PciAt(i, &d, &drv); i++) {
+        if (d.class_code != 0x03 || k++ != n) continue;
+        UINT32 out[5] = { d.vendor, d.device, PciRead32(d.bus, d.dev, d.func, 0x2C),
+                          PciRead32(d.bus, d.dev, d.func, 0x08) & 0xFF, (UINT32)d.class_code << 8 | d.subclass };
+        return NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) ? 1 : 0;
+    }
+    return 0;
 }
 
 static UINT64 head_mode_info(UINT64 ptr)
@@ -1531,6 +1553,7 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == CTL_MONITOR) return monitor_info(a3, a4);
     if (a2 == CTL_SET_DPI) return dpi_set(a4);
     if (a2 == CTL_HEAD_MODE) return head_mode_info(a4);
+    if (a2 == CTL_ADAPTER) return adapter_info(a3, a4);
     if (a2 == CTL_SET_HEAD) return head_set(p, a4);
     if (a2 == CTL_WINDOW_AT) {
         INT32 pt[2], out[4] = { 0, 0, 0, 0 };
