@@ -1193,7 +1193,17 @@ WINBASEAPI BOOL WINAPI SetPriorityClass(HANDLE p, DWORD c)
 }
 
 static UINT g_error_mode;
-WINBASEAPI UINT WINAPI SetErrorMode(UINT mode) { UINT old = g_error_mode; g_error_mode = mode; return old; }
+/* The process's mode goes to the kernel too (ProcessDefaultHardErrorMode),
+ * where SEM_NOALIGNMENTFAULTEXCEPT turns on alignment-fault fixup; as on
+ * Windows, that one stays once set */
+WINBASEAPI UINT WINAPI SetErrorMode(UINT mode)
+{
+    UINT old = g_error_mode;
+    g_error_mode = mode | (old & 0x0004u);              /* SEM_NOALIGNMENTFAULTEXCEPT */
+    ULONG m = g_error_mode;
+    NtSetInformationProcess(GetCurrentProcess(), 12 /* ProcessDefaultHardErrorMode */, &m, sizeof(m));
+    return old;
+}
 WINBASEAPI UINT WINAPI GetErrorMode(void)      { return g_error_mode; }
 WINBASEAPI BOOL WINAPI SetThreadErrorMode(DWORD mode, LPDWORD old) { if (old) *old = g_error_mode; g_error_mode = mode; return TRUE; }
 WINBASEAPI DWORD WINAPI GetThreadErrorMode(void) { return g_error_mode; }
