@@ -26,7 +26,9 @@
   `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio; every
   output listed and openable by its device ID), `msi`
   (with `msiscript` running JScript and VBScript custom actions on the
-  ISC-licensed mujs),
+  ISC-licensed mujs), `msxml6` (MSXML: the XML DOM with XPath, SAX and
+  `XMLHTTP` on the MIT-licensed libxml2, answering the MSXML 3 classes
+  such as `Msxml2.DOMDocument` too),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
