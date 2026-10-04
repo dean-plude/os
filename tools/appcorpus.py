@@ -37,7 +37,7 @@ a Markdown pass/fail table, one row per program (the nightly workflow,
 import argparse, http.server, math, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from novarun import Nova, ROOT
+from novarun import Nova, ROOT, accel_args
 from selftest import Test, verdict, store_verdict, PANIC, REC_HZ
 import wavcheck
 
@@ -669,6 +669,7 @@ def report(a, apps, results):
     if a.summary:
         with open(a.summary, 'a') as f:
             f.write(f'### NovaOS app corpus: {len(results) - failed} of {len(results)} programs passed\n\n')
+            f.write(f'Test VMs ran under {accel_args()[1].upper()}.\n\n')
             f.write('| Program | Version | Result | Checks | Time |\n|---|---|---|---|---|\n')
             for app in apps:
                 if app.name not in results:
