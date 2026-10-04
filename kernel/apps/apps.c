@@ -505,12 +505,29 @@ WND *AppCreateWindow(AppId id, const char *title, int client_w, int client_h,
     int w = client_w + 2, h = client_h + WM_TITLEBAR_H + 1;
     if (w > work.w - 40) w = work.w - 40;
     if (h > work.h - 40) h = work.h - 40;
-    int x = work.x + (work.w - w) / 2 - 120 + (cascade % 8) * 32;
-    int y = work.y + 30 + (cascade % 8) * 28;
-    if (x < work.x + 10) x = work.x + 10;
-    if (x + w > work.x + work.w) x = work.x + work.w - w;
-    if (y + h > work.y + work.h) y = work.y + work.h - h;
-    cascade++;
+    /* The first of the 8 cascade steps whose top edge no open window has
+     * (closed windows give their step back, so the same windows open in
+     * the same places however many came and went before); all 8 taken:
+     * the next step round */
+    WND *open[WM_MAX_WINDOWS];
+    int nopen = WmListWindows(open, WM_MAX_WINDOWS);
+    int x = 0, y = 0, step = -1;
+    for (int s = 0; s <= 8; s++) {
+        int k = s < 8 ? s : cascade % 8;
+        x = work.x + (work.w - w) / 2 - 120 + k * 32;
+        y = work.y + 30 + k * 28;
+        if (x < work.x + 10) x = work.x + 10;
+        if (x + w > work.x + work.w) x = work.x + work.w - w;
+        if (y + h > work.y + work.h) y = work.y + work.h - h;
+        if (s == 8) break;
+        bool taken = false;
+        for (int i = 0; i < nopen && !taken; i++) {
+            const GdiRect *f = open[i]->maximized || open[i]->snapped ? &open[i]->restore : &open[i]->frame;
+            taken = f->y == y;
+        }
+        if (!taken) { step = k; break; }
+    }
+    cascade = step >= 0 ? step + 1 : cascade + 1;
 
     const AppInfo *a = AppGetInfo(id);
     UINT32 style = (id == APP_CALENDAR || !a->builtin) ? WS_TOOLWINDOW : WS_OVERLAPPED;
