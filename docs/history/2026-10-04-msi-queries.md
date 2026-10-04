@@ -35,5 +35,16 @@ and NovaOS had none of them.  It has them now, and both runtimes install.
   as Windows' 64-bit installer service sees the folders as they are, so a
   64-bit package installed from a 32-bit bootstrapper lands in
   `System32`.
+- **Upgrades by version range**: `FindRelatedProducts` now honours the
+  Upgrade table's `VersionMin`, `VersionMax` (inclusive or not) and
+  `Language` columns, and `RemoveExistingProducts` leaves alone what a
+  detect-only row found.  Before, every product with the upgrade code
+  counted, so a newer Visual C++ runtime (GOG GALAXY carries 14.51) was
+  refused as "a later version is already installed" over 14.44.
 - **Self-test** `msiqtest` (core 150, 64- and 32-bit) with two new test
-  packages from `tools/msitest/mkpkg.py`, `wow32.msi` and `wow64.msi`.
+  packages from `tools/msitest/mkpkg.py`, `wow32.msi`, `wow64.msi` and the
+  upgrade `wow32v2.msi`.
+- **Where GOG GALAXY stops now**: its setup installs the x86 and x64
+  runtimes it carries and its files; `GalaxyClient.exe` (64-bit, Qt 6
+  WebEngine) does not start because `d3d9.dll` is missing (Qt WebEngine
+  imports it; NovaOS has Direct3D 9 only from DXVK in the App Store).

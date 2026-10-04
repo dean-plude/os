@@ -10,6 +10,9 @@
  *   MsiDetermineApplicablePatches, MsiDeterminePatchSequence (a patch file
  *   and applicability XML), MsiEnumPatchesEx and MsiGetPatchInfoEx on a
  *   patched product, and removal taking the registration with it
+ *   wow32v2.msi                   an upgrade: FindRelatedProducts takes the
+ *                                 Upgrade table's version range, so 1.0.0 is
+ *                                 removed and not taken for a later version
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +48,7 @@ WINBASEAPI BOOL WINAPI Wow64RevertWow64FsRedirection(PVOID old);
 #define PKG     L"C:\\Tests\\Msi\\"
 #define WOW32   L"{6E1D0C3A-5A1B-4C2D-8E3F-000000003201}"
 #define WOW64   L"{6E1D0C3A-5A1B-4C2D-8E3F-000000006401}"
+#define WOW32B  L"{6E1D0C3A-5A1B-4C2D-8E3F-000000003202}"
 #define BASE    L"{6E1D0C3A-5A1B-4C2D-8E3F-00000000B001}"
 #define PATCH   L"{6E1D0C3A-5A1B-4C2D-8E3F-00000000A001}"
 #define MACHINE 4
@@ -269,15 +273,26 @@ static void t_patches(void)
     CHECK_EQ(MsiEnumPatchesExW(BASE, NULL, MACHINE, 1, 0, p, t, &ctx, NULL, NULL), ERROR_NO_MORE_ITEMS);
 }
 
+static void t_upgrade(void)
+{
+    /* 1.0.0 is below the "older" range's 2.0.0 and not in the "newer" one */
+    CHECK_EQ(MsiInstallProductW(PKG L"wow32v2.msi", NULL), 0);
+    CHECK_STR(info(WOW32B, MACHINE, L"VersionString"), L"2.0.0");
+    CHECK_STR(info(WOW32, MACHINE, L"VersionString"), L"");               /* removed */
+    CHECK(!key_exists(L"SOFTWARE\\NovaOS\\Installer\\Products\\" WOW32));
+    CHECK(really_exists(L"C:\\Windows\\SysWOW64\\novawow32.txt"));
+}
+
 static void t_remove(void)
 {
-    CHECK_EQ(MsiConfigureProductW(WOW32, 0, 2), 0);
+    CHECK_EQ(MsiConfigureProductW(WOW32B, 0, 2), 0);
     CHECK_EQ(MsiConfigureProductW(WOW64, 0, 2), 0);
     CHECK(!really_exists(L"C:\\Windows\\SysWOW64\\novawow32.txt"));
     CHECK(!really_exists(L"C:\\Windows\\System32\\novawow64.txt"));
     WCHAR buf[64];
     DWORD n = 64;
     CHECK_EQ(MsiGetProductInfoExW(WOW32, NULL, MACHINE, L"VersionString", buf, &n), 1605);
+    CHECK_EQ(MsiGetProductInfoExW(WOW32B, NULL, MACHINE, L"VersionString", buf, &n), 1605);
     CHECK(!key_exists(L"SOFTWARE\\NovaOS\\Installer\\Products\\" WOW32));
     CHECK(!key_exists(L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" WOW32));
 }
@@ -290,6 +305,7 @@ int main(void)
     t_product_info();
     t_source_list();
     t_patches();
+    t_upgrade();
     t_remove();
     printf("msiqtest: %d passed, %d failed\n", pass, fail);
     return fail ? 1 : 0;

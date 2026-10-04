@@ -2113,6 +2113,45 @@ static void action_app_search(Inst *in)
 
 static int run_product(const WCHAR *code, bool remove, int ui_level, MsiUi *ui, const WCHAR *props, char *err, int cap);
 
+/* Product versions compare on their first three fields, as Windows
+ * Installer compares them */
+static int cmp_product_version(const char *a, const char *b)
+{
+    unsigned x[3] = { 0, 0, 0 }, y[3] = { 0, 0, 0 };
+    sscanf(a, "%u.%u.%u", &x[0], &x[1], &x[2]);
+    sscanf(b, "%u.%u.%u", &y[0], &y[1], &y[2]);
+    for (int i = 0; i < 3; i++) if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
+
+/* Does a registered product (@version, @lang) fall in Upgrade row @r's
+ * range: VersionMin/VersionMax (inclusive with attributes 0x100/0x200; an
+ * empty bound is open) and its Language list (0x400: every language but
+ * those)? */
+static bool upgrade_row_matches(Inst *in, MsiTable *t, int r, const char *version, unsigned lang)
+{
+    char b[16], minv[64], maxv[64], langs[256];
+    snprintf(minv, sizeof(minv), "%s", msidb_str(&in->db, t, r, msidb_col(t, "VersionMin"), b));
+    snprintf(maxv, sizeof(maxv), "%s", msidb_str(&in->db, t, r, msidb_col(t, "VersionMax"), b));
+    snprintf(langs, sizeof(langs), "%s", msidb_str(&in->db, t, r, msidb_col(t, "Language"), b));
+    int attrs = msidb_int(&in->db, t, r, msidb_col(t, "Attributes"), NULL);
+    if (minv[0]) {
+        int c = cmp_product_version(version, minv);
+        if (c < 0 || (c == 0 && !(attrs & 0x100))) return false;
+    }
+    if (maxv[0]) {
+        int c = cmp_product_version(version, maxv);
+        if (c > 0 || (c == 0 && !(attrs & 0x200))) return false;
+    }
+    if (langs[0] && lang) {
+        bool listed = false;
+        for (char *l = strtok(langs, ","); l; l = strtok(NULL, ","))
+            if ((unsigned)atoi(l) == lang) listed = true;
+        if (listed == ((attrs & 0x400) != 0)) return false;
+    }
+    return true;
+}
+
 static void action_find_related(Inst *in)
 {
     /* Upgrade(UpgradeCode, VersionMin, VersionMax, Language, Attributes, Remove, ActionProperty):
@@ -2131,12 +2170,25 @@ static void action_find_related(Inst *in)
         WCHAR up[64];
         DWORD type, size = sizeof(up);
         if (!RegQueryValueExW(p, L"UpgradeCode", NULL, &type, (BYTE *)up, &size)) {
-            char upc[64], code[64];
+            char upc[64], code[64], version[64] = "";
             to_u8(up, upc, sizeof(upc));
             to_u8(sub, code, sizeof(code));
+            WCHAR wv[64];
+            size = sizeof(wv);
+            if (!RegQueryValueExW(p, L"ProductVersion", NULL, &type, (BYTE *)wv, &size)) to_u8(wv, version, sizeof(version));
+            DWORD lang = 0;
+            WCHAR ukey[300];
+            HKEY u;
+            _snwprintf(ukey, 300, L"%s\\%s", UNINSTALL_KEY, sub);
+            if (!RegOpenKeyExW(HKEY_LOCAL_MACHINE, ukey, 0, KEY_READ, &u)) {
+                size = sizeof(lang);
+                if (RegQueryValueExW(u, L"Language", NULL, &type, (BYTE *)&lang, &size)) lang = 0;
+                RegCloseKey(u);
+            }
             for (int r = 0; r < t->nrows; r++) {
                 if (_stricmp(msidb_str(&in->db, t, r, 0, b), upc)) continue;
                 if (!strcmp(code, get_prop(in, "ProductCode"))) continue;
+                if (!upgrade_row_matches(in, t, r, version, lang)) continue;
                 const char *ap = msidb_str(&in->db, t, r, msidb_col(t, "ActionProperty"), b);
                 if (!*ap) continue;
                 char list[1024];
@@ -2157,6 +2209,7 @@ static void action_remove_existing(Inst *in)
     for (int r = 0; t && r < t->nrows; r++) {
         const char *ap = msidb_str(&in->db, t, r, msidb_col(t, "ActionProperty"), b);
         if (!*ap || !prop_set(in, ap)) continue;
+        if (msidb_int(&in->db, t, r, msidb_col(t, "Attributes"), NULL) & 0x2) continue;   /* OnlyDetect */
         char list[1024];
         snprintf(list, sizeof(list), "%s", get_prop(in, ap));
         for (char *p = list; *p; ) {

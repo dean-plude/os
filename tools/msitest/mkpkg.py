@@ -32,6 +32,10 @@ tools/build_userland.py runs it and puts what it writes in C:\\Tests\\Msi:
               SystemFolder, which is SysWOW64 on 64-bit Windows
   wow64.msi   "Nova WoW64 Test", the same as a 64-bit package: its
               novawow64.txt goes to System32 (msiqtest installs both)
+  wow32v2.msi "Nova WoW32 Test" 2.0.0, a new product code for the same
+              upgrade code: its Upgrade table finds 1.0.0 (below 2.0.0) and
+              removes it, and fails the install (a type 19 action) if it
+              finds a version above 2.0.0, as the Visual C++ runtimes do
 
 Each package is written by mkmsi.py; nothing here needs msitools.
 """
@@ -163,6 +167,28 @@ def wow(bits):
     return db
 
 
+WOW32B = '{6E1D0C3A-5A1B-4C2D-8E3F-000000003202}'
+UPGRADE = [('UpgradeCode', 's38*'), ('VersionMin', 'S20*'), ('VersionMax', 'S20*'), ('Language', 'S255*'),
+           ('Attributes', 'i4*'), ('Remove', 'S255'), ('ActionProperty', 's72')]
+
+
+def wow32_v2():
+    db = wow(32)
+    for row in db.tables['Property'].rows:
+        if row[0] == 'ProductVersion':
+            row[1] = '2.0.0'
+        if row[0] == 'ProductCode':
+            row[1] = WOW32B
+    db.table('Upgrade', UPGRADE)
+    # 0x100 VersionMin inclusive, 0x2 OnlyDetect
+    db.add('Upgrade', (WOW32_UP, None, '2.0.0', None, 0, None, 'OLDERFOUND'),
+           (WOW32_UP, '2.0.0', None, None, 0x2, None, 'NEWERFOUND'))
+    db.add('CustomAction', ('BlockOlder', 19, None, 'A later version of Nova WoW32 Test is already installed'))
+    db.add('InstallExecuteSequence', ('FindRelatedProducts', None, 200), ('BlockOlder', 'NEWERFOUND', 210),
+           ('RemoveExistingProducts', None, 1450))
+    return db
+
+
 def main():
     out, exe = sys.argv[1], sys.argv[2]
     os.makedirs(out, exist_ok=True)
@@ -179,6 +205,7 @@ def main():
     script_fail().write(os.path.join(out, 'scriptfail.msi'))
     wow(32).write(os.path.join(out, 'wow32.msi'))
     wow(64).write(os.path.join(out, 'wow64.msi'))
+    wow32_v2().write(os.path.join(out, 'wow32v2.msi'))
 
 
 if __name__ == '__main__':
