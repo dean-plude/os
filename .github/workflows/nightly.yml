@@ -6,13 +6,19 @@
 # tools/appcorpus.py, then smpstress on 4 CPUs (locking under load: no deadlocks,
 # and how file and registry throughput scale).  The pass/fail table goes to the run's
 # summary and, as a comment, to the "Nightly app corpus" issue (opened on
-# the first run).  Pull requests that change the corpus or this file run it too.
+# the first run).  The job needs /dev/kvm and stops without it (start it by hand
+# with allow_tcg for a TCG run); the table says which accelerator ran.  Pull requests that change the corpus or this file run it too.
 name: Nightly app corpus
 
 on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      allow_tcg:
+        description: run on a runner without /dev/kvm (the test VMs then run under TCG, much slower)
+        type: boolean
+        default: false
   pull_request:                 # a change to the corpus itself runs it too (no issue comment)
     paths: [tools/appcorpus.py, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
 
@@ -38,7 +44,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable KVM (TCG when the runner has no /dev/kvm)
+      - name: Enable KVM (fails without /dev/kvm unless allow_tcg)
+        env:
+          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
         run: tools/ci/enable-kvm.sh
 
       - name: Install the toolchain and QEMU

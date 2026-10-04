@@ -1,0 +1,27 @@
+/* What ndrdual.idl needs from oaidl.idl (BSTR, VARIANT, IDispatch),
+ * declared the way oaidl.idl declares them: BSTR and VARIANT travel through
+ * oleaut32's user-marshal routines, and IDispatch's proxy and stub are
+ * oleaut32's (PSDispatch), so a dual interface delegates to them as
+ * psmachine.dll's do.  Only declared here: no code is made from it. */
+import "ndrunk.idl";
+typedef unsigned short USHORT;
+typedef unsigned long DWORD;
+typedef unsigned int UINT;
+typedef unsigned short WORD;
+typedef long DISPID;
+typedef unsigned long LCID;
+typedef [unique] struct _FLAGGED_WORD_BLOB { ULONG fFlags; ULONG clSize; [size_is(clSize)] USHORT asData[]; } *wireBSTR;
+typedef [wire_marshal(wireBSTR)] WCHAR *BSTR;
+typedef [unique] struct _wireVARIANT { DWORD clSize; DWORD rpcReserved; USHORT vt; USHORT r1; USHORT r2; USHORT r3; hyper value; } *wireVARIANT;
+typedef [wire_marshal(wireVARIANT)] struct tagVARIANT { USHORT vt; USHORT r1; USHORT r2; USHORT r3; __int3264 a; __int3264 b; } VARIANT;
+typedef WCHAR *LPOLESTR;
+typedef struct tagDISPPARAMS { [size_is(cArgs)] VARIANT *rgvarg; [size_is(cNamedArgs)] DISPID *rgdispidNamedArgs; UINT cArgs; UINT cNamedArgs; } DISPPARAMS;
+typedef struct tagEXCEPINFO { WORD wCode; WORD wReserved; BSTR bstrSource; BSTR bstrDescription; BSTR bstrHelpFile; DWORD dwHelpContext; ULONG pvReserved; ULONG pfnDeferredFillIn; HRESULT scode; } EXCEPINFO;
+[object, uuid(00020400-0000-0000-C000-000000000046)]
+interface IDispatch : IUnknown {
+    HRESULT GetTypeInfoCount([out] UINT *n);
+    HRESULT GetTypeInfo([in] UINT i, [in] LCID lcid, [out] IUnknown **ti);
+    HRESULT GetIDsOfNames([in] REFIID riid, [in, size_is(n)] LPOLESTR *names, [in] UINT n, [in] LCID lcid, [out, size_is(n)] DISPID *ids);
+    HRESULT Invoke([in] DISPID id, [in] REFIID riid, [in] LCID lcid, [in] WORD flags, [in, out] DISPPARAMS *params,
+                   [out] VARIANT *result, [out] EXCEPINFO *excep, [out] UINT *argerr);
+}

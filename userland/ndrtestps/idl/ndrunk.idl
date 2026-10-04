@@ -1,0 +1,16 @@
+typedef long HRESULT;
+typedef unsigned long ULONG;
+typedef long LONG;
+typedef unsigned char BYTE;
+typedef wchar_t WCHAR;
+typedef struct _GUID { unsigned long Data1; unsigned short Data2; unsigned short Data3; unsigned char Data4[8]; } GUID;
+typedef GUID IID;
+cpp_quote("#if 0")
+typedef IID *REFIID;
+cpp_quote("#endif")
+[object, local, uuid(00000000-0000-0000-C000-000000000046)]
+interface IUnknown {
+    HRESULT QueryInterface([in] REFIID riid, [out, iid_is(riid)] void **ppv);
+    ULONG AddRef();
+    ULONG Release();
+}

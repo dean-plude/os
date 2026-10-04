@@ -139,6 +139,8 @@ set(KERNEL_C_SOURCES
     drivers/e1000.c
     drivers/virtio_net.c
     drivers/virtio_input.c
+    drivers/gamepad.c
+    drivers/xpad.c
     drivers/virtio_gpu.c
     drivers/ahci.c
     drivers/hda.c
@@ -175,11 +177,13 @@ set(KERNEL_C_SOURCES
     um/um_syscall.c
     um/um_thread.c
     um/um_exception.c
+    um/um_gpfault.c
     um/um_socket.c
     um/um_audio.c
     um/um_gpu.c
     um/um_pipe.c
     um/um_gui.c
+    um/um_services.c
     um/um_registry.c
     um/um_crash.c
     um/um_security.c

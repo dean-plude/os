@@ -12,6 +12,7 @@
 #define NOVA_BUILD_SHELL32
 #include <windows.h>
 #include <commctrl.h>
+#include <winternl.h>
 
 #define S_OK_          ((HRESULT)0)
 #define S_FALSE_       ((HRESULT)1)
@@ -47,6 +48,9 @@ static const Folder g_folders[] = {
     { G(0x905E63B6, 0xC1BF, 0x494E, 0xB2, 0x9C, 0x65, 0xB7, 0x32, 0xD3, 0xD2, 0x1A), 0x26, "C:\\Programs", FALSE },        /* ProgramFiles */
     { G(0x7C5A40EF, 0xA0FB, 0x4BFC, 0x87, 0x4A, 0xC0, 0xF2, 0xE0, 0xB9, 0xFA, 0x8E), 0x2A, "C:\\Programs", FALSE },        /* ProgramFilesX86 */
     { G(0x6D809377, 0x6AF0, 0x444B, 0x89, 0x57, 0xA3, 0x77, 0x3F, 0x02, 0x20, 0x0E), -1,   "C:\\Programs", FALSE },        /* ProgramFilesX64 */
+    { G(0xF7F1ED05, 0x9F6D, 0x47A2, 0xAA, 0xAE, 0x29, 0xD3, 0x17, 0xC6, 0xF0, 0x66), 0x2B, "C:\\Programs\\Common Files", TRUE },  /* ProgramFilesCommon */
+    { G(0xDE974D24, 0xD9C6, 0x4D3E, 0xBF, 0x91, 0xF4, 0x45, 0x51, 0x20, 0xB9, 0x17), 0x2C, "C:\\Programs\\Common Files", TRUE },  /* ProgramFilesCommonX86 */
+    { G(0x6365D5A7, 0x0F0D, 0x45E5, 0x87, 0xF6, 0x0D, 0xA5, 0x6B, 0x6A, 0x4F, 0x7D), -1,   "C:\\Programs\\Common Files", TRUE },  /* ProgramFilesCommonX64 */
     { G(0x1AC14E77, 0x02E7, 0x4E5D, 0xB7, 0x44, 0x2E, 0xB1, 0xAE, 0x51, 0x98, 0xB7), 0x25, "C:\\Windows\\System32", FALSE },/* System */
     { G(0xD65231B0, 0xB2F1, 0x4857, 0xA4, 0xCE, 0xA8, 0xE7, 0xC6, 0xEA, 0x7D, 0x27), 0x29, "C:\\Windows\\System32", FALSE },/* SystemX86 */
     { G(0xF38BF404, 0x1D43, 0x42F2, 0x93, 0x05, 0x67, 0xDE, 0x0B, 0x28, 0xFC, 0x23), 0x24, "C:\\Windows", FALSE },         /* Windows */
@@ -363,10 +367,40 @@ static int starts_with(const WCHAR *s, const char *prefix)
     return 1;
 }
 
-/* Run @file (a program, or a web address in the browser); 0 or an SE_ERR_* code */
+NTSYSAPI NTSTATUS NTAPI NtOpenProcessToken(HANDLE p, ACCESS_MASK access, PHANDLE token);
+NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE t, ULONG cls, PVOID buf, ULONG n, PULONG ret);
+
+/* The calling process's token's TOKEN_INFORMATION_CLASS @cls as a DWORD
+ * (TokenElevationType 18, TokenElevation 20), or @dflt */
+static DWORD token_dword(ULONG cls, DWORD dflt)
+{
+    HANDLE t;
+    DWORD v = dflt;
+    ULONG n;
+    if (NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &t) < 0) return dflt;
+    if (NtQueryInformationToken(t, cls, &v, sizeof(v), &n) < 0) v = dflt;
+    NtClose(t);
+    return v;
+}
+
+/* The elevated half of the caller's split token (TokenLinkedToken), for
+ * the "runas" verb; NULL when the caller is elevated already */
+static HANDLE elevated_token(void)
+{
+    HANDLE t, linked = 0;
+    ULONG n;
+    if (token_dword(18 /* TokenElevationType */, 1) != 3 /* TokenElevationTypeLimited */) return 0;
+    if (NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &t) < 0) return 0;
+    if (NtQueryInformationToken(t, 19 /* TokenLinkedToken */, &linked, sizeof(linked), &n) < 0) linked = 0;
+    NtClose(t);
+    return linked;
+}
+
+/* Run @file (a program, or a web address in the browser); 0 or an SE_ERR_* code.
+ * The "runas" verb runs it as administrator: NovaOS has no consent prompt
+ * yet, so it is elevated at once (UAC's "never notify"). */
 static int execute(LPCWSTR verb, LPCWSTR file, LPCWSTR params, LPCWSTR dir, HANDLE *proc)
 {
-    (void)verb;
     WCHAR cmd[2048], prog[MAX_PATH];
     int o = 0;
     if (starts_with(file, "http://") || starts_with(file, "https://")) {
@@ -392,9 +426,23 @@ static int execute(LPCWSTR verb, LPCWSTR file, LPCWSTR params, LPCWSTR dir, HAND
     PROCESS_INFORMATION pi;
     for (unsigned i = 0; i < sizeof(si); i++) ((BYTE *)&si)[i] = 0;
     si.cb = sizeof(si);
-    if (!CreateProcessW(0, cmd, 0, 0, FALSE, 0, 0, dir, &si, &pi)) {
+    HANDLE token = verb && !lstrcmpiW(verb, L"runas") ? elevated_token() : 0;
+    if (!CreateProcessW(0, cmd, 0, 0, FALSE, token ? CREATE_SUSPENDED : 0, 0, dir, &si, &pi)) {
         DWORD e = GetLastError();
+        if (token) NtClose(token);
         return e == ERROR_FILE_NOT_FOUND ? 2 : e == ERROR_PATH_NOT_FOUND ? 3 : e == ERROR_NOT_ENOUGH_MEMORY ? 8 : 5;
+    }
+    if (token) {
+        struct { HANDLE token, thread; } at = { token, pi.hThread };
+        NTSTATUS st = NtSetInformationProcess(pi.hProcess, 9 /* ProcessAccessToken */, &at, sizeof(at));
+        NtClose(token);
+        if (st < 0) {
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            return 5;                                       /* SE_ERR_ACCESSDENIED */
+        }
+        ResumeThread(pi.hThread);
     }
     if (pi.hThread) CloseHandle(pi.hThread);
     if (proc) *proc = pi.hProcess;
@@ -760,7 +808,7 @@ SHSTDAPI_(BOOL) Shell_NotifyIconA(DWORD msg, void *data) { (void)msg; (void)data
 SHSTDAPI_(HRESULT) Shell_NotifyIconGetRect(const void *id, RECT *r) { (void)id; if (r) SetRectEmpty(r); return E_FAIL; }
 SHSTDAPI_(void) SHChangeNotify(LONG ev, UINT flags, LPCVOID a, LPCVOID b) { (void)ev; (void)flags; (void)a; (void)b; }
 SHSTDAPI_(void) SHAddToRecentDocs(UINT flags, LPCVOID pv) { (void)flags; (void)pv; }
-SHSTDAPI_(BOOL) IsUserAnAdmin(void) { return FALSE; }   /* not elevated (see advapi32) */
+SHSTDAPI_(BOOL) IsUserAnAdmin(void) { return token_dword(20 /* TokenElevation */, 0) != 0; }   /* elevated? */
 SHSTDAPI_(HRESULT) SHQueryRecycleBinW(LPCWSTR root, void *info)
 {
     (void)root;

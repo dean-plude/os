@@ -625,7 +625,8 @@ static UsbDev *enumerate(UsbHc *hc, UsbDev *parent, UINT8 hub_port, UINT8 root, 
         f.len = end - off;
         void *inst = NULL;
         if (f.cls == 9)       inst = UsbHubProbe(d, &f);
-        else if (f.cls == 3)  inst = UsbHidProbe(d, &f);
+        else if (f.cls == 3)  inst = (inst = UsbPadHidProbe(d, &f)) ? inst : UsbHidProbe(d, &f);
+        else if (f.cls == 0xFF) inst = UsbXpadProbe(d, &f);
         else if (f.cls == 8)  inst = UsbMscProbe(d, &f);
         else if (f.cls == 1)  inst = UsbAudioProbe(d, &f);
         if (!inst)

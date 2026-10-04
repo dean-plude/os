@@ -13,3 +13,10 @@ static inline int memcmp_(const void *a, const void *b, size_t n)
 }
 
 const char *user_name(void);        /* %USERNAME%, else "User" */
+
+/* SIDs as text (security.c): "S-1-..." (or an SDDL alias) to a
+ * LocalAlloc'd SID; a SID to "S-1-..." (@cap at least 200); the SDDL alias
+ * of a SID, or NULL */
+BOOL sid_from_string(const char *s, PSID *out);
+int sid_string(PSID sid, char *out, int cap);
+const char *sid_alias(PSID sid);

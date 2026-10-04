@@ -128,13 +128,21 @@ int full_path(const char *name, char *out, int cap)
     char tmp[MAX_PATH * 2];
     int n = 0;
     name = skip_prefix(name);
+    const char *c = cwd();
     if (((name[0] | 0x20) >= 'a' && (name[0] | 0x20) <= 'z') && name[1] == ':') {
-        tmp[n++] = (char)(name[0] & ~0x20); tmp[n++] = ':'; tmp[n++] = '\\';
+        /* "C:" and "C:x" (no separator) are relative to the current directory
+         * when that is on drive C: (the CRT's getcwd asks for "C:."); else to
+         * the root */
+        if (name[2] != '\\' && name[2] != '/' && ((name[0] ^ c[0]) & ~0x20) == 0) {
+            while (*c && n < (int)sizeof(tmp) - 2) tmp[n++] = *c++;
+            if (tmp[n - 1] != '\\') tmp[n++] = '\\';
+        } else {
+            tmp[n++] = (char)(name[0] & ~0x20); tmp[n++] = ':'; tmp[n++] = '\\';
+        }
         name += 2;
     } else if (name[0] == '\\' || name[0] == '/') {         /* rooted: on the current directory's drive */
-        tmp[n++] = cwd()[0]; tmp[n++] = ':'; tmp[n++] = '\\';
+        tmp[n++] = c[0]; tmp[n++] = ':'; tmp[n++] = '\\';
     } else {
-        const char *c = cwd();
         while (*c && n < (int)sizeof(tmp) - 2) tmp[n++] = *c++;
         if (tmp[n - 1] != '\\') tmp[n++] = '\\';
     }
@@ -645,6 +653,41 @@ WINBASEAPI LPSTR  WINAPI GetEnvironmentStrings(void)  { return k32_env_block(0, 
 WINBASEAPI BOOL   WINAPI FreeEnvironmentStringsW(LPWSTR env) { if (env) RtlFreeHeap(RtlGetProcessHeap(), 0, env); return TRUE; }
 WINBASEAPI BOOL   WINAPI FreeEnvironmentStringsA(LPSTR env)  { if (env) RtlFreeHeap(RtlGetProcessHeap(), 0, env); return TRUE; }
 
+/* Replaces the whole environment with @block (UTF-16 "NAME=value" strings,
+ * then an empty one); every string must have its '=' or nothing changes */
+WINBASEAPI BOOL WINAPI SetEnvironmentStringsW(LPWSTR block)
+{
+    if (!block) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    for (const WCHAR *w = block; *w; ) {
+        const WCHAR *e = w + 1;                             /* a leading '=' belongs to the name */
+        while (*e && *e != '=') e++;
+        if (*e != '=') { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+        while (*e) e++;
+        w = e + 1;
+    }
+    env_lock();
+    env_init();
+    PVOID heap = RtlGetProcessHeap();
+    for (int i = 0; i < g_nenv; i++) RtlFreeHeap(heap, 0, g_env[i]);
+    g_nenv = 0;
+    BOOL ok = TRUE;
+    for (const WCHAR *w = block; *w && ok; ) {
+        int len = 0;
+        while (w[len]) len++;
+        int n = w2u(w, len, 0, 0);
+        char *tmp = RtlAllocateHeap(heap, 0, (SIZE_T)n + 1);
+        if (!tmp) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); ok = FALSE; break; }
+        w2u(w, len, tmp, n);
+        tmp[n] = 0;
+        int nl = env_name_len(tmp);
+        ok = env_put(tmp, nl, tmp + nl + 1);
+        RtlFreeHeap(heap, 0, tmp);
+        w += len + 1;
+    }
+    env_unlock();
+    return ok;
+}
+
 WINBASEAPI VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA si)
 {
     memset(si, 0, sizeof(*si));
@@ -910,7 +953,9 @@ WINBASEAPI BOOL WINAPI SetFilePointerEx(HANDLE h, LARGE_INTEGER dist, PLARGE_INT
     }
     LARGE_INTEGER pos;
     pos.QuadPart = base + dist.QuadPart;
-    if (pos.QuadPart < 0) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    /* As Windows: the CRT's text-mode fopen("w+") seeks to -1 from the end
+     * of an empty file and accepts only this error */
+    if (pos.QuadPart < 0) { SetLastError(ERROR_NEGATIVE_SEEK); return FALSE; }
     NTSTATUS s = NtSetInformationFile(h, &io, &pos, sizeof(pos), FilePositionInformation);
     if (!NT_SUCCESS(s)) return fail_status(s);
     if (newpos) *newpos = pos;
@@ -1242,10 +1287,43 @@ WINBASEAPI VOID WINAPI GetLocalTime(LPSYSTEMTIME st) { k32_local_time(st); }
  * ----------------------------------------------------------------------- */
 WINBASEAPI UINT WINAPI GetACP(void) { return CP_UTF8; }
 
+/* Single-byte code pages asked for by number: Windows-1252 (RTF's \ansicpg1252,
+ * old installers' text), ISO 8859-1 and US-ASCII.  0x80-0x9F of 1252: */
+static const WCHAR g_cp1252[32] = {
+    0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+    0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+};
+
+static int single_byte_cp(UINT cp) { return cp == 1252 || cp == 28591 || cp == 20127; }
+
+static WCHAR sb_to_wide(UINT cp, unsigned char c)
+{
+    if (c < 0x80) return c;
+    if (cp == 20127) return '?';
+    if (cp == 1252 && c < 0xA0) return g_cp1252[c - 0x80];
+    return c;
+}
+
+static int sb_from_wide(UINT cp, WCHAR w)        /* -1: not in the code page */
+{
+    if (w < 0x80) return w;
+    if (cp == 20127) return -1;
+    if (cp == 1252) {
+        for (int i = 0; i < 32; i++) if (g_cp1252[i] == w) return 0x80 + i;
+        return w >= 0xA0 && w <= 0xFF ? w : -1;
+    }
+    return w <= 0xFF ? w : -1;
+}
+
 WINBASEAPI int WINAPI MultiByteToWideChar(UINT cp, DWORD flags, LPCSTR s, int n, LPWSTR out, int cap)
 {
-    (void)cp; (void)flags;
+    (void)flags;
     int len = n < 0 ? (int)strlen(s) + 1 : n;
+    if (single_byte_cp(cp)) {
+        if (cap && cap < len) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+        if (cap) for (int i = 0; i < len; i++) out[i] = sb_to_wide(cp, (unsigned char)s[i]);
+        return len;
+    }
     int r = u2w(s, len, cap ? out : 0, cap);
     if (r < 0) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
     return r;
@@ -1254,10 +1332,20 @@ WINBASEAPI int WINAPI MultiByteToWideChar(UINT cp, DWORD flags, LPCSTR s, int n,
 WINBASEAPI int WINAPI WideCharToMultiByte(UINT cp, DWORD flags, LPCWSTR s, int n, LPSTR out, int cap,
                                           LPCSTR defchar, LPBOOL used)
 {
-    (void)cp; (void)flags; (void)defchar;
+    (void)flags;
     if (used) *used = FALSE;
     int len = n;
     if (n < 0) { len = 0; while (s[len]) len++; len++; }
+    if (single_byte_cp(cp)) {
+        if (cap && cap < len) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
+        for (int i = 0; cap && i < len; i++) {
+            int b = sb_from_wide(cp, s[i]);
+            if (b < 0) { b = defchar ? (unsigned char)*defchar : '?'; if (used) *used = TRUE; }
+            out[i] = (char)b;
+        }
+        return len;
+    }
+    (void)defchar;
     int r = w2u(s, len, cap ? out : 0, cap);
     if (r < 0) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return 0; }
     return r;

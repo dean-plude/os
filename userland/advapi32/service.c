@@ -9,7 +9,8 @@
  * SetServiceStatus.
  *
  * StartService runs the service's ImagePath with NOVA_SERVICE naming the
- * service. Its StartServiceCtrlDispatcher sees that, starts ServiceMain
+ * service in its environment, and writes down the process's id before it
+ * lets it run. Its StartServiceCtrlDispatcher sees both, starts ServiceMain
  * on a thread and serves controls on the pipe \\.\pipe\NovaService_<name>,
  * where ControlService sends them. A program started any other way gets
  * ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, as on Windows.
@@ -21,6 +22,12 @@
 
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
+/* (security.c) */
+WINADVAPI BOOL WINAPI IsValidSecurityDescriptor(PSECURITY_DESCRIPTOR sd);
+WINADVAPI BOOL WINAPI GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR sd, PSID *o, LPBOOL def);
+WINADVAPI BOOL WINAPI GetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR sd, PSID *g, LPBOOL def);
+WINADVAPI BOOL WINAPI MakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DESCRIPTOR rel, LPDWORD n);
+WINADVAPI BOOL WINAPI ConvertStringSidToSidW(LPCWSTR s, PSID *out);
 
 #define ERROR_SERVICE_REQUEST_TIMEOUT    1053
 #define ERROR_INVALID_SERVICE_CONTROL    1052
@@ -394,6 +401,124 @@ WINADVAPI BOOL WINAPI ChangeServiceConfig2A(SC_HANDLE h, DWORD level, LPVOID inf
     return ChangeServiceConfig2W(h, level, info);
 }
 
+/* A service's security descriptor: kept where Windows keeps it, in the
+ * service key's Security\\Security value (self-relative).  A service that
+ * has none has Windows' default one: SYSTEM and Administrators may do
+ * anything, interactive and service users may query, start and stop it.
+ * Nothing checks it here (there is no SCM process to); programs that
+ * read it, change their entries and write it back (Steam's service lets
+ * Users start it) see their change. */
+static PSECURITY_DESCRIPTOR service_sd(const WCHAR *name, DWORD *len)
+{
+    HKEY k;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (!open_key(name, false, &k)) {
+        DWORD type = 0, n = 0;
+        HKEY sk;
+        if (!RegOpenKeyExW(k, L"Security", 0, KEY_READ, &sk)) {
+            if (!RegQueryValueExW(sk, L"Security", NULL, &type, NULL, &n) && type == REG_BINARY && n >= 20 &&
+                (sd = halloc(n)) && RegQueryValueExW(sk, L"Security", NULL, &type, sd, &n)) { hfree(sd); sd = NULL; }
+            RegCloseKey(sk);
+        }
+        RegCloseKey(k);
+        if (sd && IsValidSecurityDescriptor(sd)) { *len = n; return sd; }
+        hfree(sd);
+        sd = NULL;
+    }
+    static const struct { const WCHAR *sid; DWORD mask; } def[] = {
+        { L"S-1-5-18", 0x201FD },                       /* SYSTEM: all but change, delete, owner, DACL */
+        { L"S-1-5-32-544", 0xF01FF },                   /* Administrators: SERVICE_ALL_ACCESS */
+        { L"S-1-5-4", 0x2018D },                        /* INTERACTIVE: query, start, stop... */
+        { L"S-1-5-6", 0x2018D },                        /* SERVICE */
+    };
+    BYTE acl_buf[256];
+    PACL acl = (PACL)acl_buf;                           /* Windows' default for a new service */
+    PSID sys = NULL;
+    InitializeAcl(acl, sizeof(acl_buf), ACL_REVISION);
+    for (unsigned i = 0; i < sizeof(def) / sizeof(def[0]); i++) {
+        PSID sid;
+        if (!ConvertStringSidToSidW(def[i].sid, &sid)) continue;
+        AddAccessAllowedAce(acl, ACL_REVISION, def[i].mask, sid);
+        if (i) LocalFree(sid);
+        else sys = sid;
+    }
+    SECURITY_DESCRIPTOR abs;
+    InitializeSecurityDescriptor(&abs, 1);
+    SetSecurityDescriptorOwner(&abs, sys, FALSE);
+    SetSecurityDescriptorGroup(&abs, sys, FALSE);
+    SetSecurityDescriptorDacl(&abs, TRUE, acl, FALSE);
+    DWORD n = 0;
+    MakeSelfRelativeSD(&abs, NULL, &n);
+    if (n && (sd = halloc(n)) && !MakeSelfRelativeSD(&abs, sd, &n)) { hfree(sd); sd = NULL; }
+    if (sys) LocalFree(sys);
+    *len = n;
+    return sd;
+}
+
+WINADVAPI BOOL WINAPI QueryServiceObjectSecurity(SC_HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR out, DWORD n, LPDWORD need)
+{
+    SvcH *s = handle(h, K_SVC);
+    if (!s) return FALSE;
+    if (!need) { SetLastError(ERROR_INVALID_ADDRESS); return FALSE; }
+    DWORD len = 0;
+    PSECURITY_DESCRIPTOR sd = service_sd(s->name, &len);
+    if (!sd) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    SECURITY_DESCRIPTOR abs;                            /* the parts asked for */
+    InitializeSecurityDescriptor(&abs, 1);
+    PSID o = NULL, g = NULL;
+    PACL d = NULL;
+    BOOL present = FALSE, def = FALSE;
+    if (si & OWNER_SECURITY_INFORMATION) GetSecurityDescriptorOwner(sd, &o, &def), SetSecurityDescriptorOwner(&abs, o, FALSE);
+    if (si & GROUP_SECURITY_INFORMATION) GetSecurityDescriptorGroup(sd, &g, &def), SetSecurityDescriptorGroup(&abs, g, FALSE);
+    if (si & DACL_SECURITY_INFORMATION) {
+        GetSecurityDescriptorDacl(sd, &present, &d, &def);
+        SetSecurityDescriptorDacl(&abs, present, d, FALSE);
+    }
+    *need = n;
+    BOOL ok = MakeSelfRelativeSD(&abs, out, need);
+    hfree(sd);
+    return ok;
+}
+
+WINADVAPI BOOL WINAPI SetServiceObjectSecurity(SC_HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR in)
+{
+    SvcH *s = handle(h, K_SVC);
+    if (!s) return FALSE;
+    if (!in || !IsValidSecurityDescriptor(in)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    DWORD len = 0;
+    PSECURITY_DESCRIPTOR now = service_sd(s->name, &len);
+    if (!now) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    SECURITY_DESCRIPTOR abs;                            /* the given parts over the ones it had */
+    InitializeSecurityDescriptor(&abs, 1);
+    PSID o, g;
+    PACL d;
+    BOOL present, def;
+    GetSecurityDescriptorOwner(si & OWNER_SECURITY_INFORMATION ? in : now, &o, &def);
+    GetSecurityDescriptorGroup(si & GROUP_SECURITY_INFORMATION ? in : now, &g, &def);
+    GetSecurityDescriptorDacl(si & DACL_SECURITY_INFORMATION ? in : now, &present, &d, &def);
+    SetSecurityDescriptorOwner(&abs, o, FALSE);
+    SetSecurityDescriptorGroup(&abs, g, FALSE);
+    SetSecurityDescriptorDacl(&abs, present, d, FALSE);
+    DWORD n = 0;
+    MakeSelfRelativeSD(&abs, NULL, &n);
+    BYTE *rel = n ? halloc(n) : NULL;
+    BOOL ok = rel && MakeSelfRelativeSD(&abs, rel, &n);
+    HKEY k, sk;
+    if (ok && !open_key(s->name, true, &k)) {
+        ok = !RegCreateKeyExW(k, L"Security", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sk, NULL) &&
+             !RegSetValueExW(sk, L"Security", 0, REG_BINARY, rel, n);
+        if (ok) RegCloseKey(sk);
+        RegCloseKey(k);
+        if (!ok) SetLastError(ERROR_ACCESS_DENIED);
+    } else if (ok) {
+        ok = FALSE;
+        SetLastError(ERROR_SERVICE_DOES_NOT_EXIST);
+    }
+    hfree(rel);
+    hfree(now);
+    return ok;
+}
+
 WINADVAPI BOOL WINAPI QueryServiceStatusEx(SC_HANDLE h, int level, LPBYTE buf, DWORD n, LPDWORD need)
 {
     SvcH *s = handle(h, K_SVC);
@@ -622,6 +747,34 @@ static void pipe_name(const WCHAR *svc, WCHAR *out, size_t cap)
     wcat(out, cap, svc);
 }
 
+/* The caller's environment with NOVA_SERVICE=@name in place of any it had */
+static WCHAR *service_env(const WCHAR *name)
+{
+    static const WCHAR var[] = L"NOVA_SERVICE=";
+    const size_t vn = sizeof(var) / sizeof(WCHAR) - 1;
+    WCHAR *cur = GetEnvironmentStringsW();
+    size_t n = 0;
+    if (cur) while (cur[n]) n += wlen(cur + n) + 1;
+    WCHAR *env = halloc((n + vn + wlen(name) + 2) * sizeof(WCHAR));
+    if (env) {
+        size_t at = 0;
+        for (size_t i = 0; cur && cur[i]; i += wlen(cur + i) + 1) {
+            const WCHAR *e = cur + i;
+            size_t j = 0;
+            while (j < vn && e[j] && (e[j] == var[j] || (e[j] >= 'a' && e[j] <= 'z' && e[j] - 32 == var[j]))) j++;
+            if (j == vn) continue;                      /* (an inherited one) */
+            wcopy(env + at, wlen(e) + 1, e);
+            at += wlen(e) + 1;
+        }
+        wcopy(env + at, vn + 1, var);
+        wcopy(env + at + vn, wlen(name) + 1, name);
+        at += vn + wlen(name) + 1;
+        env[at] = 0;
+    }
+    if (cur) FreeEnvironmentStringsW(cur);
+    return env;
+}
+
 WINADVAPI BOOL WINAPI StartServiceW(SC_HANDLE h, DWORD argc, LPCWSTR *argv)
 {
     SvcH *s = handle(h, K_SVC);
@@ -655,14 +808,21 @@ WINADVAPI BOOL WINAPI StartServiceW(SC_HANDLE h, DWORD argc, LPCWSTR *argv)
     set_dword(k, L"NovaControls", 0);
     set_dword(k, L"NovaExitCode", 0);
 
-    SetEnvironmentVariableW(L"NOVA_SERVICE", s->name);
+    /* NOVA_SERVICE goes in the service process's own environment, not
+     * the caller's (whose other threads may be starting programs too),
+     * and the process starts suspended until its id is written down:
+     * only that process may connect as the service, not a program it
+     * starts first (Steam's service starts its updater before it
+     * connects) */
+    WCHAR *env = service_env(s->name);
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof(si));
     si.cb = sizeof(si);
-    BOOL ok = CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
-    DWORD err = GetLastError();
-    SetEnvironmentVariableW(L"NOVA_SERVICE", NULL);
+    BOOL ok = env && CreateProcessW(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                                    env, NULL, &si, &pi);
+    DWORD err = env ? GetLastError() : ERROR_NOT_ENOUGH_MEMORY;
+    hfree(env);
     if (!ok) {
         set_dword(k, L"NovaState", SERVICE_STOPPED);
         RegCloseKey(k);
@@ -670,6 +830,7 @@ WINADVAPI BOOL WINAPI StartServiceW(SC_HANDLE h, DWORD argc, LPCWSTR *argv)
         return FALSE;
     }
     set_dword(k, L"NovaPid", pi.dwProcessId);
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     /* until the service connects to the control manager (30 s, as Windows) */
     BOOL started = FALSE;
@@ -705,7 +866,11 @@ WINADVAPI BOOL WINAPI ControlService(SC_HANDLE h, DWORD control, SERVICE_STATUS 
     SERVICE_STATUS_PROCESS st;
     query_status(s->name, &st);
     if (st.dwCurrentState == SERVICE_STOPPED) { SetLastError(ERROR_SERVICE_NOT_ACTIVE); return FALSE; }
-    if (control == SERVICE_CONTROL_STOP && !(st.dwControlsAccepted & SERVICE_ACCEPT_STOP)) {
+    /* a control the service has not said it accepts never reaches it */
+    DWORD needs = control == SERVICE_CONTROL_STOP ? SERVICE_ACCEPT_STOP :
+                  control == 2 || control == 3 ? 2 /* PAUSE, CONTINUE: SERVICE_ACCEPT_PAUSE_CONTINUE */ :
+                  control == 6 ? 8 /* PARAMCHANGE: SERVICE_ACCEPT_PARAMCHANGE */ : 0;
+    if (needs && !(st.dwControlsAccepted & needs)) {
         if (out) memcpy(out, &st, sizeof(*out));
         SetLastError(ERROR_INVALID_SERVICE_CONTROL);
         return FALSE;
@@ -740,6 +905,7 @@ static HANDLE g_stopped;
 static SvcH g_status_handle;
 static SERVICE_MAIN_W g_main_w;
 static SERVICE_MAIN_A g_main_a;
+static SRWLOCK g_control_lock = SRWLOCK_INIT;   /* held while a control is answered */
 
 static DWORD WINAPI control_loop(void *arg)
 {
@@ -752,12 +918,17 @@ static DWORD WINAPI control_loop(void *arg)
         if (!ConnectNamedPipe(p, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(p); continue; }
         DWORD control = 0, n = 0, result;
         if (ReadFile(p, &control, sizeof(control), &n, NULL) && n == sizeof(control)) {
+            /* a stop handler that reports SERVICE_STOPPED lets the
+             * dispatcher return and the process end: the lock keeps the
+             * process until the answer is written */
+            AcquireSRWLockShared(&g_control_lock);
             if (g_handler_ex) result = g_handler_ex(control, 0, NULL, g_handler_ctx);
             else if (g_handler) { g_handler(control); result = 0; }
             else result = ERROR_SERVICE_CANNOT_ACCEPT_CTRL;
             if (control == SERVICE_CONTROL_INTERROGATE) result = 0;
             WriteFile(p, &result, sizeof(result), &n, NULL);
             FlushFileBuffers(p);
+            ReleaseSRWLockShared(&g_control_lock);
         }
         CloseHandle(p);
     }
@@ -802,13 +973,24 @@ static BOOL dispatch(SERVICE_MAIN_W mw, SERVICE_MAIN_A ma)
         return FALSE;
     }
     SetEnvironmentVariableW(L"NOVA_SERVICE", NULL);      /* not for the service's own children */
+    HKEY k;
+    bool mine = false;                                   /* the process StartService started, waiting */
+    if (!open_key(g_name, false, &k)) {
+        mine = get_dword(k, L"NovaPid", 0) == GetCurrentProcessId() && !get_dword(k, L"NovaConnected", 0) &&
+               get_dword(k, L"NovaState", SERVICE_STOPPED) == SERVICE_START_PENDING;
+        RegCloseKey(k);
+    }
+    if (!mine) {
+        g_name[0] = 0;
+        SetLastError(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT);
+        return FALSE;
+    }
     if (!mw && !ma) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     g_main_w = mw;
     g_main_a = ma;
     g_stopped = CreateEventW(NULL, TRUE, FALSE, NULL);
     HANDLE t = CreateThread(NULL, 0, control_loop, NULL, 0, NULL);
     if (t) CloseHandle(t);
-    HKEY k;
     if (!open_key(g_name, true, &k)) {
         set_dword(k, L"NovaPid", GetCurrentProcessId());
         set_dword(k, L"NovaConnected", 1);
@@ -819,6 +1001,8 @@ static BOOL dispatch(SERVICE_MAIN_W mw, SERVICE_MAIN_A ma)
     CloseHandle(t);
     /* until the service reports itself stopped */
     WaitForSingleObject(g_stopped, INFINITE);
+    AcquireSRWLockExclusive(&g_control_lock);         /* a control being answered finishes first */
+    ReleaseSRWLockExclusive(&g_control_lock);
     return TRUE;
 }
 

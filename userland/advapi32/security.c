@@ -26,6 +26,8 @@ NTSYSAPI NTSTATUS NTAPI NtQueryInformationToken(HANDLE t, ULONG cls, PVOID buf, 
 NTSYSAPI NTSTATUS NTAPI NtImpersonateAnonymousToken(HANDLE thread);
 NTSYSAPI NTSTATUS NTAPI NtQuerySecurityObject(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, ULONG len, PULONG need);
 NTSYSAPI NTSTATUS NTAPI NtSetSecurityObject(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd);
+NTSYSAPI BOOLEAN NTAPI RtlDosPathNameToNtPathName_U(PCWSTR dos, PUNICODE_STRING nt, PWSTR *part, PVOID rel);
+NTSYSAPI VOID NTAPI RtlFreeUnicodeString(PUNICODE_STRING s);
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
 
@@ -153,23 +155,42 @@ WINADVAPI BOOL WINAPI ConvertSidToStringSidW(PSID sid, LPWSTR *out)
     return TRUE;
 }
 
-static BOOL string_to_sid(const char *s, PSID *out)
+/* SDDL's SID strings (two letters for the well-known accounts) */
+static const struct { char abbr[3]; const char *sid; } g_sid_aliases[] = {
+    { "WD", "S-1-1-0" },      { "CO", "S-1-3-0" },      { "CG", "S-1-3-1" },      { "OW", "S-1-3-4" },
+    { "NU", "S-1-5-2" },      { "IU", "S-1-5-4" },      { "SU", "S-1-5-6" },      { "AN", "S-1-5-7" },
+    { "ED", "S-1-5-9" },      { "PS", "S-1-5-10" },     { "AU", "S-1-5-11" },     { "RC", "S-1-5-12" },
+    { "SY", "S-1-5-18" },     { "LS", "S-1-5-19" },     { "NS", "S-1-5-20" },     { "WR", "S-1-5-33" },
+    { "BA", "S-1-5-32-544" }, { "BU", "S-1-5-32-545" }, { "BG", "S-1-5-32-546" }, { "PU", "S-1-5-32-547" },
+    { "AO", "S-1-5-32-548" }, { "SO", "S-1-5-32-549" }, { "PO", "S-1-5-32-550" }, { "BO", "S-1-5-32-551" },
+    { "RE", "S-1-5-32-552" }, { "RU", "S-1-5-32-554" }, { "RD", "S-1-5-32-555" }, { "NO", "S-1-5-32-556" },
+    { "MU", "S-1-5-32-558" }, { "LU", "S-1-5-32-559" }, { "IS", "S-1-5-32-568" }, { "CY", "S-1-5-32-569" },
+    { "ER", "S-1-5-32-573" }, { "AC", "S-1-15-2-1" },   { "LW", "S-1-16-4096" },  { "ME", "S-1-16-8192" },
+    { "MP", "S-1-16-8448" },  { "HI", "S-1-16-12288" }, { "SI", "S-1-16-16384" },
+    { "LA", "S-1-5-21-1000-2000-3000-500" }, { "LG", "S-1-5-21-1000-2000-3000-501" },
+};
+
+/* The two-letter SDDL name of @sid, or NULL */
+const char *sid_alias(PSID sid)
 {
-    /* well-known abbreviations */
-    static const struct { const char *abbr; const BYTE *sid; } ab[] = {
-        { "WD", g_everyone_sid }, { "BA", g_admins_sid }, { "BU", g_users_sid }, { "AU", g_auth_users_sid },
-        { "IU", g_interactive_sid }, { "SY", g_system_sid }, { "ME", 0 },
-    };
-    const BYTE *known = 0;
-    for (unsigned i = 0; i < sizeof(ab) / sizeof(ab[0]); i++)
-        if (s[0] == ab[i].abbr[0] && s[1] == ab[i].abbr[1] && !s[2]) { known = ab[i].sid ? ab[i].sid : g_user_sid; break; }
-    if (known) {
-        DWORD n = GetLengthSid((PSID)known);
-        *out = LocalAlloc(0, n);
-        if (!*out) return FALSE;
-        memcpy(*out, known, n);
-        return TRUE;
+    char str[200];
+    if (!sid_to_string(sid, str, sizeof(str))) return 0;
+    for (unsigned i = 0; i < sizeof(g_sid_aliases) / sizeof(g_sid_aliases[0]); i++) {
+        const char *a = g_sid_aliases[i].sid, *b = str;
+        while (*a && *a == *b) { a++; b++; }
+        if (!*a && !*b) return g_sid_aliases[i].abbr;
     }
+    return 0;
+}
+
+int sid_string(PSID sid, char *out, int cap) { return sid_to_string(sid, out, cap); }
+
+/* "S-1-5-..." or an SDDL alias as a LocalAlloc'd SID */
+BOOL sid_from_string(const char *s, PSID *out)
+{
+    for (unsigned i = 0; i < sizeof(g_sid_aliases) / sizeof(g_sid_aliases[0]); i++)
+        if ((s[0] & ~0x20) == g_sid_aliases[i].abbr[0] && (s[1] & ~0x20) == g_sid_aliases[i].abbr[1] && !s[2])
+            return sid_from_string(g_sid_aliases[i].sid, out);
     if ((s[0] | 0x20) != 's' || s[1] != '-' || s[2] != '1' || s[3] != '-') { SetLastError(ERROR_INVALID_SID); return FALSE; }
     ULONGLONG v[17];
     int n = 0;
@@ -195,7 +216,7 @@ static BOOL string_to_sid(const char *s, PSID *out)
 WINADVAPI BOOL WINAPI ConvertStringSidToSidA(LPCSTR s, PSID *out)
 {
     if (!s || !out) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    if (!string_to_sid(s, out)) return FALSE;
+    if (!sid_from_string(s, out)) return FALSE;
     SetLastError(ERROR_SUCCESS);            /* Windows clears it; some callers test GetLastError alone */
     return TRUE;
 }
@@ -366,17 +387,85 @@ WINADVAPI BOOL WINAPI LookupAccountSidW(LPCWSTR sys, PSID sid, LPWSTR name, LPDW
     return TRUE;
 }
 
+static int ieq_n(const char *a, const char *b, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'a' && x <= 'z') x -= 32;
+        if (y >= 'a' && y <= 'z') y -= 32;
+        if (x != y) return 0;
+    }
+    return 1;
+}
+static int ieq_s(const char *a, size_t n, const char *b) { return strlen_(b) == n && ieq_n(a, b, n); }
+
+/* The account @name names ("name" or "DOMAIN\name", any case): its SID
+ * (pointing into a table), domain and kind; NULL if there is none */
+static const BYTE *account_named(const char *name, const char **domain, SID_NAME_USE *use)
+{
+    static const BYTE domain_sid[] = { 1, 4, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 0xE8, 3, 0, 0, 0xD0, 7, 0, 0, 0xB8, 0x0B, 0, 0 };
+    static BYTE known[sizeof(g_accounts) / sizeof(g_accounts[0])][SECURITY_MAX_SID_SIZE];
+    const char *slash = name, *n = name;
+    for (const char *p = name; *p; p++) if (*p == '\\') slash = p;
+    size_t dl = 0;
+    if (*slash == '\\') { dl = (size_t)(slash - name); n = slash + 1; }
+    size_t nl = strlen_(n);
+    if (!nl) return 0;
+    char pc[64];
+    DWORD pcn = sizeof(pc);
+    if (!GetComputerNameA(pc, &pcn)) pc[0] = 0;
+    BOOL here = !dl || ieq_s(name, dl, "NOVAOS") || ieq_s(name, dl, pc) || ieq_s(name, dl, ".");   /* (this machine) */
+    if (ieq_s(n, nl, user_name()) && here) { *domain = "NOVAOS"; *use = SidTypeUser; return g_user_sid; }
+    if (!dl && (ieq_s(n, nl, "NOVAOS") || ieq_s(n, nl, pc))) { *domain = "NOVAOS"; *use = SidTypeDomain; return domain_sid; }
+    for (unsigned i = 0; i < sizeof(g_accounts) / sizeof(g_accounts[0]); i++) {
+        if (!ieq_s(n, nl, g_accounts[i].name)) continue;
+        if (dl && !ieq_s(name, dl, g_accounts[i].domain)) continue;
+        PSID sid;
+        if (!known[i][0]) {
+            if (!sid_from_string(g_accounts[i].sid, &sid)) return 0;
+            memcpy(known[i], sid, GetLengthSid(sid));
+            LocalFree(sid);
+        }
+        *domain = g_accounts[i].domain;
+        *use = g_accounts[i].use;
+        return known[i];
+    }
+    return 0;
+}
+
+/* LookupAccountName on UTF-8 @name; the domain is written as @wide */
+static BOOL lookup_name(const char *name, PSID sid, LPDWORD ns, void *dom, LPDWORD nd, PSID_NAME_USE use, BOOL wide)
+{
+    const char *d;
+    SID_NAME_USE u;
+    const BYTE *s = name ? account_named(name, &d, &u) : 0;
+    if (!s) { SetLastError(1332 /* ERROR_NONE_MAPPED */); return FALSE; }
+    DWORD len = GetLengthSid((PSID)s), ld = (DWORD)strlen_(d);
+    if (!ns || !nd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!sid || *ns < len || !dom || *nd <= ld) { *ns = len; *nd = ld + 1; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    memcpy(sid, s, len);
+    for (DWORD i = 0; i <= ld; i++) {
+        if (wide) ((WCHAR *)dom)[i] = (WCHAR)(BYTE)d[i];
+        else ((char *)dom)[i] = d[i];
+    }
+    *ns = len; *nd = ld;
+    if (use) *use = u;
+    SetLastError(ERROR_SUCCESS);
+    return TRUE;
+}
+
 WINADVAPI BOOL WINAPI LookupAccountNameW(LPCWSTR sys, LPCWSTR name, PSID sid, LPDWORD ns, LPWSTR dom, LPDWORD nd, PSID_NAME_USE use)
 {
-    (void)sys; (void)name;
-    DWORD len = GetLengthSid((PSID)g_user_sid);
-    if (!sid || *ns < len || !dom || *nd < 7) { *ns = len; *nd = 7; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    memcpy(sid, g_user_sid, len);
-    const char *d = "NOVAOS";
-    for (int i = 0; i < 7; i++) dom[i] = (WCHAR)d[i];
-    *ns = len; *nd = 6;
-    if (use) *use = SidTypeUser;
-    return TRUE;
+    (void)sys;
+    char a[256];
+    if (name && !WideCharToMultiByte(CP_UTF8, 0, name, -1, a, sizeof(a), 0, 0)) { SetLastError(1332); return FALSE; }
+    return lookup_name(name ? a : 0, sid, ns, dom, nd, use, TRUE);
+}
+
+WINADVAPI BOOL WINAPI LookupAccountNameA(LPCSTR sys, LPCSTR name, PSID sid, LPDWORD ns, LPSTR dom, LPDWORD nd, PSID_NAME_USE use)
+{
+    (void)sys;
+    return lookup_name(name, sid, ns, dom, nd, use, FALSE);
 }
 
 /* -----------------------------------------------------------------------
@@ -601,19 +690,40 @@ WINADVAPI BOOL WINAPI LogonUserW(LPCWSTR user, LPCWSTR domain, LPCWSTR pass, DWO
     return FALSE;
 }
 
+/* Starts the program suspended, gives it @token (NtSetInformationProcess
+ * ProcessAccessToken, as Windows' CreateProcessAsUser does) and lets it
+ * run unless the caller asked for it suspended.  No token: the caller's. */
+static BOOL create_with_token(HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
+                              BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si,
+                              LPPROCESS_INFORMATION pi)
+{
+    if (!token) return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+    if (!CreateProcessW(app, cmd, pa, ta, inherit, flags | CREATE_SUSPENDED, env, dir, si, pi)) return FALSE;
+    struct { HANDLE token, thread; } at = { token, pi->hThread };
+    NTSTATUS st = NtSetInformationProcess(pi->hProcess, 9 /* ProcessAccessToken */, &at, sizeof(at));
+    if (!NT_SUCCESS(st)) {
+        TerminateProcess(pi->hProcess, 1);
+        CloseHandle(pi->hThread);
+        CloseHandle(pi->hProcess);
+        SetLastError(RtlNtStatusToDosError(st));
+        return FALSE;
+    }
+    if (!(flags & CREATE_SUSPENDED)) ResumeThread(pi->hThread);
+    return TRUE;
+}
+
 WINADVAPI BOOL WINAPI CreateProcessAsUserW(HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
                                            BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si,
                                            LPPROCESS_INFORMATION pi)
 {
-    (void)token;
-    return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+    return create_with_token(token, app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
 }
 
 WINADVAPI BOOL WINAPI CreateProcessWithTokenW(HANDLE token, DWORD logon, LPCWSTR app, LPWSTR cmd, DWORD flags, LPVOID env,
                                               LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
 {
-    (void)token; (void)logon;
-    return CreateProcessW(app, cmd, 0, 0, FALSE, flags, env, dir, si, pi);
+    (void)logon;
+    return create_with_token(token, app, cmd, 0, 0, FALSE, flags, env, dir, si, pi);
 }
 
 /* -----------------------------------------------------------------------
@@ -661,6 +771,16 @@ WINADVAPI BOOL WINAPI InitializeSecurityDescriptor(PSECURITY_DESCRIPTOR sd, DWOR
 }
 
 WINADVAPI BOOL WINAPI IsValidSecurityDescriptor(PSECURITY_DESCRIPTOR sd) { return sd && ((SECURITY_DESCRIPTOR *)sd)->Revision == 1; }
+
+/* Only the inheritance bits (and SE_RM_CONTROL_VALID) may be changed */
+WINADVAPI BOOL WINAPI SetSecurityDescriptorControl(PSECURITY_DESCRIPTOR sd, SECURITY_DESCRIPTOR_CONTROL mask,
+                                                   SECURITY_DESCRIPTOR_CONTROL set)
+{
+    if (!sd || (mask & ~0x7F00) || (set & ~mask)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    SECURITY_DESCRIPTOR *s = sd;
+    s->Control = (SECURITY_DESCRIPTOR_CONTROL)((s->Control & ~mask) | set);
+    return TRUE;
+}
 
 /* self-relative descriptors keep offsets where absolute ones keep pointers */
 static void *sd_part(PSECURITY_DESCRIPTOR sd, int which)
@@ -773,6 +893,39 @@ WINADVAPI BOOL WINAPI MakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DES
     return make_self_relative(abs, rel, n);
 }
 
+/* An absolute copy of the self-relative @rel: the header in @abs and each
+ * part in its own buffer; every size is checked (and the needed ones
+ * returned) before anything is written */
+WINADVAPI BOOL WINAPI MakeAbsoluteSD(PSECURITY_DESCRIPTOR rel, PSECURITY_DESCRIPTOR abs, LPDWORD abs_n,
+                                     PACL dacl, LPDWORD dacl_n, PACL sacl, LPDWORD sacl_n,
+                                     PSID owner, LPDWORD owner_n, PSID group, LPDWORD group_n)
+{
+    SECURITY_DESCRIPTOR *r = rel;
+    if (!r || !abs_n || !dacl_n || !sacl_n || !owner_n || !group_n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!(r->Control & SE_SELF_RELATIVE)) { SetLastError(1305 /* ERROR_BAD_DESCRIPTOR_FORMAT */); return FALSE; }
+    PSID o = sd_part(rel, 0), g = sd_part(rel, 1);
+    PACL sa = sd_part(rel, 2), da = sd_part(rel, 3);
+    DWORD need[5] = { sizeof(SECURITY_DESCRIPTOR), acl_len(da), acl_len(sa), o ? GetLengthSid(o) : 0, g ? GetLengthSid(g) : 0 };
+    LPDWORD have[5] = { abs_n, dacl_n, sacl_n, owner_n, group_n };
+    BOOL small = FALSE;
+    for (int i = 0; i < 5; i++) if (*have[i] < need[i]) small = TRUE;
+    if (small || !abs || (need[1] && !dacl) || (need[2] && !sacl) || (need[3] && !owner) || (need[4] && !group)) {
+        for (int i = 0; i < 5; i++) *have[i] = need[i];
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    SECURITY_DESCRIPTOR *a = abs;
+    memset(a, 0, sizeof(*a));
+    a->Revision = r->Revision;
+    a->Control = (WORD)(r->Control & ~SE_SELF_RELATIVE);
+    if (da) { memcpy(dacl, da, need[1]); a->Dacl = dacl; }
+    if (sa) { memcpy(sacl, sa, need[2]); a->Sacl = sacl; }
+    if (o) { memcpy(owner, o, need[3]); a->Owner = owner; }
+    if (g) { memcpy(group, g, need[4]); a->Group = group; }
+    for (int i = 0; i < 5; i++) *have[i] = need[i];
+    return TRUE;
+}
+
 WINADVAPI BOOL WINAPI InitializeAcl(PACL acl, DWORD n, DWORD rev)
 {
     if (n < sizeof(ACL)) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
@@ -869,14 +1022,28 @@ static PSECURITY_DESCRIPTOR default_sd(void)
     return sd;
 }
 
-/* A file or directory, opened to read or change its descriptor */
+/* A file or directory, opened to read or change its descriptor: with
+ * only the right that needs (READ_CONTROL, WRITE_DAC, WRITE_OWNER), as
+ * Windows does, so an owner whose DACL grants nothing still gets in */
 static HANDLE open_named(LPCWSTR name, SECURITY_INFORMATION si, BOOL write)
 {
     DWORD access = !write ? 0x00020000 /* READ_CONTROL */
                  : ((si & DACL_SECURITY_INFORMATION) ? 0x00040000 /* WRITE_DAC */ : 0) |
                    ((si & (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION)) ? 0x00080000 /* WRITE_OWNER */ : 0);
-    return CreateFileW(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0, OPEN_EXISTING,
-                       0x02000000 /* FILE_FLAG_BACKUP_SEMANTICS: directories too */, 0);
+    UNICODE_STRING nt;
+    if (!name || !RtlDosPathNameToNtPathName_U(name, &nt, 0, 0)) { SetLastError(ERROR_PATH_NOT_FOUND); return INVALID_HANDLE_VALUE; }
+    OBJECT_ATTRIBUTES oa;
+    memset(&oa, 0, sizeof(oa));
+    oa.Length = sizeof(oa);
+    oa.ObjectName = &nt;
+    oa.Attributes = OBJ_CASE_INSENSITIVE;
+    IO_STATUS_BLOCK io;
+    HANDLE h = 0;
+    NTSTATUS s = NtOpenFile(&h, access, &oa, &io, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            0x00004000 /* FILE_OPEN_FOR_BACKUP_INTENT: directories too */);
+    RtlFreeUnicodeString(&nt);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return INVALID_HANDLE_VALUE; }
+    return h;
 }
 
 /* The descriptor of the object @h (LocalAlloc'd) */
@@ -966,35 +1133,257 @@ WINADVAPI BOOL WINAPI GetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si,
     return TRUE;
 }
 
-/* Give @h the parts @si names (a SACL is not kept) */
-static DWORD set_parts(HANDLE h, SECURITY_INFORMATION si, PSID o, PSID g, PACL d)
+/* Give @h the parts @si names (a SACL is not kept); @control: the DACL's
+ * SE_DACL_PROTECTED and SE_DACL_AUTO_INHERITED bits */
+static DWORD set_parts(HANDLE h, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, SECURITY_DESCRIPTOR_CONTROL control)
 {
     SECURITY_DESCRIPTOR abs;
     InitializeSecurityDescriptor(&abs, SECURITY_DESCRIPTOR_REVISION);
     if (si & OWNER_SECURITY_INFORMATION) abs.Owner = o;
     if (si & GROUP_SECURITY_INFORMATION) abs.Group = g;
-    if (si & DACL_SECURITY_INFORMATION) SetSecurityDescriptorDacl(&abs, TRUE, d, FALSE);
+    if (si & DACL_SECURITY_INFORMATION) {
+        SetSecurityDescriptorDacl(&abs, TRUE, d, FALSE);
+        abs.Control |= control;
+    }
     NTSTATUS s = NtSetSecurityObject(h, si & 7, &abs);
     return NT_SUCCESS(s) ? ERROR_SUCCESS : RtlNtStatusToDosError(s);
+}
+
+#define ACE_OI  0x01
+#define ACE_CI  0x02
+#define ACE_NP  0x04
+#define ACE_IO  0x08
+#define ACE_INH 0x10
+
+/* The folder @name is in ("C:\a\b" -> "C:\a"; "C:\a" -> "C:\"); FALSE for a root */
+static BOOL parent_of(LPCWSTR name, WCHAR *out, int cap)
+{
+    int n = 0;
+    while (name[n] && n < cap - 1) { out[n] = name[n]; n++; }
+    out[n] = 0;
+    while (n > 3 && (out[n - 1] == '\\' || out[n - 1] == '/')) out[--n] = 0;
+    while (n > 0 && out[n - 1] != '\\' && out[n - 1] != '/') n--;
+    if (n <= 0 || (n == 3 && out[1] == ':' && !out[3])) return FALSE;
+    if (n == 3 && out[1] == ':') { out[3] = 0; return TRUE; }            /* the drive's root keeps its "\" */
+    out[n - 1] = 0;
+    return n > 1;
+}
+
+/* Windows' automatic inheritance, as SetNamedSecurityInfo applies it to an
+ * unprotected DACL: the explicit entries of @d (any marked inherited are
+ * dropped), then the entries @name's folder passes to it: to a file what
+ * it marks OBJECT_INHERIT, to a folder what it marks CONTAINER_INHERIT
+ * (still inheritable unless NO_PROPAGATE) and, inherit-only, what it
+ * marks OBJECT_INHERIT for the files inside.  CREATOR OWNER and CREATOR
+ * GROUP stand for @name's owner and group.  LocalAlloc'd. */
+static DWORD auto_inherit(LPCWSTR name, PACL d, PACL *out)
+{
+    *out = 0;
+    WCHAR parent[MAX_PATH];
+    PACL pd = 0;
+    PSECURITY_DESCRIPTOR psd = 0, osd = 0;
+    PSID owner = 0, group = 0;
+    if (parent_of(name, parent, MAX_PATH))
+        GetNamedSecurityInfoW(parent, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &pd, 0, &psd);
+    GetNamedSecurityInfoW(name, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION, &owner, &group, 0, 0, &osd);
+    DWORD attr = GetFileAttributesW(name);
+    BOOL dir = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
+    static const BYTE creator_owner[] = { 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0 }, creator_group[] = { 1, 1, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0 };
+
+    /* two passes: measure, then write */
+    DWORD size = 8, count = 0;
+    BYTE *acl = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        DWORD at = 8;
+        count = 0;
+        for (int from = 0; from < 2; from++) {
+            PACL src = from ? pd : d;
+            if (!src) continue;
+            const BYTE *p = (const BYTE *)src + 8, *end = (const BYTE *)src + src->AclSize;
+            for (WORD i = 0; i < src->AceCount && p + 8 <= end; i++) {
+                const ACE_HEADER *h = (const ACE_HEADER *)p;
+                if (h->AceSize < 8 || p + h->AceSize > end) break;
+                const BYTE *ace = p;
+                p += h->AceSize;
+                BYTE fl = h->AceFlags, nf = fl;
+                const BYTE *sid = ace + 8;
+                if (!from) {
+                    if (fl & ACE_INH) continue;
+                    if (pass) memcpy(acl + at, ace, h->AceSize);
+                    at += h->AceSize;
+                    count++;
+                    continue;
+                }
+                if (h->AceType > 1 || h->AceSize < 16) continue;            /* (allow and deny entries) */
+                if (!(fl & (ACE_OI | ACE_CI)) || (!dir && !(fl & ACE_OI))) continue;
+                BOOL for_files = dir && !(fl & ACE_CI);
+                if (for_files && (fl & ACE_NP)) continue;
+                nf = (BYTE)(ACE_INH | (dir && !(fl & ACE_NP) ? fl & (ACE_OI | ACE_CI) : 0) | (for_files ? ACE_IO : 0));
+                if (!for_files && owner && EqualSid((PSID)sid, (PSID)creator_owner)) sid = owner;
+                else if (!for_files && group && EqualSid((PSID)sid, (PSID)creator_group)) sid = group;
+                DWORD len = 8 + GetLengthSid((PSID)sid);
+                if (pass) {
+                    ACE_HEADER *o = (ACE_HEADER *)(acl + at);
+                    o->AceType = h->AceType;
+                    o->AceFlags = nf;
+                    o->AceSize = (WORD)len;
+                    memcpy(acl + at + 4, ace + 4, 4);
+                    memcpy(acl + at + 8, sid, len - 8);
+                }
+                at += len;
+                count++;
+            }
+        }
+        if (!pass) {
+            size = at;
+            acl = size <= 0xFFFF ? LocalAlloc(LMEM_FIXED | LMEM_ZEROINIT, size) : 0;
+            if (!acl) break;
+        }
+    }
+    if (psd) LocalFree(psd);
+    if (osd) LocalFree(osd);
+    if (!acl) return size > 0xFFFF ? ERROR_INVALID_PARAMETER : ERROR_NOT_ENOUGH_MEMORY;
+    PACL a = (PACL)acl;
+    a->AclRevision = d && d->AclRevision > ACL_REVISION ? d->AclRevision : ACL_REVISION;
+    a->AclSize = (WORD)size;
+    a->AceCount = (WORD)count;
+    *out = a;
+    return ERROR_SUCCESS;
+}
+
+/* SetNamedSecurityInfo: for files and folders a DACL is protected (kept as
+ * given) with PROTECTED_DACL_SECURITY_INFORMATION, inherits from the
+ * folder with UNPROTECTED_DACL_SECURITY_INFORMATION, and with neither
+ * stays as protected as it was.  (Folders and files inside are not
+ * visited: those without a DACL of their own inherit as they are opened.) */
+static DWORD set_named(LPCWSTR name, SECURITY_INFORMATION si, PSID o, PSID g, PACL d)
+{
+    if (!(si & 7)) return ERROR_SUCCESS;
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    PACL merged = 0;
+    if (si & DACL_SECURITY_INFORMATION) {
+        BOOL prot;
+        if (si & PROTECTED_DACL_SECURITY_INFORMATION) prot = TRUE;
+        else if (si & UNPROTECTED_DACL_SECURITY_INFORMATION) prot = FALSE;
+        else {
+            PSECURITY_DESCRIPTOR cur = 0;
+            SECURITY_DESCRIPTOR_CONTROL c = 0;
+            DWORD rev;
+            if (!GetNamedSecurityInfoW(name, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, 0, 0, &cur) && cur)
+                GetSecurityDescriptorControl(cur, &c, &rev);
+            if (cur) LocalFree(cur);
+            prot = (c & SE_DACL_PROTECTED) != 0;
+        }
+        if (prot) control = SE_DACL_PROTECTED;
+        else if (d) {                                       /* (a NULL DACL lets everyone in: nothing to inherit) */
+            DWORD e = auto_inherit(name, d, &merged);
+            if (e) return e;
+            d = merged;
+            control = SE_DACL_AUTO_INHERITED;
+        }
+    }
+    HANDLE h = open_named(name, si, TRUE);
+    DWORD e = h == INVALID_HANDLE_VALUE ? GetLastError() : set_parts(h, si, o, g, d, control);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    if (merged) LocalFree(merged);
+    return e;
 }
 
 WINADVAPI DWORD WINAPI SetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
     (void)s;
     if (t != SE_FILE_OBJECT) return ERROR_SUCCESS;          /* (nowhere to keep one) */
-    if (!(si & 7)) return ERROR_SUCCESS;
-    HANDLE h = open_named(name, si, TRUE);
-    if (h == INVALID_HANDLE_VALUE) return GetLastError();
-    DWORD e = set_parts(h, si, o, g, d);
-    CloseHandle(h);
-    return e;
+    return set_named(name, si, o, g, d);
+}
+
+WINADVAPI DWORD WINAPI SetNamedSecurityInfoA(LPSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
+{
+    (void)s;
+    if (t != SE_FILE_OBJECT) return ERROR_SUCCESS;
+    WCHAR w[MAX_PATH];
+    if (!name || !MultiByteToWideChar(CP_ACP, 0, name, -1, w, MAX_PATH)) return ERROR_INVALID_NAME;
+    return set_named(w, si, o, g, d);
+}
+
+/* TreeResetNamedSecurityInfo: @name gets the owner, group and DACL as
+ * SetNamedSecurityInfo sets them, and every file and folder below it the
+ * same owner and group and a DACL that only inherits from its folder (its
+ * own explicit entries kept with @keep), visited top-down so each inherits
+ * what its folder now has.  @fn hears of each object as @invoke asks
+ * (ProgressInvokeEveryObject 2, ProgressInvokeOnError 3) and may cancel
+ * (ProgressCancelOperation 4). */
+typedef void (WINAPI *tree_progress_t)(LPWSTR, DWORD, DWORD *, PVOID, BOOL);
+
+static BOOL tree_reset(WCHAR *path, SIZE_T cap, SECURITY_INFORMATION si, PSID o, PSID g, BOOL keep,
+                       tree_progress_t fn, DWORD *invoke, PVOID args)
+{
+    SIZE_T len = (SIZE_T)lstrlenW(path);
+    if (len + 3 >= cap) return TRUE;
+    memcpy(path + len, L"\\*", 3 * sizeof(WCHAR));
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileW(path, &fd);
+    path[len] = 0;
+    if (f == INVALID_HANDLE_VALUE) return TRUE;
+    BOOL go = TRUE;
+    do {
+        if (!lstrcmpW(fd.cFileName, L".") || !lstrcmpW(fd.cFileName, L"..")) continue;
+        SIZE_T n = (SIZE_T)lstrlenW(fd.cFileName);
+        if (len + 1 + n >= cap) continue;
+        path[len] = '\\';
+        memcpy(path + len + 1, fd.cFileName, (n + 1) * sizeof(WCHAR));
+        PACL d = 0;
+        PSECURITY_DESCRIPTOR cur = 0;
+        static const ACL empty = { ACL_REVISION, 0, sizeof(ACL), 0, 0 };
+        SECURITY_INFORMATION csi = si & (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION);
+        if (si & DACL_SECURITY_INFORMATION) {
+            csi |= DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION;
+            if (keep) GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &d, 0, &cur);
+            if (!d) d = (PACL)&empty;                       /* (auto_inherit drops the inherited entries it had) */
+        }
+        DWORD e = set_named(path, csi, o, g, d);
+        if (cur) LocalFree(cur);
+        if (fn && (*invoke == 2 || (*invoke == 3 && e))) {
+            fn(path, e, invoke, args, !e);
+            if (*invoke == 4) go = FALSE;
+        }
+        if (go && (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(fd.dwFileAttributes & 0x400 /* FILE_ATTRIBUTE_REPARSE_POINT */))
+            go = tree_reset(path, cap, si, o, g, keep, fn, invoke, args);
+        path[len] = 0;
+    } while (go && FindNextFileW(f, &fd));
+    FindClose(f);
+    return go;
+}
+
+WINADVAPI DWORD WINAPI TreeResetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g,
+                                                   PACL d, PACL s, BOOL keep, tree_progress_t fn, DWORD invoke, PVOID args)
+{
+    (void)s;
+    if (!name) return ERROR_INVALID_PARAMETER;
+    if (t != SE_FILE_OBJECT) return SetNamedSecurityInfoW(name, t, si, o, g, d, s);
+    DWORD e = set_named(name, si, o, g, d);
+    if (fn && (invoke == 2 || (invoke == 3 && e))) {
+        fn(name, e, &invoke, args, !e);
+        if (invoke == 4) return e;
+    }
+    if (e) return e;
+    DWORD attr = GetFileAttributesW(name);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return ERROR_SUCCESS;
+    WCHAR *path = LocalAlloc(LMEM_FIXED, 32768 * sizeof(WCHAR));
+    if (!path) return ERROR_NOT_ENOUGH_MEMORY;
+    SIZE_T n = (SIZE_T)lstrlenW(name);
+    if (n >= 32767) { LocalFree(path); return ERROR_FILENAME_EXCED_RANGE; }
+    memcpy(path, name, (n + 1) * sizeof(WCHAR));
+    while (n > 0 && (path[n - 1] == '\\' || path[n - 1] == '/')) path[--n] = 0;
+    tree_reset(path, 32768, si, o, g, keep, fn, &invoke, args);
+    LocalFree(path);
+    return ERROR_SUCCESS;
 }
 
 WINADVAPI DWORD WINAPI SetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
     (void)s;                                /* (SACLs are not kept) */
     if (t == SE_WINDOW_OBJECT) return ERROR_SUCCESS;    /* (see GetSecurityInfo) */
-    return (si & 7) ? set_parts(h, si, o, g, d) : ERROR_SUCCESS;
+    return (si & 7) ? set_parts(h, si, o, g, d, (si & PROTECTED_DACL_SECURITY_INFORMATION) ? SE_DACL_PROTECTED : 0) : ERROR_SUCCESS;
 }
 
 WINADVAPI BOOL WINAPI GetFileSecurityW(LPCWSTR name, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd, DWORD n, LPDWORD need)
@@ -1017,33 +1406,6 @@ WINADVAPI BOOL WINAPI SetFileSecurityW(LPCWSTR name, SECURITY_INFORMATION si, PS
     NTSTATUS s = NtSetSecurityObject(h, si & 7, sd);
     CloseHandle(h);
     if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
-    return TRUE;
-}
-
-WINADVAPI BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorW(LPCWSTR s, DWORD rev, PSECURITY_DESCRIPTOR *sd, PULONG n)
-{
-    (void)s; (void)rev;                     /* the SDDL's rules would all allow access here */
-    *sd = default_sd();
-    if (!*sd) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
-    if (n) *n = GetSecurityDescriptorLength(*sd);
-    return TRUE;
-}
-
-WINADVAPI BOOL WINAPI ConvertStringSecurityDescriptorToSecurityDescriptorA(LPCSTR s, DWORD rev, PSECURITY_DESCRIPTOR *sd, PULONG n)
-{
-    (void)s;
-    return ConvertStringSecurityDescriptorToSecurityDescriptorW(0, rev, sd, n);
-}
-
-WINADVAPI BOOL WINAPI ConvertSecurityDescriptorToStringSecurityDescriptorW(PSECURITY_DESCRIPTOR sd, DWORD rev, SECURITY_INFORMATION si,
-                                                                          LPWSTR *out, PULONG n)
-{
-    (void)sd; (void)rev; (void)si;
-    static const char text[] = "O:S-1-5-21-1000-2000-3000-1001G:BU";
-    *out = LocalAlloc(0, sizeof(text) * 2);
-    if (!*out) return FALSE;
-    for (unsigned i = 0; i < sizeof(text); i++) (*out)[i] = (WCHAR)text[i];
-    if (n) *n = sizeof(text) - 1;
     return TRUE;
 }
 
@@ -1234,17 +1596,6 @@ WINADVAPI BOOL WINAPI SetFileSecurityA(LPCSTR name, SECURITY_INFORMATION si, PSE
     if (!a_to_w(name, w, MAX_PATH)) { SetLastError(ERROR_INVALID_NAME); return FALSE; }
     return SetFileSecurityW(w, si, sd);
 }
-WINADVAPI BOOL WINAPI LookupAccountNameA(LPCSTR sys, LPCSTR name, PSID sid, LPDWORD ns, LPSTR dom, LPDWORD nd, PSID_NAME_USE use)
-{
-    (void)sys; (void)name;
-    DWORD len = GetLengthSid((PSID)g_user_sid);
-    if (!sid || *ns < len || !dom || *nd < 7) { *ns = len; *nd = 7; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    memcpy(sid, g_user_sid, len);
-    memcpy(dom, "NOVAOS", 7);
-    *ns = len; *nd = 6;
-    if (use) *use = SidTypeUser;
-    return TRUE;
-}
 WINADVAPI BOOL WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
 {
     NTSTATUS st = NtSetSecurityObject(h, si, sd);
@@ -1260,23 +1611,6 @@ WINADVAPI BOOL WINAPI GetSecurityDescriptorSacl(PSECURITY_DESCRIPTOR sd, LPBOOL 
     if (defaulted) *defaulted = (s->Control & 0x0020) != 0;
     return TRUE;
 }
-
-/* TRUSTEE_W naming a SID */
-typedef struct _TRUSTEE_W_ {
-    struct _TRUSTEE_W_ *pMultipleTrustee;
-    int MultipleTrusteeOperation, TrusteeForm, TrusteeType;
-    LPWSTR ptstrName;
-} TRUSTEE_W_;
-WINADVAPI VOID WINAPI BuildTrusteeWithSidW(TRUSTEE_W_ *t, PSID sid)
-{
-    if (!t) return;
-    t->pMultipleTrustee = 0;
-    t->MultipleTrusteeOperation = 0;                /* NO_MULTIPLE_TRUSTEE */
-    t->TrusteeForm = 0;                             /* TRUSTEE_IS_SID */
-    t->TrusteeType = 0;                             /* TRUSTEE_IS_UNKNOWN */
-    t->ptstrName = (LPWSTR)sid;
-}
-WINADVAPI VOID WINAPI BuildTrusteeWithSidA(TRUSTEE_W_ *t, PSID sid) { BuildTrusteeWithSidW(t, sid); }
 
 /* Private object security: the new object's descriptor is a self-relative
  * copy of the creator's (no inheritance from the parent: NovaOS's own

@@ -86,6 +86,15 @@ typedef struct Thread {
     bool            balance_boost;  /* raised for starving (sched_tick): back to base after a quantum */
     bool            no_boost;       /* no wake-up boosts (SetThreadPriorityBoost) */
     uint64_t        ready_tick;     /* when it was last queued (the balance-set boost) */
+    /* The Multimedia Class Scheduler (sched_set_mmcss): the real-time
+     * priority it runs at (0: not registered), its own base for when it
+     * has used up its share, the ticks it was found running in the
+     * current period and when that began */
+    uint8_t         mm_priority;
+    uint8_t         mm_base;
+    uint8_t         mm_ran;
+    bool            mm_exhausted;
+    uint64_t        mm_period;
 
     /* Page table root (CR3 physical address) for this thread's process.
      * 0 = kernel thread (no CR3 switch needed).
@@ -152,9 +161,29 @@ typedef struct Thread {
 #define PRIO_DEVICE_IO     18
 #define PRIO_DEVICE        19
 
+/* The Multimedia Class Scheduler (avrt.dll's AvSetMmThreadCharacteristics,
+ * sched_set_mmcss): a program's audio thread runs in the real-time range
+ * without SeIncreaseBasePriorityPrivilege, as MMCSS lifts it on Windows,
+ * above every dynamic thread however boosted (a foreground program's
+ * window threads reach 15), so a busy or freshly woken program never holds
+ * up its sound.  Audio tasks ("Pro Audio", "Audio", "Capture", "Playback",
+ * "Low Latency") run at 18: above the desktop (17), with the network and
+ * USB threads (18), below device polling and the mixer (19), which feed
+ * them.  Other tasks ("Games", "Distribution", "Window Manager"...) and
+ * audio threads at AVRT_PRIORITY_LOW run at 16, below the desktop.  As on
+ * Windows (SystemResponsiveness 20), such a thread may use at most 80% of
+ * a processor: found running MMCSS_BUDGET_TICKS times in a period of
+ * MMCSS_PERIOD_TICKS, it drops to its own base until the period ends, so
+ * a program spinning in one cannot freeze the desktop. */
+#define PRIO_MMCSS         16
+#define PRIO_MMCSS_AUDIO   18
+#define MMCSS_PERIOD_TICKS 10       /* 100 ms */
+#define MMCSS_BUDGET_TICKS 8
+
 /* NT's foreground boost (PsPrioritySeparation, 2 on client Windows): a
  * thread of the process owning the active window, woken from a wait, gets
- * this on top of the waker's increment (still never above 15) */
+ * this on top of the waker's increment (still never above 15; NT adds it
+ * the same way, KiDeferredReadyThread in ReactOS) */
 #define BOOST_FOREGROUND   2
 
 /* Wake-up boosts: how far above its base a thread woken by each kind of
@@ -166,7 +195,9 @@ typedef struct Thread {
 #define BOOST_SEMAPHORE  1      /* SEMAPHORE_INCREMENT */
 #define BOOST_MUTANT     1      /* a released mutex */
 #define BOOST_DISK       1      /* IO_DISK: file I/O completed */
-#define BOOST_GUI        2      /* a window or thread message (win32k's windowing boost) */
+#define BOOST_GUI        2      /* a window or thread message, keyboard and mouse input to a window
+                                   included (win32k's windowing boost: the +6 below is what a driver
+                                   gives the thread reading the device, NovaOS's device poll thread) */
 #define BOOST_NAMED_PIPE 2      /* IO_NAMED_PIPE */
 #define BOOST_NETWORK    2      /* IO_NETWORK */
 #define BOOST_KEYBOARD   6      /* IO_KEYBOARD: keyboard input */
@@ -293,6 +324,10 @@ void sched_unblock_boost(Thread *t, int boost);
  * ended, preempting or giving way at once as its new rank says.  Program
  * threads get theirs from SetThreadPriority/SetPriorityClass (kernel/um). */
 void sched_set_base_priority(Thread *t, uint8_t base);
+/* Register @t with the Multimedia Class Scheduler at @mm (PRIO_MMCSS or
+ * PRIO_MMCSS_AUDIO; 0: unregister), @base its own base priority (what it
+ * runs at when it has used up its share, or unregistered) */
+void sched_set_mmcss(Thread *t, uint8_t mm, uint8_t base);
 /* The foreground process (Thread.um_proc of its threads; NULL: none), whose
  * woken threads get BOOST_FOREGROUND and whose time slices are three times
  * as long (60 ms).  Set by the desktop as the active window changes

@@ -39,6 +39,7 @@ CRTEXP wchar_t  *_wpgmptr;
 CRTEXP int       _fmode;
 CRTEXP int       _commode;
 CRTEXP unsigned  __mb_cur_max = 4;
+CRTEXP unsigned  __lc_codepage = 65001;           /* the variable older MinGW programs read; UTF-8 */
 
 /* Split a command line the way Microsoft's CRT does: whitespace separates
  * arguments; "..." groups; 2n backslashes + " give n backslashes and a

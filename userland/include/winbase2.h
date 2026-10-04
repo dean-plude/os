@@ -142,6 +142,8 @@ typedef union __attribute__((aligned(8))) _SLIST_HEADER {
 WINBASEAPI HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, ULONG_PTR key, DWORD threads);
 WINBASEAPI BOOL   WINAPI GetQueuedCompletionStatus(HANDLE port, LPDWORD bytes, PULONG_PTR key, LPOVERLAPPED *ov, DWORD ms);
 WINBASEAPI BOOL   WINAPI GetQueuedCompletionStatusEx(HANDLE port, LPOVERLAPPED_ENTRY e, ULONG n, PULONG got, DWORD ms, BOOL alertable);
+WINBASEAPI BOOL   WINAPI Wow64DisableWow64FsRedirection(PVOID *old);
+WINBASEAPI BOOL   WINAPI Wow64RevertWow64FsRedirection(PVOID old);
 WINBASEAPI BOOL   WINAPI PostQueuedCompletionStatus(HANDLE port, DWORD bytes, ULONG_PTR key, LPOVERLAPPED ov);
 WINBASEAPI BOOL   WINAPI GetOverlappedResult(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, BOOL wait);
 WINBASEAPI BOOL   WINAPI CancelIo(HANDLE h);
@@ -201,6 +203,8 @@ WINBASEAPI PVOID  WINAPI EncodePointer(PVOID p);
 WINBASEAPI PVOID  WINAPI DecodePointer(PVOID p);
 /* files and paths */
 WINBASEAPI BOOL   WINAPI GetFileInformationByHandle(HANDLE h, LPBY_HANDLE_FILE_INFORMATION info);
+WINBASEAPI BOOL   WINAPI GetFileTime(HANDLE h, LPFILETIME created, LPFILETIME accessed, LPFILETIME written);
+WINBASEAPI BOOL   WINAPI SetFileTime(HANDLE h, const FILETIME *created, const FILETIME *accessed, const FILETIME *written);
 WINBASEAPI BOOL   WINAPI GetFileInformationByHandleEx(HANDLE h, FILE_INFO_BY_HANDLE_CLASS c, LPVOID buf, DWORD n);
 WINBASEAPI BOOL   WINAPI SetFileInformationByHandle(HANDLE h, FILE_INFO_BY_HANDLE_CLASS c, LPVOID buf, DWORD n);
 WINBASEAPI DWORD  WINAPI GetFinalPathNameByHandleW(HANDLE h, LPWSTR buf, DWORD n, DWORD flags);
@@ -589,6 +593,7 @@ WINBASEAPI BOOL   WINAPI GetOverlappedResultEx(HANDLE h, LPOVERLAPPED ov, LPDWOR
 #define ERROR_NOT_FOUND            1168
 #define ERROR_BAD_LENGTH           24
 #define ERROR_BUFFER_OVERFLOW      111
+#define ERROR_NEGATIVE_SEEK        131
 #define ERROR_DIRECTORY            267
 #define ERROR_ABANDONED_WAIT_0     735
 #define WAIT_IO_COMPLETION         0x000000C0

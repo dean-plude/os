@@ -38,17 +38,19 @@ results; until then they are kept by hand.
 | **Eclipse Temurin 21** (`.msi` JRE, `.zip` JDK) | Works | `java`, `javac`, threads, exceptions and files | by hand in QEMU |
 | **ffmpeg 7.1.1** | Works | Converts an H.264 MP4 to WebM | nightly corpus |
 | **Neovim 0.10 and 0.11**, **MSYS2 `sh`** (from MinGit) | Works | Neovim opens, edits and saves a file; interactive `sh` sessions with pipes, subshells and globbing | by hand in QEMU |
-| **Windows Installer (`.msi`) and NSIS setup programs** | Works | 7-Zip, CMake, Node.js, Temurin and KeePassXC packages install, make shortcuts and uninstall, custom actions included; NSIS installers and their uninstallers run | core self-tests (`msitest`, `msiscript`), by hand |
+| **Windows Installer (`.msi`) and NSIS setup programs** | Works | 7-Zip, CMake, Node.js, Temurin and KeePassXC packages install, make shortcuts and uninstall, custom actions included; 32-bit packages put their system files in `SysWOW64`; bootstrappers such as WiX Burn query products, patches and source lists; NSIS installers and their uninstallers run | core self-tests (`msitest`, `msiscript`, `msiqtest`), by hand |
 | **Notepad++ 8.8.3** (x64 portable) | Works | Opens, edits and saves files through the Open and Save As dialogs | nightly corpus |
 | **SumatraPDF 3.4.6** (x86 portable) | Works | Opens a PDF and renders its pages; printing finds no printer | nightly corpus |
 | **WinMerge 2.16.50** | Works | Compares two files side by side | nightly corpus |
 | **PuTTY 0.81** | Partly | Raw connections work; SSH is untested | nightly corpus |
 | **KeePassXC 2.7.12** (Qt 5) | Works | Opens and unlocks a KDBX 4 database and shows its entries; Windows Hello unlock reports "not supported" | nightly corpus |
 | **VLC 3.0.21** (Qt 5) | Partly | Plays an H.264 and AAC MP4 with sound in its window; closing VLC can freeze NovaOS (being fixed) | nightly corpus |
-| **Audacity 3.7.4** (wxWidgets) | Partly | Records from the microphone, draws the waveform and saves an `.aup3` project; recordings can have short dropouts (being fixed) | nightly corpus |
+| **Audacity 3.7.4** (wxWidgets) | Partly | Records from the microphone, draws the waveform and saves an `.aup3` project | nightly corpus |
 | **Inkscape 0.91** (GTK 2) | Works | Opens, edits and saves an SVG; Inkscape 1.x is untested | nightly corpus |
 | **Krita 5.3.4** (Qt 5) | Partly | Starts and opens a new image on Mesa 3D (install Mesa 3D from the App Store first); painting and saving are not checked yet | nightly corpus |
 | **Firefox 157** and **Floorp 12.19** | Works | Installs from the App Store, loads pages over HTTP and HTTPS, scrolls and takes typing in forms; a publicly trusted HTTPS site is untested (the test network is offline) | nightly corpus |
+| **Roblox** (App Store, the current client) | Partly | Its installer runs: it fetches Roblox's settings and packages over HTTPS and installs the client; its Hyperion anti-cheat now reaches the kernel through a full Windows-numbered system-call table but stops at a later integrity check with an "unexpected error" ([Roblox and anti-cheat](#roblox-and-anti-cheat)); the WebView2 runtime it sets up for logging in does not install yet ([WebView2](#webview2)) | nightly corpus (the installer) |
+| **Microsoft Edge WebView2 runtime** (the evergreen offline installer) | Partly | Its installer, Microsoft Edge Update, installs itself and registers its proxy/stub DLL; the install then needs COM calls between processes, which NovaOS does not have yet ([WebView2](#webview2)) | nightly corpus (the installer) |
 | **Mesa 3D 24.2.4** (App Store, Runtimes) | Works | OpenGL 4.5 on the CPU (llvmpipe) and Vulkan (lavapipe), 64- and 32-bit | CI graphics tests (`gltest`) |
 | **DXVK 2.5.3** (App Store, Runtimes) | Works | Direct3D 8 to 11 on Vulkan, 64- and 32-bit | CI graphics tests (`d3dtest`) |
 | **Venus** (App Store, Runtimes) | Works in QEMU | Vulkan, and Direct3D through DXVK, on the host GPU when QEMU gives NovaOS a 3D virtio-gpu | CI graphics tests |
@@ -61,8 +63,12 @@ results; until then they are kept by hand.
 | **qBittorrent** (App Store) | Untested | | — |
 | **WinSCP** (App Store) | Untested | | — |
 | **ShareX** (App Store) | Untested | Needs the .NET Desktop Runtime | — |
-| **Visual C++ Redistributable** (App Store) | Untested | NovaOS has its own `vcruntime140` and `msvcp140`, so most programs do not need it | — |
+| **Visual C++ Redistributable** (App Store) | Works | NovaOS has its own `vcruntime140` and `msvcp140`, so most programs do not need it, but GOG GALAXY needs its MFC.  Its installer (WiX Burn) installs the Minimum and Additional Runtimes, the 32-bit one into `SysWOW64` and the 64-bit one into `System32` (14.44 x86 and 14.51 x64 checked), replacing NovaOS's own copies there | by hand |
 | **Microsoft Build of OpenJDK 21** (App Store) | Untested | Temurin 21 (above) works | — |
+| **OpenTTD 15.3** (App Store; free on GOG; the corpus installs OpenTTD's own Windows installer, as GOG's copy needs an account to download) | Works | Its setup program installs it silently (run as administrator, as its manifest asks); with the OpenGFX graphics it reaches its main menu, and its animated title game plays, drawn in software (no hardware acceleration yet) | nightly corpus |
+| **GOG GALAXY 2.1** (offline installer, Inno Setup 6) | Partly | Its setup program runs elevated, through its wizard or silently (`/VERYSILENT`), installs the Visual C++ runtimes it carries (x86 and x64), copies GOG GALAXY's files and makes its shortcuts; the client does not start yet: `GalaxyClient.exe` (64-bit, Qt 6 WebEngine) needs `d3d9.dll`, which NovaOS has only from DXVK in the App Store. Setup warns that drive C: is not NTFS (answer Yes) | by hand |
+| **Steam** (App Store, the current client) | Partly | Its installer runs and installs the bootstrapper; on first start Steam downloads its client over HTTPS, updates itself to the 64-bit client, verifies it and starts it with `SteamService` and its browser, `steamwebhelper.exe` (Chromium); the browser does not open the login window yet ([Steam](#steam)). Signing in and games are unchecked | nightly corpus (install and update) |
+| **Chocolate Doom 3.1.0** (32-bit, SDL2) with **Freedoom** | Works | Plays in a window on Mesa 3D's OpenGL (install "Mesa 3D" from the App Store first) in the right colours; an Xbox or HID game pad walks, turns and fires | by hand in QEMU; graphics self-test `gltest colors` |
 
 <!-- END generated:compat-table -->
 
@@ -70,21 +76,134 @@ results; until then they are kept by hand.
 
 Roblox's installer works on NovaOS (it needed the firmware tables
 `GetSystemFirmwareTable` reads and Windows' answer for a registry key
-below a missing one).  The client, `RobloxPlayerBeta.exe`, does not start:
-its first code is Hyperion, Roblox's anti-cheat (`RobloxPlayerBeta.dll`),
-which decrypts the game at run time and makes its own `syscall`
-instructions instead of calling ntdll.  On NovaOS the service numbers it
-works out for those calls all come out as 0, so its own file and
-information calls fail, it calls `NtTerminateProcess` through service 0
-too (which is not that service), and it then jumps to an address that was
-never mapped.  The likely reason is that NovaOS's ntdll is not yet the one
-Windows ships: it has about 175 of Windows' 470 system services, a few
-of them (`NtQuerySystemInformation` among them) are C code rather than
-system-call stubs, and its stubs are not laid out in service-number order
-as Windows' are.  The faithful fix is an ntdll with a stub for every
-Windows 10 service, in service-number order, and a kernel that implements
-every service a program may call directly.  NovaOS does not, and will not,
-work around anti-cheat checks or change Roblox itself.
+below a missing one).  The client, `RobloxPlayerBeta.exe`, starts with
+Hyperion, Roblox's anti-cheat (`RobloxPlayerBeta.dll`), which decrypts the
+game at run time and makes its own `syscall` instructions instead of
+calling ntdll.  It does not read ntdll's stubs for the service numbers;
+it works them out the way the kernel assigns them, by ranking ntdll's `Zw`
+exports by address.  So ntdll now has a stub for every Windows 10 1903
+service, laid out in service-number order (one per line in
+`userland/ntdll/ntdll.c`, from `nt1903_services.h`), the way Windows'
+ntdll is; the services that used to be ntdll C code are now system calls
+the kernel answers (`kernel/um/um_services.c`), and the kernel reads a
+system-call number the way Windows does, from the low bits of `EAX`,
+ignoring the noise Hyperion leaves in the top bits.
+
+With that, every raw system call Hyperion makes lands on the service it
+meant, and it gets past the point where it used to crash on service 0: it
+initialises, reads the kernel's loaded-module list
+(`NtQuerySystemInformation(SystemModuleInformation)`), its own token
+(`NtQueryInformationToken`) and ntdll's version resource.
+
+Hyperion then checks a run-time behaviour of the kernel: it turns on
+alignment-fault fixup and runs a deliberately misaligned `MOVDQA` in a
+page it has just allocated, expecting the move to go through rather than
+the process to die.  Windows' kernel, when fixup is on, rewrites a
+misaligned 16-byte SSE move to its unaligned form in the program's code
+and retries it; NovaOS now does the same
+([the history note](history/2026-10-04-alignment-fault-fixup.md),
+`kernel/um/um_gpfault.c`), along with the smaller things the same code
+path checks: `ThreadHideFromDebugger` validating its length and ntdll's
+extended-context (XSAVE) functions.  Past that, Hyperion runs further into
+its start-up — hundreds more system calls, reading registry keys and the
+system's time-zone information.
+
+Next it runs 32-bit code inside the 64-bit client: it maps memory just
+below 4 GiB, puts a `CPUID` in its last two bytes and far-jumps there
+through selector 0x23, Windows' 32-bit user code segment, so the
+instruction pointer wraps to 0 and faults, and its handler looks at what
+the fault says.  NovaOS used its own selector numbers, where 0x23 was the
+64-bit code segment, so the "32-bit" code ran as 64-bit code and the
+client crashed.  NovaOS now has Windows' x64 segment layout (0x23 32-bit
+code, 0x2B data, 0x33 64-bit code, 0x53 the 32-bit TEB;
+[the history note](history/2026-10-04-windows-segment-layout.md)), a fault
+in such code reaches the program's handlers with `SegCs` 0x23 and the
+handler resumes in 64-bit code.  Hyperion then reads its own registers
+with `NtGetContextThread` on itself, which NovaOS now answers as Windows
+does (`SetThreadContext` on the calling thread works too, and
+`__fastfail` ends a program the Windows way).
+
+Past those checks Hyperion reads the firmware's SMBIOS table and the
+display devices and stops with **"Virtual Machine detected. Roblox can't
+be used in a Virtual Machine or Virtual Desktop."**  That is the right
+answer under QEMU, where NovaOS's tests run: Roblox refuses virtual
+machines on Windows too, and NovaOS reports the machine it runs on
+truthfully.  The next Roblox steps need a real PC (the ThinkPad T14 of
+[Phase 21](hardware.md)); on one, this check should pass, but it is
+untested.  NovaOS does not, and will not, work around anti-cheat checks,
+hide the virtual machine or change Roblox itself.  `syscalltest` checks the
+table the way Hyperion reads it, `aligntest` the alignment-fault fixup and
+`gatetest` the segment layout, the 32-bit code, the calling thread's
+context and `__fastfail`.
+
+## WebView2
+
+Roblox's login page, and many other programs, show web content with
+Microsoft Edge WebView2, a runtime Windows installs once for every
+program.  Its installer is Microsoft Edge Update, a 32-bit program that
+installs itself, registers its update tasks with the Task Scheduler and
+its COM servers, and then runs the runtime's own setup.  On NovaOS, Edge
+Update now starts and reaches its install step (NovaOS gained the
+functions it calls: Task Scheduler 2.0, the Data Protection API,
+`UrlCombine`, the package-name functions, the MDM enrolment check and
+others), reads its manifests with MSXML 6 and installs itself.  Its
+`/regserver` step registers its proxy/stub DLL (`psmachine.dll`) through
+rpcrt4's NDR engine, and COM calls between processes work (ole32's
+standard marshaler over named pipes, `LocalServer32` servers started on
+demand, oleaut32's `IDispatch` proxy and `BSTR`/`VARIANT` marshaling).
+Its silent install now runs to the end: it unpacks the runtime's package
+and then stops at its own check that the package carries Microsoft's
+signature ("failed to verify Microsoft signature", `0xa0430233`), so
+nothing is installed yet.  What comes next, in order: that signature
+check, the 32-bit updater's registry keys need Windows' `WOW6432Node`
+view for the 64-bit programs that look for the runtime there, and then
+the runtime itself (a Chromium browser process with its sandbox) has to
+run.
+
+## Steam
+
+Steam's installer (`SteamSetup.exe` from steampowered.com, a 32-bit NSIS
+installer) installs the bootstrapper in `C:\Programs\Steam`.  On its first
+start the bootstrapper downloads the client from Valve's servers, first the
+32-bit one and then the 64-bit one it updates itself to, unpacks the
+packages, checks every file and starts the 64-bit client, which starts
+`SteamService.exe` and its browser, `steamwebhelper.exe` (Chromium 126 in
+`bin\cef\cef.win64`).  Steam picks the proxy from the user's Internet
+Settings, as on Windows.
+
+The login window does not come up yet: the browser process starts, opens
+its threads, asks COM for a class NovaOS does not register
+(`{33C53A50-F456-4884-B049-85FD643ECFED}`) and stops at one of
+Chromium's own checks (a breakpoint in `libcef.dll`) before it starts its
+GPU and page processes, so no window appears.  What is known to be missing on the way, each a NovaOS gap and
+none a reason to change Steam:
+
+- `SteamService.exe` checks Steam's files with `WinVerifyTrust` and
+  accepts them: NovaOS checks Authenticode signatures (the digest, Valve's
+  chain to DigiCert's root and the timestamp), offline, so a revocation
+  check it is asked for fails rather than passes.  The service then
+  updates itself once, then runs as a real service under the control
+  manager (`StartService` no longer fails with
+  `ERROR_SERVICE_REQUEST_TIMEOUT`, 1053, now that `CopyFile` keeps a
+  file's last-write time the way Windows does: the service compares it to
+  tell whether its copy is current), installs its helper files and keeps
+  running.  It asks for an event-tracing (ETW) session to watch process
+  starts; NovaOS runs no trace sessions, so `StartTrace` fails as it does
+  on Windows when no session can start, and the service watches processes
+  without one.
+- Steam's service pipe ("Failed to create Service pipe") and its
+  security descriptors in SDDL form (`advapi32`'s SDDL functions are
+  incomplete).
+- `GetAdaptersAddresses` reports no adapters.  (The browser's sockets
+  and Steam's downloads no longer fail with `WSAENOBUFS`: NovaOS's socket
+  tables were sized for a small device; see `loadtest`.)
+- DirectWrite's GDI interop (`CreateBitmapRenderTarget`), which Chromium
+  draws text with.
+
+How to check the rest by hand, which needs a Steam account and so is not
+in the corpus: start Steam from the App Store, sign in (or pick "Go
+offline" once signed in), install a small free game and
+start it to its main menu.
 
 ## Programs that come with NovaOS
 

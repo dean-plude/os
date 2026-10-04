@@ -88,6 +88,7 @@ def cflags():
 #   x64_only  true: not built for SysWOW64
 #   ordinals  {name: ordinal}: Windows' export ordinals, for DLLs
 #             programs import from by number
+#   file      the file name when it is not NAME.dll ("bthprops.cpl")
 # and, when it needs more than that, userland/NAME/build.py (hooks the
 # build calls with this module: cflags(b), objs(b, odir) and link(b, odir,
 # objs, deps, base); see userland/secur32/build.py and msvcrt/build.py).
@@ -101,7 +102,7 @@ def cflags():
 import json
 SLOT = 0x01000000
 AUTO_X64 = (0x7FFD00000000, 0x7FFE00000000)
-AUTO_X86 = (0x97000000, 0xC0000000)
+AUTO_X86 = (0x97000000, 0xF0000000)        # (cabinet.dll and msxml6.dll filled 0x97000000-0xC0000000)
 
 def load_manifests():
     """{name: manifest} for every userland/*/dll.json, in link order (each
@@ -319,8 +320,13 @@ def x86_def(odir, name, objs):
     lines = [f'  {n} @{table[n]}' if n in table and n in defined else f'  {n}' for n in names]
     lines += [f'  {n} @{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined and n not in names]
     path = os.path.join(odir, name + '.def')
-    open(path, 'w').write(f'LIBRARY {name}.dll\nEXPORTS\n' + '\n'.join(lines) + '\n')
+    open(path, 'w').write(f'LIBRARY {dll_file(name)}\nEXPORTS\n' + '\n'.join(lines) + '\n')
     return ['/def:' + path]
+
+def dll_file(name):
+    """the DLL's file name: NAME.dll, or its manifest's "file" (a Control
+    Panel item such as bthprops.cpl is a DLL by another extension)"""
+    return DLLS.get(name, {}).get('file', name + '.dll')
 
 def image_size(dll):
     """a PE file's SizeOfImage"""
@@ -333,7 +339,7 @@ def link_dll(odir, name, objs, deps, base, extra=(), entry=None):
     extra = list(extra) + ordinal_exports(name, objs)
     if arch() == 'x86':
         extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
-    dll = os.path.join(odir, f'{name}.dll')
+    dll = os.path.join(odir, dll_file(name))
     entry = entry or DLLS.get(name, {}).get('entry')
     entry = [f'/entry:{entry}'] if entry else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
@@ -341,7 +347,7 @@ def link_dll(odir, name, objs, deps, base, extra=(), entry=None):
         objs + list(extra) +
         [os.path.join(odir, d + '.lib') for d in deps])
     sysdir = 'System32' if arch() == 'x64' else 'SysWOW64'
-    built.append((f'\\Windows\\{sysdir}\\{name}.dll', dll))
+    built.append((f'\\Windows\\{sysdir}\\{dll_file(name)}', dll))
     placed.append((base, base + image_size(dll), name))
 
 def check_overlaps(pass_arch, spans):
@@ -570,11 +576,22 @@ if os.environ.get('NOVA_NO_WOW64') != '1':
     built.append(('\\Windows\\SysWOW64\\icu.dll', os.path.join(ICU, 'x86', 'icu.dll')))
 built.append(('\\Windows\\Globalization\\ICU\\icudt77l.dat', os.path.join(ICU, 'icudt77l.dat')))
 
-# 3a1. the trusted roots secur32's Schannel checks certificates against
-# (the kernel's Mozilla list, as DER certificates back to back)
+# 3a1. the trusted roots secur32's Schannel and crypt32's chains check
+# certificates against (32-bit programs read C:\Windows\System32 as
+# SysWOW64): the kernel's Mozilla list (DER certificates back to back),
+# then the code-signing roots Windows trusts that the list lacks
+# (userland/crypt32/roots, one certificate per file: Microsoft's, which the
+# Authenticode chains of Windows software end in)
 roots = os.path.join(out, 'ca-bundle.der')
 build_netsurf.root_bundle(roots)
+CS_ROOTS = os.path.join(HERE, 'crypt32', 'roots')
+with open(roots, 'ab') as f:
+    for n in sorted(os.listdir(CS_ROOTS)):
+        if n.endswith('.cer'):
+            f.write(open(os.path.join(CS_ROOTS, n), 'rb').read())
 built.append(('\\Windows\\System32\\ca-bundle.der', roots))
+if os.environ.get('NOVA_NO_WOW64') != '1':
+    built.append(('\\Windows\\SysWOW64\\ca-bundle.der', roots))
 
 # 3a2. the Windows Installer packages the msitest self-test installs
 # (tools/msitest/mkpkg.py writes them; their programs are copies of msitest)
@@ -583,6 +600,13 @@ run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'msitest', 'mk
      os.path.join(out, 'msitest.exe')])
 for n in sorted(os.listdir(msipkg)):
     built.append((f'\\Tests\\Msi\\{n}', os.path.join(msipkg, n)))
+# 3a2b. the Authenticode self-test's signed files (authtest.exe), made by
+# tools/authenticode/mktests.py from copies of hello.exe
+authdir = os.path.join(out, 'authenticode')
+run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'authenticode', 'mktests.py'), authdir,
+     os.path.join(out, 'hello.exe'), os.path.join(out, 'x86' if 'x86' in passes else '', 'hello.exe')])
+for n in sorted(os.listdir(authdir)):
+    built.append((f'\\Tests\\Authenticode\\{n}', os.path.join(authdir, n)))
 # 3a3. the General MIDI soundfont winmm's synthesizer plays (generated)
 sf2 = os.path.join(out, 'gm.sf2')
 run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'make_gm_soundfont.py'), sf2])

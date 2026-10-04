@@ -18,7 +18,9 @@
   asynchronous devices' rate feedback followed, played on and recorded
   from as soon as they are plugged in, or chosen in Settings' Sound page,
   each with its own volume; the choice and the levels are kept across
-  restarts); virtio multi-touch screens,
+  restarts), and game controllers (wired Xbox 360 and Xbox One
+  controllers, with their motors, and HID game pads, for XInput and
+  DirectInput 8); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
