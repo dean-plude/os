@@ -13,6 +13,7 @@ and saved as an optimized PNG.
 | `teeworlds.png` | a copy of `tests/reference/teeworlds.png`: the corpus installs Mesa 3D from the App Store, starts Teeworlds in full screen and answers its first-start questions with Enter |
 | `opentyrian.png` | OpenTyrian in full screen playing Tyrian's first level, drawn with Direct3D 9 through DXVK: the corpus test's steps (`tests/appcorpus/930-opentyrian.py`), then Enter on "Play Next Level" and on Tyrian, with Space held to fire |
 | `blobby-volley-2.png` | the corpus test's full-screen screenshot (`tests/appcorpus/935-blobby-volley.py`) at the display's 800x600, reduced to 256 colours |
+| `lbreakout2.png` | LBreakout2's first level in full screen at the display's 640x480 (`tests/appcorpus/940-lbreakout2.py`'s steps, then Local Game, Start Original Set), reduced to 256 colours |
 | `beneath-a-steel-sky.png` | a copy of `tests/reference/beneath a steel sky.png`: the corpus installs ScummVM, starts the game, skips the intro and walks Foster with a click |
 
 To refresh one, take a new screenshot the same way (`!shot NAME.png` in

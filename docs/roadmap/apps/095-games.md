@@ -5,7 +5,9 @@
   (OpenTyrian: Tyrian 2.1 in full screen, into a new game with its
   music)~~ Done; ~~a game that switches the display mode for full screen
   (Blobby Volley 2: 800x600 in Direct3D 9 exclusive full screen, and back
-  when it ends)~~ Done (all five in the nightly corpus).  Still to do:
+  when it ends)~~ Done; ~~an SDL 1.2 game (LBreakout2: GDI drawing, 640x480
+  full screen with the window's frame taken off, and back)~~ Done (all six
+  in the nightly corpus).  Still to do:
   joining a Teeworlds game on its own server (it times out under TCG
   while Mesa compiles its shaders; its menus follow the mouse with its
   default settings, SDL recentring the pointer with `SetCursorPos`), GOG

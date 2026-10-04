@@ -50,8 +50,8 @@ each one was taken.
 | Inkscape (GTK) with a new document | Beneath a Steel Sky (free on GOG) on ScummVM, installed with its installer |
 | ![Teeworlds' start menu in full screen](docs/screenshots/teeworlds.png) | ![Tyrian's first level in OpenTyrian, in full screen](docs/screenshots/opentyrian.png) |
 | Teeworlds in full screen at its start menu, its music playing | Tyrian 2.1 (freeware) on OpenTyrian in full screen, drawn with Direct3D 9 through DXVK |
-| ![Blobby Volley 2's main menu, the display switched to 800x600](docs/screenshots/blobby-volley-2.png) | |
-| Blobby Volley 2 in full screen: the display switched to 800x600, drawn with Direct3D 9 in exclusive full screen through DXVK | |
+| ![Blobby Volley 2's main menu, the display switched to 800x600](docs/screenshots/blobby-volley-2.png) | ![LBreakout2's first level in full screen at 640x480](docs/screenshots/lbreakout2.png) |
+| Blobby Volley 2 in full screen: the display switched to 800x600, drawn with Direct3D 9 in exclusive full screen through DXVK | LBreakout2 (SDL 1.2) in full screen: the display switched to 640x480, drawn with GDI |
 
 ## What runs today
 

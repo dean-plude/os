@@ -12,7 +12,11 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
 {
     (void)inst; (void)reserved;
     switch (reason) {
-    case DLL_PROCESS_ATTACH: InterlockedIncrement(&g_process_attach); break;
+    case DLL_PROCESS_ATTACH:
+        /* dlltest's child: refuse to load, so the process must not start */
+        if (GetEnvironmentVariableA("NOVA_TESTDLL_REFUSE", 0, 0)) return FALSE;
+        InterlockedIncrement(&g_process_attach);
+        break;
     case DLL_PROCESS_DETACH: InterlockedIncrement(&g_process_detach); break;
     case DLL_THREAD_ATTACH:  InterlockedIncrement(&g_thread_attach);  break;
     case DLL_THREAD_DETACH:  InterlockedIncrement(&g_thread_detach);  break;

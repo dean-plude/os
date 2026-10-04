@@ -162,6 +162,11 @@ static const StoreApp g_catalog[] = {
       "Blobby Volley 2\\blobby-1.1.1\\blobby.exe", KIND_ARCHIVE, 3,
       "32-bit zip; its full screen switches the display to 800x600 and back on NovaOS (nightly corpus); draws with Direct3D 9 once Mesa 3D and DXVK are installed (see Runtimes)",
       "BV", GDI_C(0x1E, 0x8C, 0xC8) },
+    { "LBreakout2", "LGames", "Breakout with bonuses, special bricks and dozens of level sets (GPL)",
+      CAT_MEDIA, "https://downloads.sourceforge.net/project/lgames/lbreakout2/2.6/lbreakout2-2.6.5-win64.zip", "lbreakout2-2.6.5-win64.zip", "LBreakout2",
+      "LBreakout2\\lbreakout2-2.6.5\\lbreakout2.exe", KIND_ARCHIVE, 4,
+      "64-bit zip; an SDL 1.2 game (GDI drawing, its full screen switches the display to 640x480) that plays on NovaOS (nightly corpus)",
+      "LB", GDI_C(0xB0, 0x30, 0x60) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",
