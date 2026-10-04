@@ -127,8 +127,10 @@ packages, checks every file and starts the 64-bit client, which starts
 Settings, as on Windows.
 
 The login window does not come up yet: the browser process starts, opens
-its threads and then never starts its GPU and page processes, so no window
-appears.  What is known to be missing on the way, each a NovaOS gap and
+its threads, asks COM for a class NovaOS does not register
+(`{33C53A50-F456-4884-B049-85FD643ECFED}`) and stops at one of
+Chromium's own checks (a breakpoint in `libcef.dll`) before it starts its
+GPU and page processes, so no window appears.  What is known to be missing on the way, each a NovaOS gap and
 none a reason to change Steam:
 
 - `SteamService.exe` checks Steam's files with `WinVerifyTrust` and
