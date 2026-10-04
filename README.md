@@ -48,8 +48,8 @@ each one was taken.
 | VLC playing an H.264 video with sound | KeePassXC (Qt) with an open password database |
 | ![Inkscape with a new document](docs/screenshots/inkscape.png) | ![Beneath a Steel Sky on ScummVM, Robert Foster on the gantry](docs/screenshots/beneath-a-steel-sky.png) |
 | Inkscape (GTK) with a new document | Beneath a Steel Sky (free on GOG) on ScummVM, installed with its installer |
-| ![Teeworlds' start menu in full screen](docs/screenshots/teeworlds.png) | |
-| Teeworlds in full screen at its start menu, its music playing | |
+| ![Teeworlds' start menu in full screen](docs/screenshots/teeworlds.png) | ![Tyrian's first level in OpenTyrian, in full screen](docs/screenshots/opentyrian.png) |
+| Teeworlds in full screen at its start menu, its music playing | Tyrian 2.1 (freeware) on OpenTyrian in full screen, drawn with Direct3D 9 through DXVK |
 
 ## What runs today
 

@@ -152,6 +152,11 @@ static const StoreApp g_catalog[] = {
       "Teeworlds\\**\\teeworlds.exe", KIND_ARCHIVE, 25,
       "64-bit zip; starts in full screen with its music on NovaOS (nightly corpus); needs Mesa 3D (see Runtimes)",
       "TW", GDI_C(0xC8, 0x6A, 0x3C) },
+    { "OpenTyrian", "OpenTyrian team", "Tyrian 2.1, the classic vertical shoot 'em up (freeware game, open-source engine)",
+      CAT_MEDIA, GH "opentyrian/opentyrian/releases/download/v2.1.20260913/opentyrian-v2.1.20260913-windows-x86_64.zip", "opentyrian-v2.1.20260913-windows-x86_64.zip", "OpenTyrian",
+      "OpenTyrian\\opentyrian\\opentyrian.exe", KIND_ARCHIVE, 7,
+      "64-bit zip with the freeware game data; draws with Direct3D 9 on NovaOS (nightly corpus); needs Mesa 3D and DXVK (see Runtimes)",
+      "Ty", GDI_C(0x2A, 0x4E, 0x9A) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",
