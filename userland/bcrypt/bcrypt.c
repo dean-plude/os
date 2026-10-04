@@ -3,6 +3,7 @@
  * the system random number generator, hashes (MD5, SHA-1, SHA-256/384/
  * 512), HMAC and PBKDF2.  Ciphers and public keys are not provided
  * (BCryptOpenAlgorithmProvider reports STATUS_NOT_FOUND for them).
+ * BCryptEnumContextFunctions lists Schannel's cipher suites.
  */
 
 #include <winternl.h>
@@ -252,3 +253,49 @@ BCAPI NTSTATUS WINAPI BCryptEnumAlgorithms(ULONG ops, ULONG *n, void **list, ULO
 }
 
 BCAPI VOID WINAPI BCryptFreeBuffer(PVOID p) { zfree(p); }
+
+/* BCryptEnumContextFunctions: the cipher suites of the local "SSL"
+ * context's Schannel interface (NCRYPT_SCHANNEL_INTERFACE), which TLS
+ * libraries list to know what Schannel offers.  These are Windows 11's,
+ * in its order, all of which secur32's Schannel (Mbed TLS) negotiates.
+ * Other tables, contexts and interfaces have none (STATUS_NOT_FOUND). */
+typedef struct { ULONG cFunctions; WCHAR **rgpszFunctions; } CtxFunctions;
+static const char *const g_ssl_suites[] = {
+    "TLS_AES_256_GCM_SHA384", "TLS_AES_128_GCM_SHA256", "TLS_CHACHA20_POLY1305_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384", "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384", "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384", "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384", "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA", "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA", "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_RSA_WITH_AES_256_GCM_SHA384", "TLS_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_RSA_WITH_AES_256_CBC_SHA256", "TLS_RSA_WITH_AES_128_CBC_SHA256",
+    "TLS_RSA_WITH_AES_256_CBC_SHA", "TLS_RSA_WITH_AES_128_CBC_SHA",
+};
+#define NSUITES (sizeof(g_ssl_suites) / sizeof(g_ssl_suites[0]))
+
+BCAPI NTSTATUS WINAPI BCryptEnumContextFunctions(ULONG table, LPCWSTR ctx, ULONG iface, ULONG *size, void **buf)
+{
+    if (!ctx || !size || !buf) return STATUS_INVALID_PARAMETER_;
+    if (table != 1 /* CRYPT_LOCAL */) return table == 2 /* CRYPT_DOMAIN */ ? STATUS_NOT_SUPPORTED : STATUS_INVALID_PARAMETER_;
+    if (!wieq(ctx, "SSL") || iface != 0x00010002 /* NCRYPT_SCHANNEL_INTERFACE */) return STATUS_NOT_FOUND;
+    /* one block: the header, the pointers, then the strings */
+    ULONG need = sizeof(CtxFunctions) + NSUITES * sizeof(WCHAR *);
+    for (ULONG i = 0; i < NSUITES; i++) need += (ULONG)(__builtin_strlen(g_ssl_suites[i]) + 1) * sizeof(WCHAR);
+    BYTE *p = *buf;
+    if (p) {
+        if (*size < need) { *size = need; return STATUS_BUFFER_TOO_SMALL; }
+    } else if (!(p = zalloc(need))) return STATUS_NO_MEMORY_;
+    CtxFunctions *f = (CtxFunctions *)p;
+    f->cFunctions = NSUITES;
+    f->rgpszFunctions = (WCHAR **)(f + 1);
+    WCHAR *w = (WCHAR *)(f->rgpszFunctions + NSUITES);
+    for (ULONG i = 0; i < NSUITES; i++) {
+        f->rgpszFunctions[i] = w;
+        for (const char *c = g_ssl_suites[i]; *c; c++) *w++ = (WCHAR)*c;
+        *w++ = 0;
+    }
+    *size = need;
+    *buf = p;
+    return 0;
+}
