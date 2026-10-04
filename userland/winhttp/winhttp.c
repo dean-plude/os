@@ -268,6 +268,14 @@ typedef struct {
     DWORD err;                                         /* a callback's error */
 } Request;
 
+/* A proxy resolver (WinHttpCreateProxyResolver): one lookup at a time */
+#define WINHTTP_HANDLE_TYPE_PROXY_RESOLVER_ 4
+typedef struct {
+    Hdr h;
+    LONG busy;                                         /* a lookup is running */
+    DWORD_PTR lookup_ctx;
+} Resolver;
+
 static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
 static BOOL CALLBACK init_once(PINIT_ONCE o, PVOID p, PVOID *c)
 {
@@ -340,6 +348,8 @@ static void free_hdr(Hdr *h)
         free(((Session *)h)->agent);
     } else if (h->type == WINHTTP_HANDLE_TYPE_CONNECT) {
         free(((Connect *)h)->host);
+    } else if (h->type == WINHTTP_HANDLE_TYPE_PROXY_RESOLVER_) {
+        /* (nothing of its own) */
     } else {
         Request *r = (Request *)h;
         reset_response(r);
@@ -1811,6 +1821,78 @@ WINHTTPAPI BOOL WINAPI WinHttpGetProxyForUrl(HINTERNET s, LPCWSTR url, LPVOID op
     SetLastError(ERROR_WINHTTP_AUTODETECTION_FAILED);
     return FALSE;
 }
+/* The proxy resolver calls (Windows 8 on).  They answer as
+ * WinHttpGetProxyForUrl does: NovaOS has no WPAD discovery or PAC script
+ * engine, so the lookup ends with ERROR_WINHTTP_AUTODETECTION_FAILED and
+ * programs go direct, through the status callback, as an asynchronous
+ * session must hear it */
+#define API_GET_PROXY_FOR_URL_ 6
+typedef struct { LPWSTR pwszProxy; LPWSTR pwszProxyBypass; DWORD dwFlags; BOOL fBypass; INTERNET_PORT ProxyPort; } PROXY_RESULT_ENTRY_;
+typedef struct { DWORD cEntries; PROXY_RESULT_ENTRY_ *pEntries; } PROXY_RESULT_;
+
+WINHTTPAPI DWORD WINAPI WinHttpCreateProxyResolver(HINTERNET session, HINTERNET *out)
+{
+    Hdr *s = get(session, WINHTTP_HANDLE_TYPE_SESSION);
+    if (!out) return ERROR_INVALID_PARAMETER;
+    *out = 0;
+    if (!s) return ERROR_INVALID_HANDLE;
+    if (!s->async) return ERROR_WINHTTP_INCORRECT_HANDLE_TYPE;     /* (a WINHTTP_FLAG_ASYNC session only) */
+    Resolver *r = xcalloc(sizeof(Resolver));
+    if (!r) return ERROR_NOT_ENOUGH_MEMORY;
+    inherit(&r->h, s, WINHTTP_HANDLE_TYPE_PROXY_RESOLVER_);
+    *out = r;
+    return ERROR_SUCCESS;
+}
+
+static DWORD WINAPI resolve_worker(LPVOID p)
+{
+    Resolver *r = p;
+    WINHTTP_STATUS_CALLBACK cb = r->h.cb;
+    WINHTTP_ASYNC_RESULT res = { API_GET_PROXY_FOR_URL_, ERROR_WINHTTP_AUTODETECTION_FAILED };
+    InterlockedExchange(&r->busy, 0);
+    if (cb && cb != WINHTTP_INVALID_STATUS_CALLBACK && (r->h.cb_flags & WINHTTP_CALLBACK_STATUS_REQUEST_ERROR))
+        cb((HINTERNET)r, r->lookup_ctx, WINHTTP_CALLBACK_STATUS_REQUEST_ERROR, &res, sizeof(res));
+    release(&r->h);
+    return 0;
+}
+
+WINHTTPAPI DWORD WINAPI WinHttpGetProxyForUrlEx(HINTERNET resolver, LPCWSTR url, LPVOID opts, DWORD_PTR ctx)
+{
+    Resolver *r = (Resolver *)get(resolver, WINHTTP_HANDLE_TYPE_PROXY_RESOLVER_);
+    if (!r) return GetLastError();
+    if (!url || !*url || !opts) return ERROR_INVALID_PARAMETER;
+    if (InterlockedExchange(&r->busy, 1)) return ERROR_WINHTTP_INCORRECT_HANDLE_STATE;
+    r->lookup_ctx = ctx;
+    InterlockedIncrement(&r->h.refs);
+    HANDLE t = CreateThread(0, 0, resolve_worker, r, 0, 0);
+    if (!t) { InterlockedExchange(&r->busy, 0); release(&r->h); return ERROR_NOT_ENOUGH_MEMORY; }
+    CloseHandle(t);
+    return ERROR_IO_PENDING;
+}
+
+/* Only a lookup that found proxies (WINHTTP_CALLBACK_STATUS_GETPROXYFORURL_COMPLETE)
+ * leaves a result to read, and none does */
+WINHTTPAPI DWORD WINAPI WinHttpGetProxyResult(HINTERNET resolver, PROXY_RESULT_ *res)
+{
+    if (!get(resolver, WINHTTP_HANDLE_TYPE_PROXY_RESOLVER_)) return GetLastError();
+    if (!res) return ERROR_INVALID_PARAMETER;
+    res->cEntries = 0;
+    res->pEntries = 0;
+    return ERROR_WINHTTP_INCORRECT_HANDLE_STATE;
+}
+
+WINHTTPAPI VOID WINAPI WinHttpFreeProxyResult(PROXY_RESULT_ *res)
+{
+    if (!res) return;
+    for (DWORD i = 0; res->pEntries && i < res->cEntries; i++) {
+        free(res->pEntries[i].pwszProxy);
+        free(res->pEntries[i].pwszProxyBypass);
+    }
+    free(res->pEntries);
+    res->pEntries = 0;
+    res->cEntries = 0;
+}
+
 WINHTTPAPI BOOL WINAPI WinHttpDetectAutoProxyConfigUrl(DWORD flags, LPWSTR *url)
 {
     (void)flags; if (url) *url = 0;

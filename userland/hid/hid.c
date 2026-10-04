@@ -20,3 +20,16 @@ HIDAPI BOOLEAN WINAPI HidD_GetManufacturerString(HANDLE dev, PVOID buf, ULONG n)
 HIDAPI LONG WINAPI HidP_GetCaps(PVOID data, PVOID caps) { (void)data; (void)caps; return HIDP_STATUS_INVALID_PREPARSED_DATA; }
 HIDAPI BOOLEAN WINAPI HidD_GetFeature(HANDLE dev, PVOID buf, ULONG n) { (void)dev; (void)buf; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
 HIDAPI BOOLEAN WINAPI HidD_SetFeature(HANDLE dev, PVOID buf, ULONG n) { (void)dev; (void)buf; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+HIDAPI BOOLEAN WINAPI HidD_GetSerialNumberString(HANDLE dev, PVOID buf, ULONG n) { (void)dev; (void)buf; (void)n; SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+/* The report parsers: HidD_GetPreparsedData never hands out parsed report
+ * descriptors, so whatever is passed for them is not one */
+HIDAPI LONG WINAPI HidP_GetButtonCaps(int type, PVOID caps, USHORT *n, PVOID data)
+{ (void)type; (void)caps; (void)data; if (n) *n = 0; return HIDP_STATUS_INVALID_PREPARSED_DATA; }
+HIDAPI LONG WINAPI HidP_GetValueCaps(int type, PVOID caps, USHORT *n, PVOID data)
+{ (void)type; (void)caps; (void)data; if (n) *n = 0; return HIDP_STATUS_INVALID_PREPARSED_DATA; }
+HIDAPI LONG WINAPI HidP_GetUsageValue(int type, USHORT page, USHORT link, USHORT usage, PULONG value, PVOID data, CHAR *report, ULONG len)
+{ (void)type; (void)page; (void)link; (void)usage; (void)data; (void)report; (void)len; if (value) *value = 0; return HIDP_STATUS_INVALID_PREPARSED_DATA; }
+HIDAPI LONG WINAPI HidP_GetScaledUsageValue(int type, USHORT page, USHORT link, USHORT usage, PLONG value, PVOID data, CHAR *report, ULONG len)
+{ (void)type; (void)page; (void)link; (void)usage; (void)data; (void)report; (void)len; if (value) *value = 0; return HIDP_STATUS_INVALID_PREPARSED_DATA; }
+HIDAPI LONG WINAPI HidP_GetUsagesEx(int type, USHORT link, PVOID list, PULONG n, PVOID data, CHAR *report, ULONG len)
+{ (void)type; (void)link; (void)list; (void)data; (void)report; (void)len; if (n) *n = 0; return HIDP_STATUS_INVALID_PREPARSED_DATA; }

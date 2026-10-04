@@ -515,8 +515,10 @@ GDIAPI BOOL Ellipse(HDC h, int l, int t, int r, int b)
 }
 
 /* Arcs: the ellipse in (l, t, r, b) from the ray through (xs, ys) to the
- * ray through (xe, ye), counterclockwise as GDI draws by default; as a
- * polyline of up to 256 points.  @shape 0 Arc, 1 Pie (to the centre and
+ * ray through (xe, ye), counterclockwise as GDI draws by default
+ * (clockwise after SetArcDirection(AD_CLOCKWISE): the same points as
+ * counterclockwise from the end ray to the start); as a polyline of up to
+ * 256 points.  @shape 0 Arc, 1 Pie (to the centre and
  * filled), 2 Chord (closed by a straight line and filled). */
 static double nsqrt(double v)
 {
@@ -529,6 +531,7 @@ static double nsqrt(double v)
 static BOOL arc_shape(HDC h, int l, int t, int r, int b, int xs, int ys, int xe, int ye, int shape)
 {
     NOVA_DC *d = dc_of(h); if (!d) return FALSE;
+    if (d->arc_dir == 2) { int tx = xs, ty = ys; xs = xe; ys = ye; xe = tx; ye = ty; }
     double ax = (r - l) / 2.0, ay = (b - t) / 2.0, cx = (l + r) / 2.0, cy = (t + b) / 2.0;
     if (ax <= 0 || ay <= 0) return TRUE;
     /* the rays as unit vectors on the circle the ellipse is a stretch of */

@@ -88,6 +88,7 @@ def cflags():
 #   x64_only  true: not built for SysWOW64
 #   ordinals  {name: ordinal}: Windows' export ordinals, for DLLs
 #             programs import from by number
+#   file      the file name when it is not NAME.dll ("bthprops.cpl")
 # and, when it needs more than that, userland/NAME/build.py (hooks the
 # build calls with this module: cflags(b), objs(b, odir) and link(b, odir,
 # objs, deps, base); see userland/secur32/build.py and msvcrt/build.py).
@@ -319,8 +320,13 @@ def x86_def(odir, name, objs):
     lines = [f'  {n} @{table[n]}' if n in table and n in defined else f'  {n}' for n in names]
     lines += [f'  {n} @{o}' for n, o in sorted(table.items(), key=lambda x: x[1]) if n in defined and n not in names]
     path = os.path.join(odir, name + '.def')
-    open(path, 'w').write(f'LIBRARY {name}.dll\nEXPORTS\n' + '\n'.join(lines) + '\n')
+    open(path, 'w').write(f'LIBRARY {dll_file(name)}\nEXPORTS\n' + '\n'.join(lines) + '\n')
     return ['/def:' + path]
+
+def dll_file(name):
+    """the DLL's file name: NAME.dll, or its manifest's "file" (a Control
+    Panel item such as bthprops.cpl is a DLL by another extension)"""
+    return DLLS.get(name, {}).get('file', name + '.dll')
 
 def image_size(dll):
     """a PE file's SizeOfImage"""
@@ -333,7 +339,7 @@ def link_dll(odir, name, objs, deps, base, extra=(), entry=None):
     extra = list(extra) + ordinal_exports(name, objs)
     if arch() == 'x86':
         extra += x86_def(odir, name, objs) + ['/safeseh:no', '/machine:x86']
-    dll = os.path.join(odir, f'{name}.dll')
+    dll = os.path.join(odir, dll_file(name))
     entry = entry or DLLS.get(name, {}).get('entry')
     entry = [f'/entry:{entry}'] if entry else ['/noentry']
     run(['lld-link', '/dll', '/nodefaultlib', f'/base:{base:#x}'] + entry +
@@ -341,7 +347,7 @@ def link_dll(odir, name, objs, deps, base, extra=(), entry=None):
         objs + list(extra) +
         [os.path.join(odir, d + '.lib') for d in deps])
     sysdir = 'System32' if arch() == 'x64' else 'SysWOW64'
-    built.append((f'\\Windows\\{sysdir}\\{name}.dll', dll))
+    built.append((f'\\Windows\\{sysdir}\\{dll_file(name)}', dll))
     placed.append((base, base + image_size(dll), name))
 
 def check_overlaps(pass_arch, spans):

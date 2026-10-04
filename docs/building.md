@@ -138,8 +138,9 @@ made in parallel add files rather than collide on the same lines.
   0x97000000 (x86), and the build checks that no two DLLs overlap.  The
   older DLLs keep the fixed addresses written in their `dll.json`.  Other
   keys: `sources` (directories its `.c` files come from, default its own),
-  `entry` (`"DllMain"`), `x64_only`, and `ordinals` (`{"Name": 12}`, for
-  DLLs programs import from by number).
+  `entry` (`"DllMain"`), `x64_only`, `ordinals` (`{"Name": 12}`, for
+  DLLs programs import from by number), and `file` for a DLL whose file
+  name is not `NAME.dll` (`"bthprops.cpl"`, a Control Panel item).
 - **When a DLL needs more** (a third-party library, extra flags, a
   special link), put the code in `userland/NAME/build.py`, not in
   `tools/build_userland.py`: it may define `cflags(b)` (flags for the
@@ -918,7 +919,10 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
 
 - `tools/pe_imports.py PROGRAM.exe ...` lists every DLL and function a
   Windows program imports that NovaOS's DLLs do not provide (by default it
-  reads the DLLs in `build/kernel_build/userland`).
+  reads the DLLs in `build/kernel_build/userland`), mapping API sets as the
+  kernel's loader does (`api-ms-win-core-synch-*` to `kernelbase`, with
+  `kernel32` and `kernelbase` standing in for each other;
+  `api-ms-win-power-*` to `powrprof`).
 - `tools/msitest/hosttest.c` dumps a Windows Installer package's tables
   and cabinets with the same readers `msi.dll` uses (build instructions in
   the file); `tools/msitest/make_package.sh` builds a test package with

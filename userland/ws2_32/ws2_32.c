@@ -152,6 +152,40 @@ SOCKET accept(SOCKET s, struct sockaddr *addr, int *addrlen)
     return (SOCKET)h;
 }
 
+/* WSAAccept: accept, then let @cond judge the caller (its address as
+ * caller id, the listening address as callee id; no connect data or QoS on
+ * TCP).  Without SO_CONDITIONAL_ACCEPT the connection is already made when
+ * @cond is asked, as on Windows: CF_REJECT closes it (WSAECONNREFUSED),
+ * and CF_DEFER, which needs a connection still pending, closes it too
+ * (WSATRY_AGAIN). */
+typedef int (__stdcall *WSACONDITIONPROC_)(LPWSABUF caller, LPWSABUF caller_data, void *qos, void *gqos,
+                                           LPWSABUF callee, LPWSABUF callee_data, unsigned int *g, DWORD_PTR cb);
+__declspec(dllexport) SOCKET __stdcall WSAAccept(SOCKET s, struct sockaddr *addr, int *addrlen, WSACONDITIONPROC_ cond,
+                                                DWORD_PTR cb)
+{
+    BYTE peer[28], local[28];
+    int pl = sizeof(peer), ll = sizeof(local);
+    SOCKET c = accept(s, (struct sockaddr *)peer, &pl);
+    if (c == INVALID_SOCKET) return INVALID_SOCKET;
+    if (cond) {
+        WSABUF caller = { (ULONG)pl, (CHAR *)peer }, callee = { 0, (CHAR *)local };
+        if (!getsockname(s, (struct sockaddr *)local, &ll)) callee.len = (ULONG)ll;
+        unsigned int g = 0;
+        int r = cond(&caller, 0, 0, 0, callee.len ? &callee : 0, 0, &g, cb);
+        if (r != 0) {                                           /* CF_ACCEPT */
+            closesocket(c);
+            set_err(r == 2 ? 11002 /* WSATRY_AGAIN */ : WSAECONNREFUSED);
+            return INVALID_SOCKET;
+        }
+    }
+    if (addr && addrlen) {
+        if (*addrlen < pl) { closesocket(c); set_err(WSAEFAULT); return INVALID_SOCKET; }
+        memcpy(addr, peer, (size_t)pl);
+        *addrlen = pl;
+    }
+    return c;
+}
+
 int send(SOCKET s, const char *buf, int len, int flags)
 {
     (void)flags;
