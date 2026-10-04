@@ -86,6 +86,8 @@ FILE *__iob_func(void)
     return g_iob;
 }
 
+__declspec(dllexport) FILE *__p__iob(void) { return __iob_func(); }   /* (older MinGW's stdin/stdout/stderr) */
+
 static int ensure_buf(FILE *f)
 {
     if (f->_buf || (f->_flags & F_NOBUF)) return 1;

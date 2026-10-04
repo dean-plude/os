@@ -51,6 +51,11 @@ int WSAStartup(WORD ver, LPWSADATA d)
     return 0;
 }
 int WSACleanup(void) { return 0; }
+/* Winsock 1's blocking hooks: gone in Winsock 2, which answers as Windows does */
+__declspec(dllexport) int WSAAPI WSACancelBlockingCall(void) { set_err(WSAEOPNOTSUPP); return SOCKET_ERROR; }
+__declspec(dllexport) BOOL WSAAPI WSAIsBlocking(void) { return FALSE; }
+__declspec(dllexport) void *WSAAPI WSASetBlockingHook(void *hook) { (void)hook; set_err(WSAEOPNOTSUPP); return NULL; }
+__declspec(dllexport) int WSAAPI WSAUnhookBlockingHook(void) { set_err(WSAEOPNOTSUPP); return SOCKET_ERROR; }
 
 u_short htons(u_short v) { return (u_short)((v << 8) | (v >> 8)); }
 u_short ntohs(u_short v) { return htons(v); }
