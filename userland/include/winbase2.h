@@ -142,6 +142,8 @@ typedef union __attribute__((aligned(8))) _SLIST_HEADER {
 WINBASEAPI HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE port, ULONG_PTR key, DWORD threads);
 WINBASEAPI BOOL   WINAPI GetQueuedCompletionStatus(HANDLE port, LPDWORD bytes, PULONG_PTR key, LPOVERLAPPED *ov, DWORD ms);
 WINBASEAPI BOOL   WINAPI GetQueuedCompletionStatusEx(HANDLE port, LPOVERLAPPED_ENTRY e, ULONG n, PULONG got, DWORD ms, BOOL alertable);
+WINBASEAPI BOOL   WINAPI Wow64DisableWow64FsRedirection(PVOID *old);
+WINBASEAPI BOOL   WINAPI Wow64RevertWow64FsRedirection(PVOID old);
 WINBASEAPI BOOL   WINAPI PostQueuedCompletionStatus(HANDLE port, DWORD bytes, ULONG_PTR key, LPOVERLAPPED ov);
 WINBASEAPI BOOL   WINAPI GetOverlappedResult(HANDLE h, LPOVERLAPPED ov, LPDWORD bytes, BOOL wait);
 WINBASEAPI BOOL   WINAPI CancelIo(HANDLE h);
