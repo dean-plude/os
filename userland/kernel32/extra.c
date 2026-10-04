@@ -2037,13 +2037,43 @@ static NTSTATUS dll_dir_op(ULONG op, const char *path, PVOID *cookie)
     return NtNovaLoadDll(path, path ? (ULONG)strlen(path) : 0, cookie, NOVA_LDR_DIR_OP | op);
 }
 
+/* The directory SetDllDirectory last set (UTF-8), for GetDllDirectory */
+static char g_dll_dir[MAX_PATH * 3];
+
 WINBASEAPI BOOL WINAPI SetDllDirectoryA(LPCSTR dir)
 {
     char full[MAX_PATH * 3];
     if (dir && *dir && !GetFullPathNameA(dir, sizeof(full), full, NULL)) return FALSE;
     NTSTATUS s = dll_dir_op(2, dir && *dir ? full : "", NULL);
     if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    lstrcpynA(g_dll_dir, dir && *dir ? full : "", sizeof(g_dll_dir));
     return TRUE;
+}
+
+/* GetDllDirectory: its length without the terminator, or the size needed
+ * with it when @len is too small */
+WINBASEAPI DWORD WINAPI GetDllDirectoryW(DWORD len, LPWSTR out)
+{
+    int n = MultiByteToWideChar(CP_UTF8, 0, g_dll_dir, -1, NULL, 0);
+    if (!out || (DWORD)n > len) {
+        if (out && len) out[0] = 0;
+        return (DWORD)n;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, g_dll_dir, -1, out, (int)len);
+    return (DWORD)n - 1;
+}
+
+WINBASEAPI DWORD WINAPI GetDllDirectoryA(DWORD len, LPSTR out)
+{
+    WCHAR w[MAX_PATH * 3];
+    GetDllDirectoryW(MAX_PATH * 3, w);
+    int n = WideCharToMultiByte(CP_ACP, 0, w, -1, NULL, 0, 0, 0);
+    if (!out || (DWORD)n > len) {
+        if (out && len) out[0] = 0;
+        return (DWORD)n;
+    }
+    WideCharToMultiByte(CP_ACP, 0, w, -1, out, (int)len, 0, 0);
+    return (DWORD)n - 1;
 }
 
 WINBASEAPI BOOL WINAPI SetDllDirectoryW(LPCWSTR dir)
@@ -2110,6 +2140,17 @@ WINBASEAPI BOOL WINAPI GlobalMemoryStatusEx(LPMEMORYSTATUSEX ms)
     ms->ullTotalVirtual = sizeof(void *) == 4 ? 0x7FFE0000ULL : 0x7FFFFFE0000ULL;
     ms->ullAvailVirtual = sizeof(void *) == 4 ? 0x70000000ULL : 0x7F000000000ULL;
     ms->ullAvailExtendedVirtual = 0;
+    return TRUE;
+}
+
+/* The RAM installed, in KB (what the firmware reports less nothing: the
+ * memory NovaOS was given) */
+WINBASEAPI BOOL WINAPI GetPhysicallyInstalledSystemMemory(PULONGLONG kb)
+{
+    if (!kb) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    ULONGLONG total = (ULONGLONG)KUSD_PHYS_PAGES << 12;
+    if (!total) total = 512ULL << 20;
+    *kb = total >> 10;
     return TRUE;
 }
 

@@ -23,7 +23,7 @@
 #define D3DFMT_X8R8G8B8_      22
 #define D3DSCANLINEORDERING_PROGRESSIVE_ 1
 #define D3DDISPLAYROTATION_IDENTITY_     1
-#define CTL_ADAPTER           36
+#define CTL_ADAPTER           37
 
 typedef LONG_PTR (WINAPI *NtNovaGuiCtl_t)(INT_PTR h, ULONG op, ULONG_PTR arg, void *ptr);
 

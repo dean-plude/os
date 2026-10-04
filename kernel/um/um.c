@@ -45,6 +45,7 @@
 #include "../arch/x86_64/paging.h"
 #include "userland_files.h"
 #include "../gdi/png.h"
+#include "../drivers/virtio_gpu.h"
 
 static UmProcess     *g_procs[UM_MAX_PROCS];
 static UINT32         g_next_id = 100;
@@ -1180,7 +1181,14 @@ static RamNode *find_dll(UmProcess *p, const char *name, RamNode *dep_dir)
         RamNode *a = dir && dir->dir ? RamfsFind(dir, name) : NULL;
         if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
     }
-    return n && !n->dir ? n : NULL;
+    if (n && !n->dir) return n;
+    /* then the current folder, after the system's (SafeDllSearchMode),
+     * unless SetDllDirectory took its place */
+    if (!p->dll_dir[0] && p->cwd && p->cwd != p->exe_dir) {
+        RamNode *a = RamfsFind(p->cwd, name);
+        if (a && !a->dir && RamfsLoad(a) && um_pe_machine(a) == (p->wow ? 0x014C : 0x8664)) return a;
+    }
+    return NULL;
 }
 
 /* AddDllDirectory (@op 0: *@cookie gets the slot), RemoveDllDirectory (1:
@@ -2647,6 +2655,7 @@ void UmDumpAll(void)
         kprintf("[UM] %s (PID %u):\n", p->name, p->pid);
         dump_threads(p);
     }
+    VgpuDump();
 }
 
 void UmKill(UmProcess *p, UINT32 status)

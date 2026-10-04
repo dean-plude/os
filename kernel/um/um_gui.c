@@ -1012,12 +1012,19 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                 Arg 1 returns 0 from a process not in the foreground */
 #define CTL_SET_CURSOR_POS 34
 #define CTL_CLIP_CURSOR    35
-/*  36 ADAPTER     arg: n; ptr -> { vendor, device, subsystem (vendor |
+/*  36 SET_FRAME   arg bit 0: the window has the desktop's title bar and
+ *                 border (a program changed its style, such as an SDL game
+ *                 going full screen with WS_POPUP: the frame goes, and back);
+ *                 bits 1-3: no close button, no minimize/maximize buttons,
+ *                 resizable (GUI_NOCLOSE, GUI_NOMINMAX, GUI_RESIZABLE's
+ *                 meanings).  The client area stays where it is */
+#define CTL_SET_FRAME      36
+/*  37 ADAPTER     arg: n; ptr -> { vendor, device, subsystem (vendor |
  *                 id << 16), revision, class << 8 | subclass }: the n-th
  *                 display controller on the PCI bus, in bus order (what
  *                 Direct3D's and DXGI's adapter identifiers report).
  *                 0: no such adapter */
-#define CTL_ADAPTER        36
+#define CTL_ADAPTER        37
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -1711,6 +1718,16 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             break;
         }
         case CTL_ENABLE:   w->disabled = a3 == 0; rv = 1; break;
+        case CTL_SET_FRAME: {
+            if (w->popup) break;
+            GdiRect c = WmClientRect(w);
+            w->style = (a3 & 1) ? WS_TITLEBAR | WS_BORDER | WS_SHADOW | (a3 & 2 ? 0 : WS_CLOSEBTN) | (a3 & 4 ? 0 : WS_MINMAXBTN)
+                                : WS_SHADOW;
+            w->fixed_size = !(a3 & 8);
+            WmSetFrame(w, frame_for(w->style, c));
+            rv = 1;
+            break;
+        }
         case CTL_SHOW:
             switch (a3) {
             case 0: WmShowWindow(w, false); if (WmGetCapture() == w) WmSetCapture(NULL); break;

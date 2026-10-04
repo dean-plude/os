@@ -215,7 +215,7 @@ USERAPI BOOL LockWindowUpdate(HWND h) { (void)h; return TRUE; }
 /* -----------------------------------------------------------------------
  * Device contexts
  * ----------------------------------------------------------------------- */
-typedef struct DcRec { struct DcRec *next; NOVA_DC *dc; HWND h; int own; } DcRec;
+typedef struct DcRec { struct DcRec *next; NOVA_DC *dc; HWND h; int own, client; } DcRec;
 static DcRec *g_dcs;
 
 static void clip_to(RECT *r, const RECT *by)
@@ -274,12 +274,35 @@ HDC wnd_dc(Wnd *w, int client, int clip_children)
     d->has_pen = 1; d->pen_color = 0; d->pen_width = 1;
     d->has_brush = 1; d->brush_color = 0xFFFFFF;
     d->hwnd = w->h;
-    rec->dc = d; rec->h = w->h;
+    rec->dc = d; rec->h = w->h; rec->client = client;
     LOCK();
     rec->next = g_dcs;
     g_dcs = rec;
     UNLOCK();
     return (HDC)d;
+}
+
+/* The window's bitmap was resized, or made anew (a display mode switch
+ * that changes its scale frees the old one): the DCs a program keeps on it
+ * (SDL holds one for its window's life, as CS_OWNDC lets it) follow, with
+ * any origin the program set kept relative to the window */
+void dcs_follow(Wnd *t)
+{
+    LOCK();
+    for (DcRec *r = g_dcs; r; r = r->next) {
+        Wnd *w = W_quiet(r->h);
+        if (!w || top_of(w) != t) continue;
+        NOVA_DC *d = r->dc;
+        POINT o;
+        wnd_to_bitmap(w, r->client, &o);
+        d->bits = t->back;
+        d->stride = t->stride;
+        d->w = t->bw; d->h = t->bh;
+        d->org_x += o.x - d->base_x; d->org_y += o.y - d->base_y;
+        d->base_x = o.x; d->base_y = o.y;
+        visible_rect(w, r->client, &d->vis);
+    }
+    UNLOCK();
 }
 
 void release_dc(HDC dc)
@@ -544,6 +567,7 @@ void present_thread(DWORD tid)
 
 void top_resized(Wnd *t)
 {
+    dcs_follow(t);
     RECT all = { 0, 0, t->bw, t->bh };
     mark_dirty(t, &all);
     invalidate(t, NULL, TRUE, 1);

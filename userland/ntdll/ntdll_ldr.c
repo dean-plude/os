@@ -63,6 +63,36 @@ RTL_CRITICAL_SECTION RtlpLoaderLock = { 0, -1, 0, 0, 0, 0 };
 static void llock(void)   { RtlEnterCriticalSection(&RtlpLoaderLock); }
 static void lunlock(void) { RtlLeaveCriticalSection(&RtlpLoaderLock); }
 static void *tls_pointer(void) { return *(void **)(teb() + TEB_TLS_POINTER); }
+BOOLEAN NTAPI RtlTryEnterCriticalSection(PRTL_CRITICAL_SECTION cs);
+
+/* LdrLockLoaderLock: take the loader lock (flags bit 1: only try, *state
+ * 1 when taken, 2 when busy); the cookie names this thread's hold for
+ * LdrUnlockLoaderLock.  Bit 0 (raise instead of returning an error) needs
+ * nothing here: no argument check fails silently. */
+#define LDR_LOCK_TRY 2
+NTSYSAPI NTSTATUS NTAPI LdrLockLoaderLock(ULONG flags, PULONG state, PULONG_PTR cookie)
+{
+    if (state) *state = 0;
+    if (!cookie || (flags & LDR_LOCK_TRY && !state) || flags & ~3u) return STATUS_INVALID_PARAMETER;
+    *cookie = 0;
+    if (flags & LDR_LOCK_TRY) {
+        if (!RtlTryEnterCriticalSection(&RtlpLoaderLock)) { *state = 2; return STATUS_SUCCESS; }
+    } else
+        llock();
+    if (state) *state = 1;
+    *cookie = (ULONG_PTR)RtlpLoaderLock.OwningThread << 16 | 0x1E;    /* the holder + a mark */
+    return STATUS_SUCCESS;
+}
+
+NTSYSAPI NTSTATUS NTAPI LdrUnlockLoaderLock(ULONG flags, ULONG_PTR cookie)
+{
+    if (flags & ~1u) return STATUS_INVALID_PARAMETER;
+    if (!cookie) return STATUS_SUCCESS;             /* a try that did not take it */
+    if ((cookie & 0xFFFF) != 0x1E || cookie >> 16 != (ULONG_PTR)RtlpLoaderLock.OwningThread)
+        return 0xC00000F0;                          /* STATUS_INVALID_PARAMETER_2: not this thread's hold */
+    lunlock();
+    return STATUS_SUCCESS;
+}
 
 static void wcopy(WCHAR *d, const char *s, int cap)
 {
@@ -370,6 +400,29 @@ static BOOL attach_new_modules(int first)
     return TRUE;
 }
 
+/* A DLL the program imports returned FALSE from its DllMain while the
+ * process started: as on Windows, the process ends with
+ * STATUS_DLL_INIT_FAILED (0xC0000142, "The application was unable to
+ * start correctly") before the program's entry point runs, and without
+ * attaching the DLLs after it (a UPX-packed DLL that refuses to load has
+ * not even relocated itself, so going on would crash in it later) */
+static void init_failed(void)
+{
+    char msg[160] = "[LDR] process start failed: DllMain of ";
+    int n = (int)strlen(msg);
+    for (int i = 0; i < g_nmod; i++)
+        if (g_mod[i].attached && g_mod[i].is_dll && !(g_mod[i].entry.Flags & LDRP_PROCESS_ATTACH_CALLED)) {
+            for (const char *c = g_mod[i].name; *c && n < 120; c++) msg[n++] = *c;
+            break;
+        }
+    const char *tail = " returned FALSE (0xC0000142)\n";
+    for (const char *c = tail; *c; c++) msg[n++] = *c;
+    msg[n] = 0;
+    NtNovaDebugPrint(msg, (ULONG)n);
+    NtTerminateProcess(NtCurrentProcess(), STATUS_DLL_INIT_FAILED);
+    for (;;) NtYieldExecution();
+}
+
 static void ldr_init_process(void)
 {
     PPEB peb = RtlGetCurrentPeb();
@@ -384,7 +437,7 @@ static void ldr_init_process(void)
     RtlNovaInitExceptions();
     int first = absorb_new_modules();
     setup_thread_tls();                              /* first thread's TLS before any DllMain */
-    attach_new_modules(first);
+    if (!attach_new_modules(first)) init_failed();
     g_process_ready = 1;
     ntdll_run_apcs();                                /* APCs the DLLs queued to this thread (as Windows) */
 }

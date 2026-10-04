@@ -742,6 +742,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
             DISPATCHER_CONTEXT dc;
             memset(&dc, 0, sizeof(dc));
             set_handler_ctx(&dc, before.Rip, base, f, handler, hdata, frame, &before);
+            dc.TargetIp = (DWORD64)target_ip;      /* where the target frame goes on: its handler stops there */
             DWORD saved = rec->ExceptionFlags;
             if (is_target) rec->ExceptionFlags |= EXCEPTION_TARGET_UNWIND;
             ExcState es;
@@ -846,9 +847,20 @@ __declspec(dllexport) EXCEPTION_DISPOSITION __C_specific_handler(
             /* RtlUnwindEx does not return */
             return ExceptionContinueExecution;
         } else {
-            /* Unwinding: run __finally blocks in this scope */
+            /* Unwinding: run the __finally blocks the frame leaves.  In
+             * the target frame, only those inside the scope it goes on
+             * in: the scopes are listed inner first, so the walk stops at
+             * the __except whose body is the target, or at a __try that
+             * holds the target address (an outer __finally still in force
+             * there; MSVC's C++ runtime re-raises a rethrow from such an
+             * __except body, and its __finally must not run twice) */
+            if (rec->ExceptionFlags & EXCEPTION_TARGET_UNWIND) {
+                DWORD64 tip = dc->TargetIp - base;
+                if (target ? tip == target : tip >= begin && tip < end) break;
+            }
             if (target == 0 && handler) {
                 FinallyFn fin = (FinallyFn)(base + handler);
+                dc->ScopeIndex = i + 1;             /* (a collided unwind goes on past it) */
                 fin(TRUE, (PVOID)frame);
             }
         }

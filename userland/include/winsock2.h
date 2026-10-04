@@ -298,6 +298,25 @@ WSAAPI_DECL BOOL WSAResetEvent(WSAEVENT e);
 WSAAPI_DECL DWORD WSAWaitForMultipleEvents(DWORD n, const WSAEVENT *events, BOOL all, DWORD ms, BOOL alertable);
 WSAAPI_DECL int GetAddrInfoW(PCWSTR node, PCWSTR service, const ADDRINFOW *hints, PADDRINFOW *res);
 WSAAPI_DECL void FreeAddrInfoW(PADDRINFOW ai);
+typedef struct addrinfoexW {
+    int ai_flags, ai_family, ai_socktype, ai_protocol;
+    size_t ai_addrlen;
+    PWSTR ai_canonname;
+    struct sockaddr *ai_addr;
+    void *ai_blob;
+    size_t ai_bloblen;
+    GUID *ai_provider;
+    struct addrinfoexW *ai_next;
+} ADDRINFOEXW, *PADDRINFOEXW;
+typedef void (WINAPI *LPLOOKUPSERVICE_COMPLETION_ROUTINE)(DWORD err, DWORD bytes, LPWSAOVERLAPPED ov);
+#define NS_ALL 0
+#define NS_DNS 12
+WSAAPI_DECL int GetAddrInfoExW(PCWSTR name, PCWSTR service, DWORD ns, GUID *nsid, const ADDRINFOEXW *hints,
+                               PADDRINFOEXW *result, struct timeval *timeout, LPOVERLAPPED ov,
+                               LPLOOKUPSERVICE_COMPLETION_ROUTINE done, LPHANDLE cancel);
+WSAAPI_DECL int GetAddrInfoExCancel(LPHANDLE cancel);
+WSAAPI_DECL int GetAddrInfoExOverlappedResult(LPOVERLAPPED ov);
+WSAAPI_DECL void FreeAddrInfoExW(PADDRINFOEXW ai);
 WSAAPI_DECL int inet_pton(int af, const char *src, void *dst);
 WSAAPI_DECL const char *inet_ntop(int af, const void *src, char *dst, size_t size);
 WSAAPI_DECL int InetPtonW(int af, PCWSTR src, void *dst);

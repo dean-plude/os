@@ -44,7 +44,7 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
        CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
        CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD,
        CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH, CTL_TABLET, CTL_SET_DPI, CTL_SET_SCALE, CTL_GAMEPAD,
-       CTL_SET_CURSOR_POS, CTL_CLIP_CURSOR };
+       CTL_SET_CURSOR_POS, CTL_CLIP_CURSOR, CTL_SET_FRAME };
 /* display.c: the monitors (GetSystemMetrics' virtual screen) */
 int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
@@ -165,6 +165,7 @@ struct Wnd {
     HWND      focus_save;           /* the focus when it was deactivated */
     int       modal_depth;
     int       dpi_k;                /* top-level: bitmap pixels per logical pixel (dpi.c; 0 = 1) */
+    int       kframe;               /* top-level: the frame the desktop draws (frame_flags; -1 a popup) */
     HANDLE    dpi_ctx;              /* the thread's DPI awareness context when it was made */
     INT32     klog[4];              /* DPI-aware: the bitmap rectangle last given the desktop */
 };
@@ -258,6 +259,7 @@ void  present_thread(DWORD tid);
 void  mark_dirty(Wnd *top, const RECT *r);                  /* bitmap coordinates */
 HDC   wnd_dc(Wnd *w, int client, int clip_children);       /* a DC on the window */
 void  release_dc(HDC dc);
+void  dcs_follow(Wnd *top);                               /* kept DCs onto the window's bitmap as it is now */
 void  nc_paint(Wnd *w);
 void  paint_drop_kept(Wnd *w);
 LRESULT cbt_hook(int code, WPARAM wp, LPARAM lp);   /* WH_CBT (msg.c) */

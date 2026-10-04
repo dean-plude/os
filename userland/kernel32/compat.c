@@ -2275,6 +2275,38 @@ K32 LONG WINAPI GetCurrentApplicationUserModelId(UINT32 *len, PWSTR id) { (void)
 K32 LONG WINAPI GetApplicationUserModelId(HANDLE p, UINT32 *len, PWSTR id) { (void)p; (void)id; if (len) *len = 0; return APPMODEL_ERROR_NO_APPLICATION; }
 K32 LONG WINAPI GetPackageFullName(HANDLE p, UINT32 *len, PWSTR name) { (void)p; (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
 K32 LONG WINAPI GetPackageFamilyName(HANDLE p, UINT32 *len, PWSTR name) { (void)p; (void)name; if (len) *len = 0; return APPMODEL_ERROR_NO_PACKAGE; }
+/* No package is installed either: a family has none, a full name is not
+ * found (Chromium asks for the WebView2 runtime's MSIX packages) */
+K32 LONG WINAPI FindPackagesByPackageFamily(PCWSTR family, UINT32 filter, UINT32 *count, PWSTR *names,
+                                            UINT32 *len, WCHAR *buf, UINT32 *props)
+{
+    (void)filter; (void)names; (void)buf; (void)props;
+    if (!family || !count || !len) return ERROR_INVALID_PARAMETER;
+    *count = 0;
+    *len = 0;
+    return ERROR_SUCCESS;
+}
+K32 LONG WINAPI GetPackagePathByFullName(PCWSTR full, UINT32 *len, PWSTR path)
+{
+    (void)path;
+    if (!full || !len) return ERROR_INVALID_PARAMETER;
+    return ERROR_NOT_FOUND;
+}
+K32 LONG WINAPI OpenPackageInfoByFullName(PCWSTR full, UINT32 reserved, void **ref)
+{
+    (void)reserved;
+    if (!full || !ref) return ERROR_INVALID_PARAMETER;
+    *ref = 0;
+    return ERROR_NOT_FOUND;
+}
+K32 LONG WINAPI GetPackageApplicationIds(void *ref, UINT32 *len, BYTE *buf, UINT32 *count)
+{
+    (void)buf;
+    if (len) *len = 0;
+    if (count) *count = 0;
+    return ref ? ERROR_NOT_FOUND : ERROR_INVALID_PARAMETER;   /* no reference was ever handed out */
+}
+K32 LONG WINAPI ClosePackageInfo(void *ref) { return ref ? ERROR_SUCCESS : ERROR_INVALID_PARAMETER; }
 
 /* A package full name is Name_Version_Architecture_ResourceId_PublisherId
  * (the resource id may be empty); its family name is Name_PublisherId */
@@ -2370,6 +2402,16 @@ K32 LONG WINAPI AppPolicyGetProcessTerminationMethod(HANDLE token, int *policy)
     (void)token;
     if (!policy) return ERROR_INVALID_PARAMETER;
     *policy = 0;                                    /* AppPolicyProcessTerminationMethod_ExitProcess */
+    return ERROR_SUCCESS;
+}
+
+/* and initializes nothing for its threads (a packaged app's threads start
+ * in the Windows Runtime's MTA) */
+K32 LONG WINAPI AppPolicyGetThreadInitializationType(HANDLE token, int *policy)
+{
+    (void)token;
+    if (!policy) return ERROR_INVALID_PARAMETER;
+    *policy = 0;                                    /* AppPolicyThreadInitializationType_None */
     return ERROR_SUCCESS;
 }
 

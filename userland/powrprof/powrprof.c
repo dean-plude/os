@@ -91,6 +91,25 @@ POWRPROF int WINAPI PowerDeterminePlatformRoleEx(ULONG version)
 POWRPROF DWORD WINAPI PowerRegisterSuspendResumeNotification(DWORD flags, HANDLE recipient, PVOID *h)
 { (void)flags; (void)recipient; *h = (PVOID)(ULONG_PTR)0x5E01; return ERROR_SUCCESS; }
 POWRPROF DWORD WINAPI PowerUnregisterSuspendResumeNotification(PVOID h) { (void)h; return ERROR_SUCCESS; }
+/* Power setting and effective power mode notifications: NovaOS changes
+ * neither setting while running (no power plans, no battery saver), so a
+ * registration succeeds and nothing is ever sent to it */
+POWRPROF DWORD WINAPI PowerSettingRegisterNotification(const GUID *setting, DWORD flags, HANDLE recipient, PVOID *h)
+{
+    (void)flags; (void)recipient;
+    if (!setting || !h) return ERROR_INVALID_PARAMETER;
+    *h = (PVOID)(ULONG_PTR)0x5E02;
+    return ERROR_SUCCESS;
+}
+POWRPROF DWORD WINAPI PowerSettingUnregisterNotification(PVOID h) { return h ? ERROR_SUCCESS : ERROR_INVALID_HANDLE; }
+POWRPROF HRESULT WINAPI PowerRegisterForEffectivePowerModeNotifications(ULONG version, PVOID callback, PVOID ctx, PVOID *h)
+{
+    (void)version; (void)ctx;
+    if (!callback || !h) return E_INVALIDARG;
+    *h = (PVOID)(ULONG_PTR)0x5E03;
+    return S_OK;
+}
+POWRPROF HRESULT WINAPI PowerUnregisterFromEffectivePowerModeNotifications(PVOID h) { return h ? S_OK : E_INVALIDARG; }
 /* SYSTEM_POWER_CAPABILITIES: a power button, the lid, S3, S5, thermal
  * control and the batteries, as the kernel finds them */
 POWRPROF BOOLEAN WINAPI GetPwrCapabilities(PVOID caps)

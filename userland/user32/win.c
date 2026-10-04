@@ -554,6 +554,14 @@ static int framed(Wnd *w)
     return (w->style & WS_CAPTION) == WS_CAPTION || !(w->style & WS_POPUP);
 }
 
+/* The desktop's frame for a top-level window (CTL_SET_FRAME's bits) */
+static int frame_flags(Wnd *w)
+{
+    if (!framed(w)) return 0;
+    return 1 | (!(w->style & WS_SYSMENU) ? 2 : 0) | (!(w->style & (WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) ? 4 : 0) |
+           ((w->style & WS_THICKFRAME) ? 8 : 0);
+}
+
 static void kernel_insets(Wnd *w, RECT *r)
 {
     if (!framed(w)) { SetRectEmpty(r); return; }
@@ -773,6 +781,15 @@ void wnd_set_pos(Wnd *w, HWND after, int x, int y, int cx, int cy, UINT flags)
     if (flags & SWP_HIDEWINDOW) w->style &= ~WS_VISIBLE;
 
     if (!w->parent) {
+        if ((moved || sized || (flags & SWP_FRAMECHANGED)) && w->kid && w->kframe >= 0 && frame_flags(w) != w->kframe) {
+            /* the program changed the style (SetWindowLong) to or from
+             * one with a caption, such as WS_POPUP for full screen: the
+             * desktop's title bar and border come or go with it, as the
+             * frame does on Windows at this SetWindowPos */
+            w->kframe = frame_flags(w);
+            NtNovaGuiCtl(w->kid, CTL_SET_FRAME, (ULONG_PTR)w->kframe, NULL);
+            memset(w->klog, 0xFF, sizeof(w->klog));         /* (send the rectangle again) */
+        }
         if (moved || sized || (flags & SWP_FRAMECHANGED)) update_kernel_rect(w);
         if (flags & SWP_SHOWWINDOW) ShowWindow(w->h, (flags & SWP_NOACTIVATE) ? SW_SHOWNA : SW_SHOW);
         if (flags & SWP_HIDEWINDOW) ShowWindow(w->h, SW_HIDE);
@@ -831,6 +848,7 @@ static int kernel_window(Wnd *w)
     gc.owner = o ? o->kid : 0;
     if (!NtNovaGuiCreate(&gc) || !gc.hwnd) return 0;
     w->kid = (UINT32)gc.hwnd;
+    w->kframe = (gc.flags & GUI_POPUP) ? -1 : frame_flags(w);
     publish_client(w);
     if (w->drop_accept) NtNovaGuiCtl(w->kid, CTL_ACCEPT_DROPS, (w->drop_accept | (w->drop_accept >> 2)) & 3, NULL);
     w->front = (DWORD *)(ULONG_PTR)gc.bitmap;
@@ -849,6 +867,7 @@ static int kernel_window(Wnd *w)
             for (int y = 0; y < ch; y++) memcpy(nb + (size_t)y * w->stride, w->back + (size_t)y * ostride, (size_t)cw * 4);
             VirtualFree(w->back, 0, MEM_RELEASE);
             w->back = nb;
+            dcs_follow(w);                                  /* (DCs the program took before showing it) */
         }
     }
     if (!w->back) {

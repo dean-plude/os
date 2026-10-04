@@ -8,8 +8,14 @@
  * inherit-only), with CREATOR OWNER standing for the node's owner, who is
  * the user.  A DACL keeps its SE_DACL_PROTECTED and SE_DACL_AUTO_INHERITED
  * bits; advapi32's SetNamedSecurityInfo merges a folder's inheritable
- * entries into an unprotected DACL, as Windows does.  With no descriptor anywhere above, a node has no DACL
- * and everyone may do anything, as on FAT.
+ * entries into an unprotected DACL, as Windows does.  With no descriptor
+ * anywhere above, a node inherits from the root's default DACL (the
+ * root's own when it has none, as on FAT or in memory): the one Windows
+ * gives C:\ and a new NTFS volume's root gets (SYSTEM and Administrators
+ * full control, CREATOR OWNER, who is the user, full control below,
+ * Authenticated Users change, Users read and execute), so an entry an
+ * installer adds to a folder joins those rather than becoming its whole
+ * DACL.
  *
  * Access is checked as the calling thread's effective token (its
  * impersonation token, otherwise its process's; kernel/um/um_security.c),

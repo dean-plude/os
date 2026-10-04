@@ -7,6 +7,11 @@
  * secure folders with (as WiX Burn does its Package Cache): checked as
  * the elevated token (the linked one, impersonated) and as ourselves.
  *
+ * Drive C:'s root has the DACL Windows gives C:\, inherited
+ * by what has none of its own, so adding one entry to a folder (as
+ * Chromium's setup grants ALL APPLICATION PACKAGES its install folder)
+ * keeps the user's own entries.
+ *
  * It leaves C:\AclTest\kept.txt behind with a DACL that denies writing;
  * run again after a restart, it checks that the file still has it (drive
  * C: on NTFS keeps it; on FAT it is gone, and the run says so). */
@@ -624,6 +629,85 @@ static void aclapi_tests(PSID me, PSID everyone, PSID users, PSID admins, PSID s
     CHECK("... and its owner may still let itself in and remove it", let_in_and_remove(me));
 }
 
+/* ---- the root's DACL, inherited ---- */
+
+#define APP_PATH "C:\\AclTestApp"
+
+/* Has @acl an allow ACE with exactly @flags, @mask for @sid? */
+static BOOL has_ace(PACL acl, BYTE flags, DWORD mask, PSID sid)
+{
+    for (DWORD i = 0; acl && i < acl->AceCount; i++)
+        if (ace_is(acl, i, ACCESS_ALLOWED_ACE_TYPE, flags, mask, sid)) return TRUE;
+    return FALSE;
+}
+
+static void root_tests(PSID me, PSID users, PSID admins, PSID system)
+{
+    PACL dacl = 0;
+    PSECURITY_DESCRIPTOR sd = 0;
+    SID_IDENTIFIER_AUTHORITY nt = { { 0, 0, 0, 0, 0, 5 } }, creator = { { 0, 0, 0, 0, 0, 3 } };
+    PSID auth_users = 0, creator_owner = 0;
+    AllocateAndInitializeSid(&nt, 1, 11, 0, 0, 0, 0, 0, 0, 0, &auth_users);
+    AllocateAndInitializeSid(&creator, 1, 0, 0, 0, 0, 0, 0, 0, 0, &creator_owner);
+    CHECK("C:\\: Windows' DACL for C:\\ (SYSTEM, Administrators, CREATOR OWNER, Authenticated Users, Users)",
+          GetNamedSecurityInfoW(L"C:\\", SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &dacl, 0, &sd) == 0 && dacl &&
+          dacl->AceCount == 5 && ace_is(dacl, 0, ACCESS_ALLOWED_ACE_TYPE, 3, FILE_ALL_ACCESS_, system) &&
+          ace_is(dacl, 1, ACCESS_ALLOWED_ACE_TYPE, 3, FILE_ALL_ACCESS_, admins) &&
+          ace_is(dacl, 2, ACCESS_ALLOWED_ACE_TYPE, 3 | INHERIT_ONLY_ACE, GENERIC_ALL, creator_owner) &&
+          ace_is(dacl, 3, ACCESS_ALLOWED_ACE_TYPE, 3, 0x1301BF, auth_users) &&
+          ace_is(dacl, 4, ACCESS_ALLOWED_ACE_TYPE, 3, 0x1200A9, users));
+    LocalFree(sd);
+    dacl = 0;
+    sd = 0;
+    CHECK("C:\\Windows inherits it (CREATOR OWNER as the user)",
+          GetNamedSecurityInfoW(L"C:\\Windows", SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &dacl, 0, &sd) == 0 &&
+          has_ace(dacl, INHERITED_ACE | 3, GENERIC_ALL, me) && has_ace(dacl, INHERITED_ACE | 3, 0x1200A9, users));
+    LocalFree(sd);
+    FreeSid(auth_users);
+    FreeSid(creator_owner);
+
+    /* Chromium's setup (base::win's GrantAccessToPath): the folder's DACL
+     * read, ALL APPLICATION PACKAGES granted read and execute with
+     * SetEntriesInAcl, set back with SetNamedSecurityInfo */
+    RemoveDirectoryA(APP_PATH "\\SetupMetrics");
+    RemoveDirectoryA(APP_PATH);
+    CHECK("AclTestApp: created", CreateDirectoryA(APP_PATH, NULL));
+    dacl = 0;
+    sd = 0;
+    CHECK("AclTestApp: its DACL is inherited from C:\\",
+          GetNamedSecurityInfoW(L"" APP_PATH, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &dacl, 0, &sd) == 0 && dacl &&
+          dacl->AceCount == 5 && has_ace(dacl, INHERITED_ACE | 3, GENERIC_ALL, me));
+    SID_IDENTIFIER_AUTHORITY app = { { 0, 0, 0, 0, 0, 15 } };
+    PSID packages = 0;
+    AllocateAndInitializeSid(&app, 2, 2, 1, 0, 0, 0, 0, 0, 0, &packages);          /* S-1-15-2-1 */
+    EXPLICIT_ACCESS_W ea;
+    ea_sid(&ea, GENERIC_READ | GENERIC_EXECUTE, GRANT_ACCESS, SUB_CONTAINERS_AND_OBJECTS_INHERIT, packages);
+    PACL added = 0;
+    CHECK("AclTestApp: SetEntriesInAclW(ALL APPLICATION PACKAGES) keeps the inherited entries",
+          dacl && SetEntriesInAclW(1, &ea, dacl, &added) == ERROR_SUCCESS && added && added->AceCount == 6);
+    LocalFree(sd);
+    CHECK("AclTestApp: SetNamedSecurityInfoW", added &&
+          SetNamedSecurityInfoW((LPWSTR)L"" APP_PATH, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, added, 0) == 0);
+    LocalFree(added);
+    dacl = 0;
+    sd = 0;
+    CHECK("AclTestApp: the new entry and the inherited ones",
+          GetNamedSecurityInfoW(L"" APP_PATH, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &dacl, 0, &sd) == 0 && dacl &&
+          dacl->AceCount == 6 && has_ace(dacl, 3, GENERIC_READ | GENERIC_EXECUTE, packages) &&
+          has_ace(dacl, INHERITED_ACE | 3, GENERIC_ALL, me));
+    LocalFree(sd);
+    CHECK("AclTestApp: a folder can still be made in it", CreateDirectoryA(APP_PATH "\\SetupMetrics", NULL));
+    dacl = 0;
+    sd = 0;
+    CHECK("AclTestApp\\SetupMetrics inherits the new entry",
+          GetNamedSecurityInfoW(L"" APP_PATH "\\SetupMetrics", SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &dacl, 0, &sd) == 0 &&
+          has_ace(dacl, INHERITED_ACE | 3, GENERIC_READ | GENERIC_EXECUTE, packages) &&
+          has_ace(dacl, INHERITED_ACE | 3, GENERIC_ALL, me));
+    LocalFree(sd);
+    CHECK("AclTestApp: removed", RemoveDirectoryA(APP_PATH "\\SetupMetrics") && RemoveDirectoryA(APP_PATH));
+    FreeSid(packages);
+}
+
 int main(void)
 {
     SID_IDENTIFIER_AUTHORITY world = { { 0, 0, 0, 0, 0, 1 } }, nt = { { 0, 0, 0, 0, 0, 5 } };
@@ -691,6 +775,7 @@ int main(void)
     protected_event(me, everyone);
     file_tests(me, everyone);
     aclapi_tests(me, everyone, users, admins, system);
+    root_tests(me, users, admins, system);
 
     printf("acltest: %d passed, %d failed\n", pass, fail);
     return fail ? 1 : 0;

@@ -21,6 +21,24 @@ static const UINT8 g_users[]       = { 1, 2, 0, 0, 0, 0, 0, 5, 0x20, 0, 0, 0, 0x
 static const UINT8 g_creator_owner[] = { 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0 };                     /* S-1-3-0 */
 static const UINT8 g_creator_group[] = { 1, 1, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0 };                     /* S-1-3-1 */
 
+/* The drive's root, when it has no descriptor of its own (C: on FAT or
+ * in memory): the DACL Windows gives C:\, as a new NTFS volume's root gets
+ * it (kernel/fs/ntfs.c): SYSTEM and Administrators full control, CREATOR
+ * OWNER full control of what is made below (the user, here), Authenticated
+ * Users change, Users read and execute, all inherited.  (Without it
+ * nothing had a DACL, so a single ACE an installer added to a folder
+ * became its whole DACL and locked the user out.) */
+#define ROOT_ACE(flags, size, mask) 0, (flags), (size), 0, (mask) & 0xFF, ((mask) >> 8) & 0xFF, ((mask) >> 16) & 0xFF, (mask) >> 24
+static const UINT8 g_root_dacl[] = {
+    2, 0, 116, 0, 5, 0, 0, 0,
+    ROOT_ACE(0x03, 20, 0x001F01FFu), 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,                   /* SYSTEM */
+    ROOT_ACE(0x03, 24, 0x001F01FFu), 1, 2, 0, 0, 0, 0, 0, 5, 0x20, 0, 0, 0, 0x20, 2, 0, 0,  /* Administrators */
+    ROOT_ACE(0x0B, 20, 0x10000000u), 1, 1, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0,                    /* CREATOR OWNER (inherit only) */
+    ROOT_ACE(0x03, 20, 0x001301BFu), 1, 1, 0, 0, 0, 0, 0, 5, 11, 0, 0, 0,                   /* Authenticated Users */
+    ROOT_ACE(0x03, 24, 0x001200A9u), 1, 2, 0, 0, 0, 0, 0, 5, 0x20, 0, 0, 0, 0x21, 2, 0, 0,  /* Users */
+};
+_Static_assert(sizeof(g_root_dacl) == 116, "the root's DACL size");
+
 #define GENERIC_READ    0x80000000u
 #define GENERIC_WRITE   0x40000000u
 #define GENERIC_EXECUTE 0x20000000u
@@ -123,17 +141,15 @@ static UINT32 build(UINT8 *out, UINT32 cap, const UINT8 *owner, const UINT8 *gro
     return len;
 }
 
-/* The DACL @n inherits from @from (@depth levels above it) into @out (cap
- * @cap); false if it does not fit.  NULL *dacl: @from has none. */
-static bool inherit(const RamNode *n, const UINT8 *from_sd, int depth, UINT8 *out, UINT32 cap, const UINT8 **dacl)
+/* The DACL @n inherits from @from_dacl (@depth levels above it) into @out
+ * (cap @cap); false if it does not fit.  NULL *dacl: @from_dacl is NULL. */
+static bool inherit(const RamNode *n, const UINT8 *from_dacl, int depth, UINT8 *out, UINT32 cap, const UINT8 **dacl)
 {
-    View f;
-    parse(from_sd, &f);
     *dacl = NULL;
-    if (!f.dacl_present || !f.dacl) return true;
-    UINT32 o = 8, count = 0, src = 8, size = rd16(f.dacl + 2), n_aces = rd16(f.dacl + 4);
+    if (!from_dacl) return true;
+    UINT32 o = 8, count = 0, src = 8, size = rd16(from_dacl + 2), n_aces = rd16(from_dacl + 4);
     for (UINT32 i = 0; i < n_aces; i++) {
-        const UINT8 *a = f.dacl + src;
+        const UINT8 *a = from_dacl + src;
         UINT32 alen = rd16(a + 2);
         src += alen;
         if (src > size) break;
@@ -178,11 +194,15 @@ static bool view_of(RamNode *n, View *v, UINT8 *buf)
     v->owner = g_user;
     v->group = g_users;
     v->dacl_present = true;
+    if (!n->parent) { v->dacl = g_root_dacl; return true; }     /* the root's own */
     v->control = SE_DACL_AUTO_INHERITED;
     int depth = 1;
-    for (RamNode *a = n->parent; a; a = a->parent, depth++)
-        if (a->sd) return inherit(n, a->sd, depth, buf, DACL_MAX, &v->dacl);
-    return true;                                                 /* nothing above has one: no DACL */
+    RamNode *a = n->parent;
+    for (; a->parent && !a->sd; a = a->parent) depth++;
+    if (!a->sd) return inherit(n, g_root_dacl, depth, buf, DACL_MAX, &v->dacl);
+    View f;
+    parse(a->sd, &f);
+    return inherit(n, f.dacl_present ? f.dacl : NULL, depth, buf, DACL_MAX, &v->dacl);
 }
 
 /* ---------------------------------------------------------------------------

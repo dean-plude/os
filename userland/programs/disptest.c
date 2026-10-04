@@ -6,7 +6,8 @@
  *                       also after a restart)
  *   disptest saved W H  check the mode is W x H, as saved (after a restart)
  *   disptest list       print the modes
- *   disptest fs W H     (child) full-screen W x H, then exit: the mode
+ *   disptest fs W H     (child) full-screen W x H, a frame through the DC
+ *                       its window kept from before, then exit: the mode
  *                       must come back by itself
  */
 #include <windows.h>
@@ -128,10 +129,41 @@ int main(int argc, char **argv)
         return g_fail != 0;
     }
     if (argc == 4 && !strcmp(argv[1], "fs")) {
-        LONG r = set_mode(atoi(argv[2]), atoi(argv[3]), CDS_FULLSCREEN);
+        /* as SDL goes full screen: the window and the DC it keeps come
+         * first, then the mode, then the window is shown over the screen
+         * and frames are blitted through that DC */
+        WNDCLASSW wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.lpfnWndProc = wndproc;
+        wc.hInstance = GetModuleHandleW(NULL);
+        wc.lpszClassName = L"disptest fs";
+        wc.style = CS_OWNDC;
+        RegisterClassW(&wc);
+        int w = atoi(argv[2]), h = atoi(argv[3]);
+        HWND hw = CreateWindowExW(0, wc.lpszClassName, L"disptest fs", WS_POPUP, 0, 0, w, h, NULL, NULL, wc.hInstance, NULL);
+        HDC kept = hw ? GetDC(hw) : NULL;
+        LONG r = set_mode(w, h, CDS_FULLSCREEN);
         printf("child: full screen %s x %s: %ld (desktop %d x %d)\n", argv[2], argv[3], r,
                GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-        return r != DISP_CHANGE_SUCCESSFUL;
+        int lh, lw = logical(w, h, &lh);
+        SetWindowPos(hw, HWND_TOP, 0, 0, lw, lh, SWP_SHOWWINDOW);
+        pump();
+        BITMAPINFO bi;
+        memset(&bi, 0, sizeof(bi));
+        bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+        bi.bmiHeader.biWidth = lw; bi.bmiHeader.biHeight = -lh;
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        DWORD *px = NULL;
+        HBITMAP dib = CreateDIBSection(kept, &bi, DIB_RGB_COLORS, (void **)&px, NULL, 0);
+        HDC mem = CreateCompatibleDC(kept);
+        SelectObject(mem, dib);
+        for (int i = 0; px && i < lw * lh; i++) px[i] = 0x00C02040;
+        BOOL blit = kept && px && BitBlt(kept, 0, 0, lw, lh, mem, 0, 0, SRCCOPY);
+        COLORREF c = kept ? GetPixel(kept, lw - 1, lh - 1) : (COLORREF)0xFFFFFFFF;
+        printf("child: kept DC %s, corner %06lx\n", blit ? "blitted" : "not blitted", (unsigned long)c);
+        DeleteDC(mem);
+        DeleteObject(dib);
+        return r != DISP_CHANGE_SUCCESSFUL || !blit || c != RGB(0xC0, 0x20, 0x40);
     }
 
     check(offsetof(DEVMODEW, dmBitsPerPel) == 168 && offsetof(DEVMODEA, dmBitsPerPel) == 104 &&
@@ -284,7 +316,7 @@ int main(int argc, char **argv)
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     }
-    check(code == 0, "child's CDS_FULLSCREEN");
+    check(code == 0, "child's CDS_FULLSCREEN, and a frame through its kept DC");
     DWORD end = GetTickCount() + 5000;
     do {
         Sleep(100);

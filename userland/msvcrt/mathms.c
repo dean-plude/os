@@ -153,3 +153,50 @@ __declspec(dllexport) int __control87_2(unsigned int newv, unsigned int mask, un
 /* _CW_DEFAULT: every exception masked, round to nearest, 53-bit x87 precision */
 __declspec(dllexport) void _fpreset(void) { unsigned short cw = 0x27F; set_mxcsr(0x1F80); __asm__ volatile("fninit\n\tfldcw %0" : : "m"(cw)); }
 __declspec(dllexport) int *__fpecode(void) { return &__nova_ptd()->fpecode; }
+
+#ifndef _WIN64
+/* x86: the UCRT's math for code built with /arch:SSE2 (MSVC's x86
+ * default): _libm_sse2_NAME_precise takes its argument in xmm0 (pow: xmm0
+ * and xmm1) and returns in xmm0; the C function underneath returns on the
+ * x87 stack, as x86 cdecl does (lld-link takes one underscore off an
+ * x86 export name, hence two) */
+#define SSE2_MATH1(n) ".globl __libm_sse2_" #n "_precise\n__libm_sse2_" #n "_precise:\n\t" \
+    "subl $8, %esp\n\tmovq %xmm0, (%esp)\n\tcalll _" #n "\n\t"                            \
+    "fstpl (%esp)\n\tmovq (%esp), %xmm0\n\taddl $8, %esp\n\tretl\n"
+__asm__(".section .text$libm_sse2,\"xr\"\n"
+        SSE2_MATH1(acos) SSE2_MATH1(asin) SSE2_MATH1(atan) SSE2_MATH1(cos) SSE2_MATH1(exp)
+        SSE2_MATH1(log) SSE2_MATH1(log10) SSE2_MATH1(sin) SSE2_MATH1(sqrt) SSE2_MATH1(tan)
+        ".globl __libm_sse2_pow_precise\n__libm_sse2_pow_precise:\n\t"
+        "subl $16, %esp\n\tmovq %xmm0, (%esp)\n\tmovq %xmm1, 8(%esp)\n\tcalll _pow\n\t"
+        "fstpl (%esp)\n\tmovq (%esp), %xmm0\n\taddl $16, %esp\n\tretl\n"
+        ".section .drectve,\"yn\"\n\t"
+        ".ascii \" /EXPORT:__libm_sse2_acos_precise=__libm_sse2_acos_precise"
+        " /EXPORT:__libm_sse2_asin_precise=__libm_sse2_asin_precise"
+        " /EXPORT:__libm_sse2_atan_precise=__libm_sse2_atan_precise"
+        " /EXPORT:__libm_sse2_cos_precise=__libm_sse2_cos_precise"
+        " /EXPORT:__libm_sse2_exp_precise=__libm_sse2_exp_precise"
+        " /EXPORT:__libm_sse2_log_precise=__libm_sse2_log_precise"
+        " /EXPORT:__libm_sse2_log10_precise=__libm_sse2_log10_precise"
+        " /EXPORT:__libm_sse2_pow_precise=__libm_sse2_pow_precise"
+        " /EXPORT:__libm_sse2_sin_precise=__libm_sse2_sin_precise"
+        " /EXPORT:__libm_sse2_sqrt_precise=__libm_sse2_sqrt_precise"
+        " /EXPORT:__libm_sse2_tan_precise=__libm_sse2_tan_precise\"\n\t"
+        ".text\n");
+
+/* x86: the older x87 forms (_CINAME) take their arguments on the x87
+ * stack (two: the first in st(1), the second in st(0)) and return in st(0) */
+#define CI_MATH1(n) ".globl __CI" #n "\n__CI" #n ":\n\t"                                  \
+    "subl $8, %esp\n\tfstpl (%esp)\n\tcalll _" #n "\n\taddl $8, %esp\n\tretl\n"
+#define CI_MATH2(n) ".globl __CI" #n "\n__CI" #n ":\n\t"                                  \
+    "subl $16, %esp\n\tfstpl 8(%esp)\n\tfstpl (%esp)\n\tcalll _" #n "\n\taddl $16, %esp\n\tretl\n"
+#define CI_EXPORT(n) " /EXPORT:__CI" #n "=__CI" #n
+__asm__(".section .text$ci_math,\"xr\"\n"
+        CI_MATH1(acos) CI_MATH1(asin) CI_MATH1(atan) CI_MATH1(cos) CI_MATH1(cosh) CI_MATH1(exp)
+        CI_MATH1(log) CI_MATH1(log10) CI_MATH1(sin) CI_MATH1(sinh) CI_MATH1(sqrt) CI_MATH1(tan)
+        CI_MATH1(tanh) CI_MATH2(atan2) CI_MATH2(fmod) CI_MATH2(pow)
+        ".section .drectve,\"yn\"\n\t"
+        ".ascii \"" CI_EXPORT(acos) CI_EXPORT(asin) CI_EXPORT(atan) CI_EXPORT(cos) CI_EXPORT(cosh)
+        CI_EXPORT(exp) CI_EXPORT(log) CI_EXPORT(log10) CI_EXPORT(sin) CI_EXPORT(sinh) CI_EXPORT(sqrt)
+        CI_EXPORT(tan) CI_EXPORT(tanh) CI_EXPORT(atan2) CI_EXPORT(fmod) CI_EXPORT(pow) "\"\n\t"
+        ".text\n");
+#endif

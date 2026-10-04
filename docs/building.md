@@ -367,7 +367,8 @@ enforced when files are opened, deleted and renamed, and survive a
 restart.  A file without a descriptor of its own inherits from its
 folders, as on Windows; the new volume's root gives the user full control
 of what they create.  On FAT, C: is the folder `\NOVA\C`, and ACLs last
-only until restart.  Files from the OS image keep no descriptor across a
+only until restart; its root has the same permissions as a new NTFS
+volume's (Windows' for `C:\`), which folders without their own inherit.  Files from the OS image keep no descriptor across a
 restart either way.
 
 Saving runs on its own kernel thread and keeps no lock while the disk is
@@ -497,6 +498,15 @@ has been held for ...` itself after three seconds (who holds it, what each CPU
 runs) and lets go of a lock whose holder no CPU runs (`[SMP] Bug: ...`).  The
 self-tests stop at the first test after which the machine answers neither
 Ctrl+Alt+F12 nor Ctrl+C, instead of waiting out every later test's limit.
+A program stuck in a GPU wait (the host never answered a fenced request) can be
+stopped like any other: the wait checks every 50 ms.  Ctrl+Alt+F12 also logs
+the virtio-gpu control queue (`[VGPU]` lines: requests taken and answered,
+fenced requests still out and the timeline value each sets), and
+`host-hang-N.txt` lists the render server's processes (the Venus worker of the
+running test is one; none means it died), the host kernel's messages about
+crashed or killed processes, and QEMU's own view of the queues
+(`info virtio-queue-status`): a request the guest sent that QEMU's used index
+has not caught up with was taken and never answered by virglrenderer.
 
 `NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
 `qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
@@ -878,6 +888,8 @@ would do).
 | Firefox 157.0 (Mozilla's full installer, the App Store's download) | `store install Firefox`: the Store unpacks the installer from `C:\Downloads` with 7-Zip (staged in `C:\Programs\7-Zip`), as its Install button does; then Firefox loads a page from an HTTPS server the script runs on the host (https://10.0.2.2:8443/, a certificate from a CA made for the run with `openssl` and trusted through Firefox's `distribution\policies.json`); the screenshot must match `tests/reference/firefox.png` |
 | Teeworlds 0.7.5 (the official 64-bit zip, the App Store's download) | `store install Mesa 3D` and `store install Teeworlds`; the game starts in full screen, Enter answers its two first-start questions, and its start menu must match `tests/reference/teeworlds.png`; the sound NovaOS played while it ran must hold at least 5 s of sound (`App(sound=(None, 5000))`: any sound, here its menu music, counted between its first test starting and its last one ending) |
 | OpenTyrian 2.1.20260913 (the official 64-bit zip with the freeware Tyrian 2.1 data, the App Store's download) | `store install Mesa 3D`, `store install DXVK` and `store install OpenTyrian`; the game draws with Direct3D 9 (SDL2's renderer) through DXVK, its demo plays in a window, Alt+Enter switches it to full screen, and Enter goes through its menus (one-player game, episode 1, normal), pressed only once the screen stands still (the game fades between menus and takes no keys meanwhile), to its game menu, which must match `tests/reference/opentyrian.png`; the sound NovaOS played while it ran must hold at least 5 s of sound (its music) |
+| Blobby Volley 2 1.1.1 (the official 32-bit zip, the App Store's download) | `store install Mesa 3D`, `store install DXVK` and `store install Blobby Volley 2`; started from its folder, the game opens in an 800x600 window and the keyboard goes Options, Graphic Options, Fullscreen Mode, OK: SDL switches the display to 800x600 and draws with Direct3D 9 in exclusive full screen through DXVK; the screenshot must be 800x600 and, back in the main menu, match `tests/reference/blobby volley 2.png`; after Alt+F4 ends the game, `sysinfo` must report the display back at 2560x1600 |
+| LBreakout2 2.6.5 (the official 64-bit zip, the App Store's download) | `store install LBreakout2`; started from its folder, the game (SDL 1.2, drawn with GDI) opens in a 640x480 window and 'f' switches it to full screen: SDL changes the display to 640x480 and the window to `WS_POPUP`, so the desktop's frame goes; the screenshot must be 640x480 and match `tests/reference/lbreakout2.png`; after Alt+F4 ends the game, `sysinfo` must report the display back at 2560x1600 |
 | Notepad++ 8.8.3 (portable) | opens a file; the screenshot (tab bar and status bar drawn) must match `tests/reference/notepad++.png` |
 | PuTTY 0.81 (built from the source release with MinGW, kept in the cache) | a raw connection to an echo server the script runs on the host (10.0.2.2:2323); the line typed must reach the server, and the screenshot must match `tests/reference/putty.png` |
 

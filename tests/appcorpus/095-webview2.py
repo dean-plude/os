@@ -10,25 +10,40 @@
 # then unpacks the runtime's package, accepts Microsoft's signature on it
 # and starts the runtime's own setup (Chromium's mini_installer and
 # setup.exe), which maps and unpacks its 728 MB archive, copies the
-# runtime in, is then refused a folder inside it and rolls back, so
-# nothing is installed yet; the installer then deletes its temporary
-# files on close, which must not loop (docs/compatibility.md).  Once the setup passes, the next test expects
-# the runtime's files in C:\Programs\Microsoft\EdgeWebView.
-DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which unpacks the runtime but rolls back on a refused folder)'
-import os, shutil
+# runtime in, adds an entry to its folder's permissions and installs the
+# runtime; the installer then deletes its temporary files on close, which
+# must not loop (docs/compatibility.md).  Then wv2host (a WebView2 host
+# NovaOS builds, userland/programs/wv2host.c) starts the runtime through
+# WebView2Loader.dll from Microsoft's WebView2 SDK (its NuGet package,
+# BSD-licensed, the DLL copied next to the installer): the loader finds
+# the installed runtime and the browser process (msedgewebview2.exe) and
+# its GPU, network and storage processes start; the test passes when the
+# WebView2 environment is made (the controller, and so a page, is not
+# yet: docs/compatibility.md), or when no runtime was installed (drive C:
+# full in a full corpus run, as above) and so none could start.
+DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which installs the runtime; a host program starts the runtime\'s browser process)'
+import os, shutil, zipfile
+
+SDK = 'https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.4258.31'
 
 INSTALLER = 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
 
 
 def unpack(app, files, dest):
-    """the installer under its own name"""
+    """the installer under its own name; the SDK's x64 loader beside it"""
     os.makedirs(dest)
     shutil.copy(files[0], os.path.join(dest, INSTALLER))
+    with zipfile.ZipFile(files[1]) as z:
+        with open(os.path.join(dest, 'WebView2Loader.dll'), 'wb') as f:
+            f.write(z.read('runtimes/win-x64/native/WebView2Loader.dll'))
 
 
 APP = App('WebView2', 'evergreen', 'https://go.microsoft.com/fwlink/?linkid=2124701', 'WebView2',
           [Test('run Edge Update\'s install step',
                 rf'cmd.exe /c "start /wait {A}\WebView2\{INSTALLER} /silent /install & '
                 r'type C:\AppData\Local\Temp\MicrosoftEdgeUpdate.log"',
-                [r'\[GoopdateImpl::DoInstall\]'], timeout=600)],
-          unpack=unpack)
+                [r'\[GoopdateImpl::DoInstall\]'], timeout=600),
+           Test('start the runtime\'s browser process',
+                rf'cmd.exe /c "cd /d {A}\WebView2 & wv2host"',
+                [r'wv2host: (environment\r?\n|no runtime found)'], timeout=600)],
+          unpack=unpack, extra=[SDK])
