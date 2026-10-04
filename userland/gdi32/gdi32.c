@@ -1071,8 +1071,17 @@ GDIAPI int GetDIBits(HDC h, HBITMAP bmp, UINT start, UINT lines, void *bits, BIT
     if (!o || o->kind != K_BITMAP) return 0;
     BITMAPINFOHEADER *bh = &bi->bmiHeader;
     if (!bits) {                                            /* just describe the bitmap */
-        bh->biWidth = o->bw; bh->biHeight = o->bh; bh->biPlanes = 1; bh->biBitCount = 32;
-        bh->biCompression = 0; bh->biSizeImage = (DWORD)o->bw * o->bh * 4;
+        if (!bh->biBitCount) {                              /* its own format, as Windows' 32-bit display gives it */
+            bh->biWidth = o->bw; bh->biHeight = o->bh; bh->biPlanes = 1; bh->biBitCount = 32;
+            bh->biCompression = BI_BITFIELDS;
+        } else {
+            if (!bh->biWidth && !bh->biHeight) { bh->biWidth = o->bw; bh->biHeight = o->bh; bh->biPlanes = 1; }
+            if (bh->biCompression == BI_BITFIELDS && bh->biBitCount == 32) {
+                DWORD *mask = (DWORD *)bi->bmiColors;       /* asked again: the colour masks (SDL reads them) */
+                mask[0] = 0x00FF0000; mask[1] = 0x0000FF00; mask[2] = 0x000000FF;
+            }
+        }
+        bh->biSizeImage = (DWORD)(((o->bw * bh->biBitCount + 31) / 32) * 4) * o->bh;
         return o->bh;
     }
     if (bh->biBitCount != 32 && bh->biBitCount != 24) return 0;

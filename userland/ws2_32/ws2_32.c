@@ -44,13 +44,18 @@ int WSAStartup(WORD ver, LPWSADATA d)
     if (d) {
         memset(d, 0, sizeof(*d));
         d->wVersion = 0x0202; d->wHighVersion = 0x0202;
-        d->iMaxSockets = 64; d->iMaxUdpDg = 8192;
+        d->iMaxSockets = 0; d->iMaxUdpDg = 0;          /* (Winsock 2 has no fixed limits: 0, as on Windows) */
         const char *desc = "NovaOS Winsock 2.2";
         for (int i = 0; desc[i]; i++) d->szDescription[i] = desc[i];
     }
     return 0;
 }
 int WSACleanup(void) { return 0; }
+/* Winsock 1's blocking hooks: gone in Winsock 2, which answers as Windows does */
+__declspec(dllexport) int WSAAPI WSACancelBlockingCall(void) { set_err(WSAEOPNOTSUPP); return SOCKET_ERROR; }
+__declspec(dllexport) BOOL WSAAPI WSAIsBlocking(void) { return FALSE; }
+__declspec(dllexport) void *WSAAPI WSASetBlockingHook(void *hook) { (void)hook; set_err(WSAEOPNOTSUPP); return NULL; }
+__declspec(dllexport) int WSAAPI WSAUnhookBlockingHook(void) { set_err(WSAEOPNOTSUPP); return SOCKET_ERROR; }
 
 u_short htons(u_short v) { return (u_short)((v << 8) | (v >> 8)); }
 u_short ntohs(u_short v) { return htons(v); }
@@ -98,12 +103,13 @@ SOCKET socket(int af, int type, int protocol)
     (void)protocol;
     if (af != AF_INET && af != AF_INET6 && af != AF_UNSPEC) { set_err(WSAEAFNOSUPPORT); return INVALID_SOCKET; }
     INT_PTR h = NtNovaSocket(type == SOCK_DGRAM ? 1 : 0, af == AF_INET6 ? AF_INET6 : AF_INET);
-    if (!h) { set_err(WSAENOBUFS); return INVALID_SOCKET; }
+    if (h <= 0) { sock_err(h ? (long)h : -8 /* SOCK_ENOBUFS */); return INVALID_SOCKET; }
     return (SOCKET)h;
 }
 
 void ws_cancel_socket(SOCKET s);                 /* overlapped.c: pending requests end */
-int closesocket(SOCKET s) { ws_cancel_socket(s); NtClose((HANDLE)s); return 0; }
+void evsel_forget(SOCKET s);                     /* wsa.c: its WSAEventSelect registration ends */
+int closesocket(SOCKET s) { ws_cancel_socket(s); evsel_forget(s); NtClose((HANDLE)s); return 0; }
 
 /* The kernel takes and gives Winsock's own SOCKADDR_IN / SOCKADDR_IN6 */
 static int addr_ok(const struct sockaddr *sa, int len)
@@ -361,36 +367,55 @@ int FD_ISSET(SOCKET fd, fd_set *set)
 /* Milliseconds since boot (KUSER_SHARED_DATA.TickCount, 10 ms ticks) */
 static ULONGLONG now_ms(void) { return (ULONGLONG)*(volatile ULONG *)(ULONG_PTR)0x7FFE0320 * 10; }
 
+/* select works on the caller's sets in place: a program may define
+ * FD_SETSIZE above Winsock's 64 (libcurl and others do, and wait on
+ * hundreds of sockets), so no set is copied into a fixed-size fd_set */
+static int sel_mark(fd_set *set, int what, BYTE *mark)
+{
+    int n = 0;
+    if (set) for (UINT i = 0; i < set->fd_count; i++) {
+        BYTE st[3];
+        mark[i] = NtNovaSockCtl((INT_PTR)set->fd_array[i], 4, 0, st) == 0 &&
+                  (what == 0 ? st[0] || st[2] : what == 1 ? st[1] : st[2]);
+        n += mark[i];
+    }
+    return n;
+}
+
+static void sel_keep(fd_set *set, const BYTE *mark)
+{
+    if (!set) return;
+    UINT k = 0;
+    for (UINT i = 0; i < set->fd_count; i++) if (mark[i]) set->fd_array[k++] = set->fd_array[i];
+    set->fd_count = k;
+}
+
 int select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex, const struct timeval *tv)
 {
     (void)nfds;
     ULONGLONG start = now_ms(), limit = 0;
     int forever = (tv == 0);
     if (tv) limit = (ULONGLONG)tv->tv_sec * 1000 + tv->tv_usec / 1000;
+    UINT nr = rd ? rd->fd_count : 0, nw = wr ? wr->fd_count : 0, ne = ex ? ex->fd_count : 0;
+    BYTE small[3 * FD_SETSIZE], *mark = small;
+    if (nr + nw + ne > sizeof(small)) {
+        mark = HeapAlloc(GetProcessHeap(), 0, nr + nw + ne);
+        if (!mark) { set_err(WSAENOBUFS); return SOCKET_ERROR; }
+    }
+    int ready;
     for (;;) {
         /* the network generation before looking: the wait below returns as
          * soon as anything changes after this point */
         ULONG gen = (ULONG)NtNovaSockCtl(0, 6, 0, 0);
-        int ready = 0;
-        fd_set r = { 0 }, w = { 0 }, e = { 0 };
-        if (rd) for (UINT i = 0; i < rd->fd_count; i++) {
-            BYTE st[3]; if (NtNovaSockCtl((INT_PTR)rd->fd_array[i], 4, 0, st) == 0 && (st[0] || st[2]))
-                { r.fd_array[r.fd_count++] = rd->fd_array[i]; ready++; }
-        }
-        if (wr) for (UINT i = 0; i < wr->fd_count; i++) {
-            BYTE st[3]; if (NtNovaSockCtl((INT_PTR)wr->fd_array[i], 4, 0, st) == 0 && st[1])
-                { w.fd_array[w.fd_count++] = wr->fd_array[i]; ready++; }
-        }
-        if (ex) for (UINT i = 0; i < ex->fd_count; i++) {
-            BYTE st[3]; if (NtNovaSockCtl((INT_PTR)ex->fd_array[i], 4, 0, st) == 0 && st[2])
-                { e.fd_array[e.fd_count++] = ex->fd_array[i]; ready++; }
-        }
-        if (ready) { if (rd) *rd = r; if (wr) *wr = w; if (ex) *ex = e; return ready; }
+        ready = sel_mark(rd, 0, mark) + sel_mark(wr, 1, mark + nr) + sel_mark(ex, 2, mark + nr + nw);
+        if (ready) { sel_keep(rd, mark); sel_keep(wr, mark + nr); sel_keep(ex, mark + nr + nw); break; }
         ULONGLONG spent = now_ms() - start;
-        if (!forever && spent >= limit) { if (rd) FD_ZERO(rd); if (wr) FD_ZERO(wr); if (ex) FD_ZERO(ex); return 0; }
+        if (!forever && spent >= limit) { if (rd) FD_ZERO(rd); if (wr) FD_ZERO(wr); if (ex) FD_ZERO(ex); break; }
         /* Nothing yet: sleep in the kernel until the network moves on */
         NtNovaSockCtl(0, 5, gen, (void *)(ULONG_PTR)(forever ? 100 : limit - spent));
     }
+    if (mark != small) HeapFree(GetProcessHeap(), 0, mark);
+    return ready;
 }
 
 /* "localhost" (and "x.localhost", RFC 6761) is the loopback address,

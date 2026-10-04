@@ -33,6 +33,7 @@ CRYPT32API BOOL WINAPI CryptBinaryToStringA(const BYTE *b, DWORD n, DWORD flags,
 /* Revocation lists: none in the stores */
 CRYPT32API const void *WINAPI CertEnumCRLsInStore(HANDLE h, const void *prev) { (void)h; (void)prev; SetLastError(CRYPT_E_NOT_FOUND_); return 0; }
 CRYPT32API BOOL WINAPI CertFreeCRLContext(const void *c) { (void)c; return TRUE; }
+CRYPT32API BOOL WINAPI CertFreeCTLContext(const void *c) { (void)c; return TRUE; }
 
 /* Base64 and hex text back to bytes (CRYPT_STRING_BASE64HEADER, BASE64,
  * BINARY, HEX, HEXRAW and the ANY forms) */

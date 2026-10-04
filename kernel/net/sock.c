@@ -22,7 +22,7 @@
 #include "lwip/ip6_addr.h"
 #include "lwip/pbuf.h"
 
-#define NSOCK        64
+#define NSOCK        1024           /* system-wide (each takes its ring only while open) */
 #define RXBUF        (32 * 1024)
 #define ACCEPT_MAX   8
 #define DGRAM_HDR    (2 + (int)sizeof(NetSockAddr))
@@ -322,6 +322,21 @@ int NetSockUdp(int family)
 /* -----------------------------------------------------------------------
  * Connect / send / recv
  * ----------------------------------------------------------------------- */
+/* What a refused tcp_connect means to the program: only a real shortage is
+ * WSAENOBUFS (no local port left, no memory for the SYN) */
+static int connect_err(err_t e)
+{
+    switch (e) {
+    case ERR_RTE:     return -SOCK_EHOSTUNREACH;             /* no route (no interface for the family) */
+    case ERR_USE:     return -SOCK_EADDRINUSE;               /* the address pair is taken */
+    case ERR_ISCONN:  return -SOCK_EISCONN;
+    case ERR_ALREADY: return -SOCK_EWOULDBLOCK;              /* already connecting */
+    case ERR_VAL:
+    case ERR_ARG:     return -SOCK_EINVAL;
+    default:          return -SOCK_ENOBUFS;
+    }
+}
+
 int NetSockConnect(int sd, const NetSockAddr *to, SockCancelFn c, void *ca)
 {
     net_lock();
@@ -334,7 +349,7 @@ int NetSockConnect(int sd, const NetSockAddr *to, SockCancelFn c, void *ca)
     s->connecting = true;
     err_t e = tcp_connect(s->tcp, &ip, lwip_htons(to->port_be), tcp_connected_cb);
     net_unlock();
-    if (e != ERR_OK) { s->connecting = false; return -SOCK_ENOBUFS; }
+    if (e != ERR_OK) { s->connecting = false; return connect_err(e); }
     if (s->nonblock) return -SOCK_EWOULDBLOCK;
     UINT64 deadline = sched_ticks() + 1000;                  /* 10 s */
     for (;;) {

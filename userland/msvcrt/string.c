@@ -52,6 +52,15 @@ void *memchr(const void *s, int c, size_t n)
     return 0;
 }
 
+/* copy up to and including the first @c; the byte after it in @d, or NULL */
+__declspec(dllexport) void *_memccpy(void *d, const void *s, int c, size_t n)
+{
+    unsigned char *q = d;
+    const unsigned char *p = s;
+    for (; n; n--) if ((*q++ = *p++) == (unsigned char)c) return q;
+    return 0;
+}
+
 size_t strlen(const char *s)            { const char *p = s; while (*p) p++; return (size_t)(p - s); }
 size_t strnlen(const char *s, size_t n) { size_t i = 0; while (i < n && s[i]) i++; return i; }
 char *strcpy(char *d, const char *s)    { char *r = d; while ((*d++ = *s++)) {} return r; }

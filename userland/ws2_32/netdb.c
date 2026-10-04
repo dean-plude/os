@@ -9,6 +9,10 @@
 #include <winsock2.h>
 #include <winternl.h>
 
+WINBASEAPI LPVOID WINAPI HeapAlloc(HANDLE, DWORD, SIZE_T);
+WINBASEAPI HANDLE WINAPI GetProcessHeap(void);
+WINBASEAPI BOOL WINAPI HeapFree(HANDLE, DWORD, LPVOID);
+
 static int ieq(const char *a, const char *b)
 {
     for (;; a++, b++) {
@@ -120,25 +124,32 @@ typedef struct { SOCKET fd; short events, revents; } WSAPOLLFD_;
 #define POLLERR_    0x0001
 #define POLLNVAL_   0x0004
 
+/* (FD_SET's own bound is the declared FD_SETSIZE; these sets have room for all) */
+#define PUT(set, s) ((set)->fd_array[(set)->fd_count++] = (s))
+
 __declspec(dllexport) int WSAAPI WSAPoll(WSAPOLLFD_ *fds, ULONG n, INT timeout)
 {
     if (!fds && n) { set_err(WSAEFAULT); return SOCKET_ERROR; }
-    if (n > FD_SETSIZE) { set_err(WSAEINVAL); return SOCKET_ERROR; }
-    fd_set rd, wr, ex;
-    FD_ZERO(&rd); FD_ZERO(&wr); FD_ZERO(&ex);
+    /* three sets with room for every socket: a program polls as many as it likes */
+    SIZE_T one = sizeof(u_int) + (n > FD_SETSIZE ? n : FD_SETSIZE) * sizeof(SOCKET);
+    BYTE *mem = HeapAlloc(GetProcessHeap(), 0, 3 * one);
+    if (!mem) { set_err(WSAENOBUFS); return SOCKET_ERROR; }
+    fd_set *rd = (fd_set *)mem, *wr = (fd_set *)(mem + one), *ex = (fd_set *)(mem + 2 * one);
+    rd->fd_count = wr->fd_count = ex->fd_count = 0;
     int any = 0;
     for (ULONG i = 0; i < n; i++) {
         fds[i].revents = 0;
         if (fds[i].fd == INVALID_SOCKET) continue;
-        if (fds[i].events & (POLLRDNORM_ | POLLRDBAND_)) FD_SET(fds[i].fd, &rd);
-        if (fds[i].events & (POLLWRNORM_ | POLLWRBAND_)) FD_SET(fds[i].fd, &wr);
-        FD_SET(fds[i].fd, &ex);
+        if (fds[i].events & (POLLRDNORM_ | POLLRDBAND_)) PUT(rd, fds[i].fd);
+        if (fds[i].events & (POLLWRNORM_ | POLLWRBAND_)) PUT(wr, fds[i].fd);
+        PUT(ex, fds[i].fd);
         any = 1;
     }
-    if (!any) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    if (!any) { HeapFree(GetProcessHeap(), 0, mem); set_err(WSAEINVAL); return SOCKET_ERROR; }
     struct timeval tv = { timeout / 1000, (timeout % 1000) * 1000 };
-    int r = select(0, &rd, &wr, &ex, timeout < 0 ? 0 : &tv);
+    int r = select(0, rd, wr, ex, timeout < 0 ? 0 : &tv);
     if (r == SOCKET_ERROR) {
+        HeapFree(GetProcessHeap(), 0, mem);
         /* a bad socket among them: report it (POLLNVAL) rather than fail */
         int bad = 0;
         for (ULONG i = 0; i < n; i++) {
@@ -156,11 +167,12 @@ __declspec(dllexport) int WSAAPI WSAPoll(WSAPOLLFD_ *fds, ULONG n, INT timeout)
         if (s == INVALID_SOCKET) continue;
         short ev = 0;
         /* a closed peer reads as readable: the next recv returns 0 */
-        if (__WSAFDIsSet(s, &rd)) ev |= fds[i].events & (POLLRDNORM_ | POLLRDBAND_);
-        if (__WSAFDIsSet(s, &wr)) ev |= fds[i].events & (POLLWRNORM_ | POLLWRBAND_);
-        if (__WSAFDIsSet(s, &ex)) ev |= POLLERR_;
+        if (__WSAFDIsSet(s, rd)) ev |= fds[i].events & (POLLRDNORM_ | POLLRDBAND_);
+        if (__WSAFDIsSet(s, wr)) ev |= fds[i].events & (POLLWRNORM_ | POLLWRBAND_);
+        if (__WSAFDIsSet(s, ex)) ev |= POLLERR_;
         fds[i].revents = ev;
         if (ev) ready++;
     }
+    HeapFree(GetProcessHeap(), 0, mem);
     return ready;
 }

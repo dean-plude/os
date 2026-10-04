@@ -57,7 +57,11 @@ order; --list prints them):
             network serving update channels (tools/mkupdate.py): it
             updates itself to a newer test build of this kernel, restarts
             into it twice, and goes back to it when the next update is
-            reset while it first starts
+            reset while it first starts; "gamepad", a wired Xbox 360, an
+            Xbox One and a HID game pad on xHCI (tools/padpeer.py behind
+            usb-redir devices): padtest reads their buttons and sticks
+            through XInput and DirectInput 8 while the test moves them,
+            sets their motors, and one is unplugged
 
 Each test is one Terminal command (tools/novarun.py's Nova class types it).
 A test passes when the program exits with code 0 inside its time limit, has
@@ -274,6 +278,7 @@ USBBOOT = load_suite('devices/usbboot')
 CDBOOT = load_suite('devices/cdboot')
 LAPTOP = load_suite('devices/laptop')
 UPDATE = load_suite('devices/update')
+GAMEPAD = load_suite('devices/gamepad')
 
 
 def net4_boot(work):
@@ -365,6 +370,27 @@ def usbheadset_boot(work):
             '-audiodev', 'none,id=ac97snd', '-device', 'AC97,audiodev=ac97snd'], procs
 
 
+def gamepad_boot(work):
+    """Three USB game controllers on an xHCI controller, each
+    tools/padpeer.py behind a QEMU usb-redir device: a wired Xbox 360
+    controller (port 10710), an Xbox One controller (10711) and a HID game
+    pad (10712); the tests set their buttons and sticks through each
+    peer's control port (the port + 100) (tests/selftest/devices/gamepad)"""
+    args, procs = ['-device', 'qemu-xhci,id=xhci'], []
+    for port, kind, dev in ((10710, 'xbox360', 'pad360'), (10711, 'xboxone', 'padone'), (10712, 'hid', 'padhid')):
+        log = os.path.join(work, f'padpeer-{port}.log')
+        p = subprocess.Popen([sys.executable, '-u', os.path.join(ROOT, 'tools', 'padpeer.py'), '--port', str(port),
+                              '--kind', kind], stdout=open(log, 'w'), stderr=subprocess.STDOUT)
+        for _ in range(100):
+            if 'listening' in open(log).read() or p.poll() is not None:
+                break
+            time.sleep(0.05)
+        procs.append(p)
+        args += ['-chardev', f'socket,id={dev},host=127.0.0.1,port={port}',
+                 '-device', f'usb-redir,id={dev},chardev={dev},bus=xhci.0']
+    return args, procs
+
+
 def monitors_boot(work):
     """One card with three outputs: a virtio-vga (the boot display, on its
     first output) and a VNC server on each other output (work/vnc1.sock,
@@ -454,7 +480,8 @@ BOOTS = {
     'devices': [('touch', TOUCH, touch_boot), ('usbaudio', USBAUDIO, usbaudio_boot),
                 ('usbheadset', USBHEADSET, usbheadset_boot),
                 ('monitors', MONITORS, monitors_boot), ('usbboot', USBBOOT, usbboot_boot),
-                ('cdboot', CDBOOT, cdboot_boot), ('laptop', LAPTOP, laptop_boot), ('update', UPDATE, update_boot)],
+                ('cdboot', CDBOOT, cdboot_boot), ('laptop', LAPTOP, laptop_boot), ('update', UPDATE, update_boot),
+                ('gamepad', GAMEPAD, gamepad_boot)],
 }
 
 
@@ -554,7 +581,8 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log', 'http.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)]:
+                for log in ['h2server.log', 'v6peer.log', 'http.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)] \
+                        + [f'padpeer-{p}.log' for p in range(10710, 10713)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
                 shutil.rmtree(work, ignore_errors=True)

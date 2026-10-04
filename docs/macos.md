@@ -261,6 +261,7 @@ diskutil eject /dev/disk4
 |------|----------|
 | Display | Works at the resolution the firmware set (the UEFI framebuffer); no resolution changes, which need one of the adapters QEMU emulates. After sleep the screen may stay dark: there is no driver to set the mode again, only what the firmware does on wake |
 | External USB keyboard and mouse | Should work (xHCI, EHCI, OHCI and UHCI controllers and USB HID drivers; Macs from before 2012 have only EHCI with OHCI or UHCI companions) |
+| USB game controller | Wired Xbox 360 and Xbox One controllers and HID game pads should work (XInput and DirectInput 8); Bluetooth ones do not (no Bluetooth driver) |
 | Built-in keyboard and trackpad | Only on older models that wire them over USB internally; 2016 and later MacBooks use SPI, which NovaOS cannot drive. Use an external USB keyboard and mouse. |
 | Internal SSD | Probably not seen on NVMe Macs (2016 and later): NovaOS has a standard NVMe driver, but Apple's NVMe controllers are not standard ones. Older SATA Macs may see it, but **do not run Install NovaOS on a Mac whose disk you need**: it repartitions the disk. |
 | Keeping files | With no usable disk, drive C: lives in memory and is lost at shutdown |
