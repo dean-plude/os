@@ -505,6 +505,13 @@ PVOID WINAPI FlsGetValue(DWORD i)
     set_error(s);
     return v;
 }
+/* FlsGetValue2: the same without touching the last error (Windows 11) */
+__declspec(dllexport) PVOID WINAPI FlsGetValue2(DWORD i)
+{
+    PVOID v = 0;
+    RtlFlsGetValue(i, &v);
+    return v;
+}
 BOOL WINAPI FlsSetValue(DWORD i, PVOID v)
 {
     NTSTATUS s = RtlFlsSetValue(i, v);

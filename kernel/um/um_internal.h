@@ -357,6 +357,7 @@ int        um_console_pids(UmConsole *c, UINT32 *out, int max);   /* running pro
 /* um_syscall.c */
 void       um_syscall_init(void);
 void       um_close_all_handles(UmProcess *p);
+void       um_close_file_handles(UmProcess *p);   /* (its last thread, before the process is signaled) */
 /* Is @n a running program's or loaded DLL's file?  (Under the file-system
  * lock.)  Windows refuses to delete one: STATUS_CANNOT_DELETE. */
 bool       um_image_in_use(const RamNode *n);

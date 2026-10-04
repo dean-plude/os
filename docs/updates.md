@@ -101,7 +101,9 @@ check it is the version the channel says.
 
 Versions compare number by number (`0.1.10` is newer than `0.1.9`), and
 a version with a suffix (`0.1.1-test`, `0.1.1-rc1`) is older than the
-same version without it.
+same version without it.  A development build's `+dev.` stamp
+(`0.1.0+dev.20261004125600`, below) reads as a fourth number, so it is
+newer than `0.1.0` and older than `0.1.1`.
 
 ## The channel file
 
@@ -138,6 +140,43 @@ version tag carries them: `.github/workflows/release.yml` runs
 Pre-releases (a version like `0.1.1-rc1`) and the `latest` build of
 `main` never carry the "Latest" mark once a release exists, so installed
 systems only see releases.
+
+## The rolling build's channel
+
+Each green run of the CI on `main` moves the `latest` pre-release to that
+commit (`.github/workflows/ci.yml`, job `publish-iso`), and attaches an
+update channel of its own next to `nova.iso`: the kernel and boot loader
+that run tested, made with the same `tools/mkupdate.py` as a release and
+signed with the same key (when the secret is set, below).  Its
+kernel is stamped with a development version, the version it was built
+with followed by `+dev.` and the commit's time (UTC, `YYYYMMDDHHMMSS`):
+
+```
+NovaOS update 1
+version 0.1.0+dev.20261004125600
+kernel kernel.elf 40732656 6b1f...e09c
+loader bootx64.efi 82821 0d4a...71f2
+notes NovaOS 0.1.0+dev.20261004125600, a development build of main at 108849e: ...
+```
+
+That version is newer than the release it follows (`0.1.0`) and than
+every earlier development build, and older than the next release
+(`0.1.1`).  Every NovaOS since 0.1.0 orders it so, since the comparison
+reads the time as a fourth number; nothing new is needed on an installed
+system.  To follow `main`:
+
+```
+update channel https://github.com/dean-plude/os/releases/download/latest/novaos-update.txt
+```
+
+and `update channel default` goes back to releases.  A system on the
+default channel never sees these builds: the default address follows
+GitHub's "Latest" mark, which only tagged releases carry.  A system
+that went back to releases from a development build stays on it until
+the next release, which is newer.  Two builds of `main` within the same
+second would carry the same version; the second reads as up to date.
+The ISO on `latest` keeps the plain version, so a system installed from
+it is offered the same build once more on this channel.
 
 ## Signatures
 
@@ -184,7 +223,7 @@ such device.
 
 The devices suite's `update` boot (`tests/selftest/devices/update`)
 starts `build/nova.img` as an installed NovaOS on QEMU's user-mode
-network, where `tools/selftest.py` serves two channels made with
+network, where `tools/selftest.py` serves channels made with
 `tools/mkupdate.py` from the same build: `v1/`, stamped one version
 newer than the build (`0.1.1-test` for 0.1.0), and `v2/`, two newer.
 Both are signed with a key pair kept only for the tests
@@ -206,8 +245,14 @@ so trusted by no real NovaOS), whose public half QEMU hands over as
 - `store updates` shows the App Store's Updates page (its screenshot is
   `store-updates.png`).
 
+Before that it checks the version order of the rolling build's channel
+with two more channels: `same/`, stamped with the build's own version, is
+up to date, and `dev/`, stamped as a development build of it
+(`0.1.0+dev.20261004125600`), is offered; once the v1 version is
+installed, `dev/` is up to date (older).
+
 ```bash
-python3 tools/selftest.py --suite devices --only 'unsigned channel,unsigned refused,other key channel,other key refused,changed channel,changed refused,update channel,update check,update install,restart into it,updated,restart again,up to date,next update,stage it,reset while trying,offered again,store updates'
+python3 tools/selftest.py --suite devices --only 'unsigned channel,unsigned refused,other key channel,other key refused,changed channel,changed refused,same channel,same version up to date,dev channel,dev build newer,update channel,update check,update install,restart into it,updated,restart again,up to date,dev channel again,dev build older,next update,stage it,reset while trying,offered again,store updates'
 ```
 
 ## Not done yet

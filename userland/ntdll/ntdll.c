@@ -271,6 +271,17 @@ NTSYSAPI VOID NTAPI RtlGetNtVersionNumbers(ULONG *major, ULONG *minor, ULONG *bu
     if (build) *build = 0xF0000000u | 19045;       /* high nibble: a free (retail) build */
 }
 
+/* RtlGetDeviceFamilyInfoEnum(ULONGLONG *UAPInfo, DWORD *DeviceFamily, DWORD *DeviceForm):
+ * the same version packed (major.minor.build.revision, 16 bits each; the
+ * revision is the registry's UBR), on a desktop PC (Chromium's setup
+ * checks the family before it installs) */
+NTSYSAPI VOID NTAPI RtlGetDeviceFamilyInfoEnum(ULONGLONG *uap, ULONG *family, ULONG *form)
+{
+    if (uap) *uap = (ULONGLONG)10 << 48 | (ULONGLONG)0 << 32 | (ULONGLONG)19045 << 16 | 1;
+    if (family) *family = 3;                       /* DEVICEFAMILYINFOENUM_DESKTOP */
+    if (form) *form = 0;                           /* DEVICEFAMILYDEVICEFORM_UNKNOWN, as most PCs report */
+}
+
 NTSYSAPI NTSTATUS NTAPI RtlGetVersion(PVOID info)
 {
     ULONG *v = info;                               /* RTL_OSVERSIONINFOW(EX) */
@@ -345,6 +356,9 @@ NTSYSAPI ULONG NTAPI RtlNtStatusToDosError(NTSTATUS s)
     case 0xC0000008: return ERROR_INVALID_HANDLE;
     case 0xC0000011: return ERROR_HANDLE_EOF;
     case 0xC0000017: case 0xC000009A: return ERROR_NOT_ENOUGH_MEMORY;
+    case 0xC0000040: return ERROR_NOT_ENOUGH_MEMORY;      /* STATUS_SECTION_TOO_BIG */
+    case 0xC000011E: return 1006;                         /* STATUS_MAPPED_FILE_SIZE_ZERO: ERROR_FILE_INVALID */
+    case 0xC000012D: return 1455;                         /* STATUS_COMMITMENT_LIMIT: ERROR_COMMITMENT_LIMIT */
     case 0xC0000018: case 0xC00000A0: return ERROR_INVALID_ADDRESS;
     case 0xC0000022: return ERROR_ACCESS_DENIED;
     case 0xC0000033: return ERROR_INVALID_NAME;

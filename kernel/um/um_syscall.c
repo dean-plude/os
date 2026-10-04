@@ -441,6 +441,17 @@ static void handle_close(UmHandle *h)
     h->kind = H_FREE;
 }
 
+/* A process's files and directories close before it is signaled as ended
+ * (Windows tears the handle table down first), so a parent that wakes on
+ * the exit can delete or re-create what the child had open. */
+void um_close_file_handles(UmProcess *p)
+{
+    FsLock();
+    for (int i = 0; i < UM_MAX_HANDLES; i++)
+        if (p->handles[i].kind == H_FILE || p->handles[i].kind == H_DIR) handle_close(&p->handles[i]);
+    FsUnlock();
+}
+
 void um_close_all_handles(UmProcess *p)
 {
     for (int i = 0; i < UM_MAX_HANDLES; i++)

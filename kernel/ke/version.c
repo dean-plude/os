@@ -43,6 +43,11 @@ static long part(const char **p)
     return n;
 }
 
+/* The rolling build of main is stamped "0.1.0+dev.20261004125600" (its
+ * commit's UTC time, .github/workflows/ci.yml): part() skips the "+dev"
+ * and reads the time as a fourth number, so it is newer than 0.1.0 and
+ * than the dev builds before it, and older than 0.1.1 (as in every 0.1.0
+ * kernel already installed, which compare the same way) */
 int NovaVersionCompare(const char *a, const char *b)
 {
     for (;;) {
