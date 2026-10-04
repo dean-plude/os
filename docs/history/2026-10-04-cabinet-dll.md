@@ -29,3 +29,12 @@ stopped: it loads `cabinet.dll` to unpack the payloads attached to its
   the failures.  Its cabinets come from `tools/make_cabtest_data.py`, with
   a small LZX encoder of its own; the output was checked with cabextract
   and 7-Zip.
+- **More 32-bit DLL slots**: with `cabinet.dll` and `msxml6.dll` both in,
+  the 41 automatic 16 MiB slots for 32-bit DLLs (0x97000000 to
+  0xC0000000) ran out and the build stopped; they now go up to
+  0xF0000000.
+- **Where the Visual C++ Redistributable stops now** (built with MSXML 6):
+  Burn extracts its manifest through `cabinet.dll` and then cannot find
+  the manifest's `UX` element (0x80070490): it selects `UX` with no
+  prefix in a document whose elements are in a default namespace, which
+  MSXML 3's XSLPattern matches and XPath does not.
