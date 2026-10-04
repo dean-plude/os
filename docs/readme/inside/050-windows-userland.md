@@ -26,11 +26,11 @@
   `xaudio2_7`/`xaudio2_8`/`xaudio2_9` and `x3daudio1_7` (on FAudio; every
   output listed and openable by its device ID), `msi`
   (with `msiscript` running JScript and VBScript custom actions on the
-  ISC-licensed mujs), `cabinet` (the FDI functions installers extract
-  cabinets with, MSZIP and LZX, on `msi`'s cabinet readers),
+  ISC-licensed mujs),
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
-  Qt and Krita), and
+  Qt and Krita), `cabinet` (the FDI functions installers extract cabinets
+  with, MSZIP and LZX, on `msi`'s cabinet readers), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`, `d3dcompiler_47`), and more.
