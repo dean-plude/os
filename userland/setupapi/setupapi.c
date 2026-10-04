@@ -1,64 +1,266 @@
 /*
  * setupapi.dll — device installation and enumeration (SetupDi*).  NovaOS
- * has no Plug and Play device tree (see cfgmgr32), so every device
- * information set is empty: enumeration ends at once, with
+ * has no Plug and Play device tree (see cfgmgr32); the devices it lists
+ * are its HID devices, the game controllers (novapad.h): under the HID
+ * device interface class (GUID_DEVINTERFACE_HID, what HidD_GetHidGuid
+ * returns) each has the path CreateFile opens for hid.dll, and under the
+ * HIDClass setup class a device with its instance ID and properties.
+ * Every other set is empty: enumeration ends at once, with
  * ERROR_NO_MORE_ITEMS, as on a machine without such devices.
  */
 #include <windows.h>
+#include <novapad.h>
+#include <string.h>
 
 #define SETUPAPI __declspec(dllexport)
 #define ERROR_NO_MORE_ITEMS_ 259
+#define ERROR_INVALID_DATA_  13
+#define ERROR_INVALID_USER_BUFFER 1784
+#define DIGCF_PRESENT          0x02
+#define DIGCF_ALLCLASSES       0x04
+#define DIGCF_DEVICEINTERFACE  0x10
+#define SPINT_ACTIVE           0x01
+#define SET_MAGIC              0x53455431u      /* "SET1" */
 
-/* An empty set is a real handle (programs compare it with
- * INVALID_HANDLE_VALUE and destroy it) */
-static HANDLE empty_set(void)
+static const GUID g_hid_iface = { 0x4d1e55b2, 0xf16f, 0x11cf, { 0x88, 0xcb, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 } };
+static const GUID g_hid_class = { 0x745a17a0, 0x74d3, 0x11d0, { 0xb6, 0xfe, 0x00, 0xa0, 0xc9, 0x0f, 0x57, 0xda } };
+
+typedef struct { DWORD cbSize; GUID InterfaceClassGuid; DWORD Flags; ULONG_PTR Reserved; } IfaceData;
+typedef struct { DWORD cbSize; GUID ClassGuid; DWORD DevInst; ULONG_PTR Reserved; } DevData;
+typedef struct { DWORD cbSize; WCHAR DevicePath[1]; } IfaceDetailW;
+typedef struct { DWORD cbSize; CHAR DevicePath[1]; } IfaceDetailA;
+
+/* A device information set: the controllers present when it was made */
+typedef struct {
+    DWORD magic;
+    int n;
+    NovaPadInfo pad[NOVA_PAD_SLOTS];
+} Set;
+
+static HANDLE new_set(BOOL hid)
 {
-    void *p = HeapAlloc(GetProcessHeap(), 0, 16);
-    if (!p) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return INVALID_HANDLE_VALUE; }
-    return p;
+    Set *s = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Set));
+    if (!s) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return INVALID_HANDLE_VALUE; }
+    s->magic = SET_MAGIC;
+    for (int slot = 0; hid && slot < NOVA_PAD_SLOTS; slot++)
+        if (nova_pad_info(slot, &s->pad[s->n])) s->n++;
+    return s;
+}
+
+static Set *set_of(HANDLE h)
+{
+    Set *s = h;
+    if (!s || h == INVALID_HANDLE_VALUE || s->magic != SET_MAGIC) { SetLastError(ERROR_INVALID_HANDLE); return NULL; }
+    return s;
+}
+
+/* Whether a set asked for with class @cls and @flags holds the HID devices */
+static BOOL wants_hid(const GUID *cls, DWORD flags)
+{
+    if (flags & DIGCF_ALLCLASSES) return TRUE;
+    if (!cls) return FALSE;
+    return (flags & DIGCF_DEVICEINTERFACE) ? !memcmp(cls, &g_hid_iface, sizeof(GUID)) : !memcmp(cls, &g_hid_class, sizeof(GUID));
 }
 
 SETUPAPI HANDLE WINAPI SetupDiGetClassDevsW(const GUID *cls, LPCWSTR enumerator, HWND parent, DWORD flags)
-{ (void)cls; (void)enumerator; (void)parent; (void)flags; return empty_set(); }
+{ (void)enumerator; (void)parent; return new_set(wants_hid(cls, flags)); }
 SETUPAPI HANDLE WINAPI SetupDiGetClassDevsA(const GUID *cls, LPCSTR enumerator, HWND parent, DWORD flags)
-{ (void)cls; (void)enumerator; (void)parent; (void)flags; return empty_set(); }
+{ (void)enumerator; (void)parent; return new_set(wants_hid(cls, flags)); }
 SETUPAPI HANDLE WINAPI SetupDiGetClassDevsExW(const GUID *cls, LPCWSTR enumerator, HWND parent, DWORD flags, HANDLE set, LPCWSTR machine, PVOID r)
-{ (void)cls; (void)enumerator; (void)parent; (void)flags; (void)set; (void)machine; (void)r; return empty_set(); }
-SETUPAPI HANDLE WINAPI SetupDiCreateDeviceInfoList(const GUID *cls, HWND parent) { (void)cls; (void)parent; return empty_set(); }
+{ (void)enumerator; (void)parent; (void)set; (void)machine; (void)r; return new_set(wants_hid(cls, flags)); }
+SETUPAPI HANDLE WINAPI SetupDiCreateDeviceInfoList(const GUID *cls, HWND parent) { (void)cls; (void)parent; return new_set(FALSE); }
 SETUPAPI BOOL WINAPI SetupDiDestroyDeviceInfoList(HANDLE set)
 {
-    if (!set || set == INVALID_HANDLE_VALUE) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-    HeapFree(GetProcessHeap(), 0, set);
+    Set *s = set_of(set);
+    if (!s) return FALSE;
+    s->magic = 0;
+    HeapFree(GetProcessHeap(), 0, s);
     return TRUE;
 }
 
 static BOOL no_more(void) { SetLastError(ERROR_NO_MORE_ITEMS_); return FALSE; }
-SETUPAPI BOOL WINAPI SetupDiEnumDeviceInfo(HANDLE set, DWORD i, PVOID info) { (void)set; (void)i; (void)info; return no_more(); }
-SETUPAPI BOOL WINAPI SetupDiEnumDeviceInterfaces(HANDLE set, PVOID dev, const GUID *cls, DWORD i, PVOID info)
-{ (void)set; (void)dev; (void)cls; (void)i; (void)info; return no_more(); }
 
-/* With no devices in any set, there is never a device to describe */
-static BOOL no_device(void) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+static void dev_data(int i, DevData *d)
+{
+    d->ClassGuid = g_hid_class;
+    d->DevInst = 0x100 + (DWORD)i;
+    d->Reserved = (ULONG_PTR)i + 1;
+}
+
+SETUPAPI BOOL WINAPI SetupDiEnumDeviceInfo(HANDLE set, DWORD i, PVOID info)
+{
+    Set *s = set_of(set);
+    if (!s) return FALSE;
+    DevData *d = info;
+    if (!d || d->cbSize != sizeof(DevData)) { SetLastError(ERROR_INVALID_USER_BUFFER); return FALSE; }
+    if (i >= (DWORD)s->n) return no_more();
+    dev_data((int)i, d);
+    return TRUE;
+}
+
+SETUPAPI BOOL WINAPI SetupDiEnumDeviceInterfaces(HANDLE set, PVOID dev, const GUID *cls, DWORD i, PVOID info)
+{
+    Set *s = set_of(set);
+    if (!s) return FALSE;
+    IfaceData *d = info;
+    if (!d || d->cbSize != sizeof(IfaceData)) { SetLastError(ERROR_INVALID_USER_BUFFER); return FALSE; }
+    if (!cls || !!memcmp(cls, &g_hid_iface, sizeof(GUID))) return no_more();
+    int first = 0, last = s->n;                       /* one device's: its single interface */
+    if (dev) { first = (int)((DevData *)dev)->Reserved - 1; last = first + 1; }
+    if (first < 0 || (DWORD)first + i >= (DWORD)last) return no_more();
+    d->InterfaceClassGuid = g_hid_iface;
+    d->Flags = SPINT_ACTIVE;
+    d->Reserved = (ULONG_PTR)first + i + 1;
+    return TRUE;
+}
+
+/* The set's device @info names (its index), or -1 */
+static int dev_index(Set *s, const void *info, BOOL iface)
+{
+    ULONG_PTR r = info ? iface ? ((const IfaceData *)info)->Reserved : ((const DevData *)info)->Reserved : 0;
+    if (!r || r > (ULONG_PTR)s->n) { SetLastError(ERROR_INVALID_PARAMETER); return -1; }
+    return (int)r - 1;
+}
+
+static BOOL iface_detail(HANDLE set, PVOID iface, PVOID detail, DWORD n, PDWORD need, PVOID dev, BOOL wide)
+{
+    Set *s = set_of(set);
+    if (!s) return FALSE;
+    int i = dev_index(s, iface, TRUE);
+    if (i < 0) return FALSE;
+    WCHAR path[96];
+    DWORD len = (DWORD)nova_pad_path(&s->pad[i], path, TRUE) + 1;
+    DWORD head = (DWORD)__builtin_offsetof(IfaceDetailW, DevicePath);
+    DWORD size = head + len * (wide ? sizeof(WCHAR) : 1);
+    if (need) *need = size;
+    if (dev) {
+        if (((DevData *)dev)->cbSize != sizeof(DevData)) { SetLastError(ERROR_INVALID_USER_BUFFER); return FALSE; }
+        dev_data(i, dev);
+    }
+    if (!detail) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    DWORD want = wide ? sizeof(IfaceDetailW) : sizeof(IfaceDetailA);
+    if (((IfaceDetailW *)detail)->cbSize != want) { SetLastError(ERROR_INVALID_USER_BUFFER); return FALSE; }
+    if (n < size) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    for (DWORD k = 0; k < len; k++) {
+        if (wide) ((IfaceDetailW *)detail)->DevicePath[k] = path[k];
+        else ((IfaceDetailA *)detail)->DevicePath[k] = (CHAR)path[k];
+    }
+    return TRUE;
+}
+
 SETUPAPI BOOL WINAPI SetupDiGetDeviceInterfaceDetailW(HANDLE set, PVOID iface, PVOID detail, DWORD n, PDWORD need, PVOID dev)
-{ (void)set; (void)iface; (void)detail; (void)n; (void)need; (void)dev; return no_device(); }
+{ return iface_detail(set, iface, detail, n, need, dev, TRUE); }
 SETUPAPI BOOL WINAPI SetupDiGetDeviceInterfaceDetailA(HANDLE set, PVOID iface, PVOID detail, DWORD n, PDWORD need, PVOID dev)
-{ (void)set; (void)iface; (void)detail; (void)n; (void)need; (void)dev; return no_device(); }
+{ return iface_detail(set, iface, detail, n, need, dev, FALSE); }
+
+/* A HID device's instance ID: "HID\VID_vvvv&PID_pppp[&IG_00]\8&SERIAL&0&0000" */
+static int instance_id(const NovaPadInfo *p, WCHAR *out)
+{
+    WCHAR path[96];
+    nova_pad_path(p, path, FALSE);                    /* \\?\HID#...#8&...&0000#{guid} */
+    int n = 0;
+    for (const WCHAR *c = path + 4; *c && *c != L'{'; c++) out[n++] = *c == L'#' ? L'\\' : *c;
+    if (n && out[n - 1] == L'\\') n--;
+    out[n] = 0;
+    return n;
+}
+
+/* A device registry property as a string (@multi: a list, NUL after each) */
+static BOOL put_prop(const WCHAR *v, BOOL multi, PDWORD type, PBYTE buf, DWORD n, PDWORD need, BOOL wide)
+{
+    DWORD chars = (DWORD)lstrlenW(v) + 1 + (multi ? 1 : 0);
+    DWORD size = chars * (wide ? sizeof(WCHAR) : 1);
+    if (type) *type = multi ? REG_MULTI_SZ : REG_SZ;
+    if (need) *need = size;
+    if (!buf || n < size) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    for (DWORD k = 0; k < chars; k++) {
+        WCHAR c = k < chars - (multi ? 1 : 0) ? v[k] : 0;
+        if (wide) ((WCHAR *)buf)[k] = c;
+        else buf[k] = (BYTE)c;
+    }
+    return TRUE;
+}
+
+static BOOL registry_property(HANDLE set, PVOID dev, DWORD prop, PDWORD type, PBYTE buf, DWORD n, PDWORD need, BOOL wide)
+{
+    Set *s = set_of(set);
+    if (!s) return FALSE;
+    int i = dev_index(s, dev, FALSE);
+    if (i < 0) return FALSE;
+    WCHAR v[128];
+    switch (prop) {
+    case 0x00:                                        /* SPDRP_DEVICEDESC */
+        return put_prop(L"HID-compliant game controller", FALSE, type, buf, n, need, wide);
+    case 0x01: {                                      /* SPDRP_HARDWAREID */
+        int len = instance_id(&s->pad[i], v);
+        while (len && v[len] != L'\\') len--;
+        v[len] = 0;
+        return put_prop(v, TRUE, type, buf, n, need, wide);
+    }
+    case 0x07: return put_prop(L"HIDClass", FALSE, type, buf, n, need, wide);           /* SPDRP_CLASS */
+    case 0x08: return put_prop(L"{745a17a0-74d3-11d0-b6fe-00a0c90f57da}", FALSE, type, buf, n, need, wide);   /* SPDRP_CLASSGUID */
+    case 0x09:                                        /* SPDRP_DRIVER */
+        lstrcpyW(v, L"{745a17a0-74d3-11d0-b6fe-00a0c90f57da}\\0000");
+        v[lstrlenW(v) - 1] = (WCHAR)(L'0' + i);
+        return put_prop(v, FALSE, type, buf, n, need, wide);
+    case 0x0B: return put_prop(L"(Standard system devices)", FALSE, type, buf, n, need, wide);   /* SPDRP_MFG */
+    case 0x0E:                                        /* SPDRP_PHYSICAL_DEVICE_OBJECT_NAME */
+        lstrcpyW(v, L"\\Device\\00000100");
+        v[lstrlenW(v) - 1] = (WCHAR)(L'0' + i);
+        return put_prop(v, FALSE, type, buf, n, need, wide);
+    }
+    SetLastError(ERROR_INVALID_DATA_);
+    return FALSE;
+}
+
 SETUPAPI BOOL WINAPI SetupDiGetDeviceRegistryPropertyW(HANDLE set, PVOID dev, DWORD prop, PDWORD type, PBYTE buf, DWORD n, PDWORD need)
-{ (void)set; (void)dev; (void)prop; (void)type; (void)buf; (void)n; (void)need; return no_device(); }
+{ return registry_property(set, dev, prop, type, buf, n, need, TRUE); }
 SETUPAPI BOOL WINAPI SetupDiGetDeviceRegistryPropertyA(HANDLE set, PVOID dev, DWORD prop, PDWORD type, PBYTE buf, DWORD n, PDWORD need)
-{ (void)set; (void)dev; (void)prop; (void)type; (void)buf; (void)n; (void)need; return no_device(); }
+{ return registry_property(set, dev, prop, type, buf, n, need, FALSE); }
+
+/* Unified device properties (DEVPKEY_*): none kept */
 SETUPAPI BOOL WINAPI SetupDiGetDevicePropertyW(HANDLE set, PVOID dev, const void *key, PULONG type, PBYTE buf, DWORD n, PDWORD need, DWORD flags)
-{ (void)set; (void)dev; (void)key; (void)type; (void)buf; (void)n; (void)need; (void)flags; return no_device(); }
+{
+    (void)key; (void)buf; (void)n; (void)flags;
+    Set *s = set_of(set);
+    if (!s || dev_index(s, dev, FALSE) < 0) return FALSE;
+    if (type) *type = 0;
+    if (need) *need = 0;
+    SetLastError(ERROR_NOT_FOUND);
+    return FALSE;
+}
+
+static BOOL instance_id_of(HANDLE set, PVOID dev, void *id, DWORD n, PDWORD need, BOOL wide)
+{
+    Set *s = set_of(set);
+    if (!s) return FALSE;
+    int i = dev_index(s, dev, FALSE);
+    if (i < 0) return FALSE;
+    WCHAR v[128];
+    DWORD len = (DWORD)instance_id(&s->pad[i], v) + 1;
+    if (need) *need = len;
+    if (!id || n < len) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    for (DWORD k = 0; k < len; k++) {
+        if (wide) ((WCHAR *)id)[k] = v[k];
+        else ((CHAR *)id)[k] = (CHAR)v[k];
+    }
+    return TRUE;
+}
+
 SETUPAPI BOOL WINAPI SetupDiGetDeviceInstanceIdW(HANDLE set, PVOID dev, LPWSTR id, DWORD n, PDWORD need)
-{ (void)set; (void)dev; (void)id; (void)n; (void)need; return no_device(); }
+{ return instance_id_of(set, dev, id, n, need, TRUE); }
+SETUPAPI BOOL WINAPI SetupDiGetDeviceInstanceIdA(HANDLE set, PVOID dev, LPSTR id, DWORD n, PDWORD need)
+{ return instance_id_of(set, dev, id, n, need, FALSE); }
+
+/* No device has registry keys of its own */
 SETUPAPI HKEY WINAPI SetupDiOpenDevRegKey(HANDLE set, PVOID dev, DWORD scope, DWORD profile, DWORD type, REGSAM sam)
 {
     (void)set; (void)dev; (void)scope; (void)profile; (void)type; (void)sam;
     SetLastError(ERROR_INVALID_PARAMETER);
     return INVALID_HANDLE_VALUE;
 }
-SETUPAPI BOOL WINAPI SetupDiGetDeviceInstanceIdA(HANDLE set, PVOID dev, LPSTR id, DWORD n, PDWORD need)
-{ (void)set; (void)dev; (void)id; (void)n; (void)need; return no_device(); }
+
+static BOOL no_device(void) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
 
 /* Device setup classes exist without devices: the class GUIDs Windows
  * defines for the names programs ask about (no device ever matches them) */

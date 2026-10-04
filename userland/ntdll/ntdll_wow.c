@@ -537,7 +537,12 @@ NTSTATUS NTAPI NtUnmapViewOfSection(HANDLE proc, PVOID base) { return SC(NtUnmap
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io)
 {
-    U64 x[12];         /* { StdHandle[3], Process, Thread, Pid, Tid, Flags, Environment, EnvironmentSize, RuntimeData, RuntimeDataSize } */
+    U64 x[14];         /* { StdHandle[3], Process, Thread, Pid, Tid, Flags, Environment, EnvironmentSize, RuntimeData, RuntimeDataSize,
+                          HandleList, HandleCount } */
+    U64 list[256];     /* (the handle list widened to 64-bit handles) */
+    if ((io->Flags & 16) && io->HandleCount > 256) return 0xC000000D;   /* STATUS_INVALID_PARAMETER */
+    for (ULONG64 i = 0; (io->Flags & 16) && i < io->HandleCount; i++) list[i] = H(io->HandleList[i]);
+    x[12] = (io->Flags & 16) ? P(list) : 0; x[13] = (io->Flags & 16) ? io->HandleCount : 0;
     for (int i = 0; i < 3; i++) x[i] = H(io->StdHandle[i]);
     x[3] = H(io->Process); x[4] = H(io->Thread);
     x[5] = io->ProcessId; x[6] = io->ThreadId;

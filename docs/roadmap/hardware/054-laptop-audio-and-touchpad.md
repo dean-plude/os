@@ -11,6 +11,9 @@
   DSP~~ Done (Phase 21.4): Sound Open Firmware boots on the DSP, records
   them through an IPC4 capture pipeline and they are the "Microphone
   Array (DSP)" recording device, booted again after sleep (checked on a
-  modelled DSP, `hwcheck mic`).  Not yet: the touchpad's interrupt line
-  (polled for now), tap-and-drag and scrolling that coasts on after the
-  fingers lift.
+  modelled DSP, `hwcheck mic`).  ~~The touchpad's interrupt line~~ Done
+  (Phase 21.4): a driver for Intel's GPIO controllers (Tiger Lake to
+  Meteor Lake) takes the touchpad's GpioInt pin and the touchpad is read
+  when it fires, polled only when no interrupt can be had (checked on a
+  modelled controller, `hwcheck`).  Not yet: tap-and-drag and scrolling
+  that coasts on after the fingers lift.

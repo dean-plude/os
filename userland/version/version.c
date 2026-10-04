@@ -15,9 +15,15 @@
 
 static int wlen(const WCHAR *s) { int n = 0; while (s[n]) n++; return n; }
 
-/* Read the whole file */
+/* Read the whole file.  A bare name ("kernel32.dll") is found the way
+ * Windows finds it (it loads the file as a data DLL): along the search
+ * path, the program's folder and the system folder among it. */
 static BYTE *read_file(LPCWSTR name, DWORD *size)
 {
+    WCHAR found[MAX_PATH];
+    const WCHAR *c = name;
+    while (*c && *c != '\\' && *c != '/' && *c != ':') c++;
+    if (!*c && SearchPathW(0, name, 0, MAX_PATH, found, 0)) name = found;
     HANDLE h = CreateFileW(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
     if (h == INVALID_HANDLE_VALUE) return 0;
     DWORD n = GetFileSize(h, 0), got = 0;

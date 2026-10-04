@@ -75,7 +75,7 @@ work is in NovaOS.  "Tested" is what has been checked in QEMU.
 | **Python 3.14** | NuGet package | `-c`, a hashlib/JSON/regex/threads/subprocess test script. |
 | **NumPy 2.5.3** | The Windows wheel (`cp314`) in Python 3.14, on NovaOS's own `vcruntime140`, `msvcp140` and UCRT | `import numpy`, complex `exp`/`sqrt`/`log`/`sin`/`tanh`/`power`, `linalg.inv`, `fft`, `eigvals`: the same output as NumPy on Linux. |
 | **Mesa 3D 24.2.4** (mesa-dist-win) | `opengl32.dll` (llvmpipe; installed as `opengl32_mesa.dll`, which NovaOS's `opengl32.dll` loads) and the Vulkan driver (lavapipe), x64 and x86, from the App Store | OpenGL 4.5: `tools/gltest` (pixel formats, immediate mode, GLSL, read-back, animated `SwapBuffers`) passes as a 64-bit and a 32-bit program. |
-| **DXVK 2.5.3** | `d3d8`, `d3d9`, `d3d10core`, `d3d11` (as `d3d11_dxvk`, behind NovaOS's own `d3d11`), `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program. |
+| **DXVK 2.5.3** | `d3d8`, `d3d9` and `d3d11` (as `d3d9_dxvk` and `d3d11_dxvk`, behind NovaOS's own `d3d9` and `d3d11`), `d3d10core`, `dxgi`, x64 and x86, from the App Store, on Mesa's Vulkan and NovaOS's own `vulkan-1.dll` | Direct3D 9 and 11: `tools/d3dtest` (device creation, a D3D9 triangle, D3D11 clear, read-back, animated `Present` in a window) passes as a 64-bit and a 32-bit program, `d3dtest angle` brings Direct3D 11 up the way ANGLE (Chromium's GPU process) does, and `d3d9test` checks NovaOS's `d3d9.dll` with and without DXVK. |
 | **Venus** (Mesa 26.2.4, built by `tools/build_venus.py`) | `vulkan_virtio.dll` and Mesa's virgl (`opengl32_virgl.dll`, `libgallium_virgl.dll`), x64 and x86, from the App Store: Vulkan and OpenGL on the host's GPU through a QEMU 3D virtio-gpu (`virtio-vga-gl,venus=on`); the Vulkan loader prefers Venus to lavapipe and NovaOS's `opengl32.dll` virgl to llvmpipe | `tools/d3dtest` (DXVK) and `tools/gltest` pass on it as 64-bit and 32-bit programs, and `d3dtest fps` and `gltest fps` draw faster on it than on lavapipe and llvmpipe. |
 | **Notepad++ 8.8.3** (x64 portable) | Scintilla editor, static MSVC C++ runtime | Opens with its menus, toolbar, tab bar, editor and status bar, takes typing, and opens and saves files through the common file dialogs. |
 | **SumatraPDF 3.4.6** (x86 portable) | PDF reader on MuPDF; GDI+ toolbar, tabs and caption | Opens a PDF and renders its pages; the toolbar, tabs and menus draw; printing reports no printer. |
@@ -175,7 +175,8 @@ same bytes, as Windows shares image sections), I/O,
   speakers turned off while headphones are plugged in; a laptop's digital
   microphones through Sound Open Firmware on Intel's audio DSP) with a kernel mixer;
   PS/2 keyboards and mice; I2C-HID touchpads on Intel's LPSS I2C
-  controllers (found through ACPI, in their mouse mode); USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  controllers (found through ACPI; tap to click, two-finger tap for the
+  right button and two-finger scrolling as mouse-wheel input); USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
   (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for
@@ -187,7 +188,9 @@ same bytes, as Windows shares image sections), I/O,
   asynchronous devices' rate feedback followed, played on and recorded
   from as soon as they are plugged in, or chosen in Settings' Sound page,
   each with its own volume; the choice and the levels are kept across
-  restarts); virtio multi-touch screens,
+  restarts), and game controllers (wired Xbox 360 and Xbox One
+  controllers, with their motors, and HID game pads, for XInput and
+  DirectInput 8); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
@@ -214,7 +217,9 @@ same bytes, as Windows shares image sections), I/O,
   and dual-stack sockets with `getaddrinfo`, and its socket options reach
   the TCP/IP stack (`TCP_NODELAY`, `SO_RCVTIMEO`/`SO_SNDTIMEO`,
   `SO_LINGER`, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_BROADCAST`, `IP_TTL`,
-  `SO_RCVBUF`/`SO_SNDBUF`) and read back;
+  `SO_RCVBUF`/`SO_SNDBUF`) and read back; a program keeps hundreds of
+  sockets open at once, as a browser does, and `select`, `WSAPoll` and
+  `WSAEventSelect` wait on any number of them;
   overlapped requests that have to wait (an `AcceptEx`, a `ConnectEx`, a
   `WSARecv` with nothing to read yet) stay pending and complete on an I/O
   completion port, which proactor event loops such as Python's asyncio need;
@@ -238,7 +243,7 @@ same bytes, as Windows shares image sections), I/O,
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
   as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
-  type libraries), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
+  type libraries, and calls between processes over named pipes with the standard marshaler and the `IDispatch` proxy; the Windows Runtime's strings and the few runtime classes Win32 programs ask for, such as `UISettings` for the user's colours), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
   stubless proxies, `NdrStubCall2`, `CStdStubBuffer`, the `NdrDll*` entry points), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
   WASAPI playback and capture, a device ID or endpoint for each sound
@@ -256,13 +261,22 @@ same bytes, as Windows shares image sections), I/O,
   `secur32` with Schannel (TLS 1.3/1.2 for programs, on Mbed TLS),
   `crypt32` and `wintrust` (certificate stores and chains, signed PKCS #7
   messages, and Authenticode: `WinVerifyTrust` checks a program's
-  signature, its timestamp and its chain to the trusted roots),
-  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
+  signature, its timestamp and its chain to the trusted roots, and the
+  Microsoft root policy tells Microsoft's own signatures apart),
+  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`, and the
+  Internet security manager's zones),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
   Qt and Krita), `cabinet` (the FDI functions installers extract cabinets
-  with, MSZIP and LZX, on `msi`'s cabinet readers), and
+  with, MSZIP and LZX, on `msi`'s cabinet readers), `wldap32` (LDAP
+  sessions, for programs that link to it; no directory servers yet),
+  `opengl32` (Mesa from the App Store, or with no driver NovaOS's own
+  OpenGL 1.1, which draws 2D as ScummVM needs: textures, vertex arrays,
+  blending, scissor), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
-  `dhcpcsvc`, `d3dcompiler_47`), and more.
+  `dhcpcsvc`, `d3dcompiler_47`), the ones Qt WebEngine imports
+  (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12
+  device or WinUSB device, as on a PC without them, with Bluetooth's SDP
+  record parsers working in full), and more.
 - **Text**: `novatext.dll`, the text core built once and shared, carries
   HarfBuzz (shaping) and FreeType (fonts).  Uniscribe (`usp10`) itemizes
   text by script and direction and shapes it with HarfBuzz, and GDI's
@@ -297,11 +311,14 @@ same bytes, as Windows shares image sections), I/O,
   (`SetLocaleInfo`).
 - **Program support**: the PE loader with TLS, `DllMain`, forwarders and
   API sets; x64 and x86 structured exceptions, with Windows'
-  alignment-fault fixup for misaligned SSE moves; registry saved to disk;
-  COM in-process servers, type libraries and proxy/stub DLLs
-  (rpcrt4's NDR engine; calls into other processes come next); drag and drop; a shared clipboard; `.lnk`
+  alignment-fault fixup for misaligned SSE moves; Windows' segment
+  selectors, so 64-bit programs can far-jump into 32-bit code; registry saved to disk;
+  COM in-process and local (`LocalServer32`) servers, type libraries,
+  proxy/stub DLLs and calls between processes; drag and drop; a shared clipboard; `.lnk`
   shortcuts; Windows Installer packages; services (`advapi32`'s service
-  control manager); scheduled tasks (Task Scheduler 2.0, kept in
+  control manager); event tracing as Windows answers with no logging
+  session running (providers register, controllers and consumers find no
+  session); scheduled tasks (Task Scheduler 2.0, kept in
   `C:\Windows\System32\Tasks`); the Data Protection API.
 - **Updates**: the App Store's Updates page downloads a newer NovaOS from
   an update channel, and the next restart starts it, going back to the
@@ -405,22 +422,24 @@ To make the ISO yourself from a fresh build, run
   anti-cheat code expects), `aligntest` (a misaligned SSE access is
   fixed up to the unaligned move when alignment-fault fixup is on, as
   anti-cheat code expects; ThreadHideFromDebugger and the
-  extended-context functions), `filetest`, `linktest`, `pipetest`,
-  `proctest`, `sectest`, `acltest` (64- and 32-bit), `guitest auto`,
-  `inputtest` (side buttons, horizontal wheel, volume keys), `usbcheck`
-  (media keys, AC Pan, pen pressure, tilt and twist, virtio pens and
-  tablets), `anitest` (animated cursors and program pointers),
-  `cursortest` (system pointers, SetSystemCursor, cursors at the display
-  scale), `bmpcurtest` (1-, 4-, 8- and 16-bit DIB sections, cursors from
-  bitmaps with alpha or monochrome masks), `pentest` (a pen as
-  WM_POINTER* messages: enter, down, update, up, leave;
-  GetPointerPenInfo pressure, tilt, rotation, barrel and eraser;
-  DefWindowProc promotion to mouse with the pen signature in
-  GetMessageExtraInfo; WM_NCPOINTER* over a title bar and
-  WM_POINTERACTIVATE; the mouse as a pointer, entering and leaving
-  windows; 64- and 32-bit), `wintabtest` (wintab32 with no pen and with
-  a synthetic one: contexts, packets, pressure, tilt and rotation),
-  `dpitest` (per-monitor DPI: the manifest's `dpiAwareness`,
+  extended-context functions), `gatetest` (Windows' segment selectors,
+  32-bit code in a 64-bit program through a far jump to 0x23,
+  GetThreadContext on the calling thread and `__fastfail`, as anti-cheat
+  code expects), `filetest`, `linktest`, `pipetest`, `proctest`,
+  `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `inputtest`
+  (side buttons, horizontal wheel, volume keys), `usbcheck` (media keys,
+  AC Pan, pen pressure, tilt and twist, virtio pens and tablets),
+  `anitest` (animated cursors and program pointers), `cursortest`
+  (system pointers, SetSystemCursor, cursors at the display scale),
+  `bmpcurtest` (1-, 4-, 8- and 16-bit DIB sections, cursors from bitmaps
+  with alpha or monochrome masks), `pentest` (a pen as WM_POINTER*
+  messages: enter, down, update, up, leave; GetPointerPenInfo pressure,
+  tilt, rotation, barrel and eraser; DefWindowProc promotion to mouse
+  with the pen signature in GetMessageExtraInfo; WM_NCPOINTER* over a
+  title bar and WM_POINTERACTIVATE; the mouse as a pointer, entering and
+  leaving windows; 64- and 32-bit), `wintabtest` (wintab32 with no pen
+  and with a synthetic one: contexts, packets, pressure, tilt and
+  rotation), `dpitest` (per-monitor DPI: the manifest's `dpiAwareness`,
   `GetDpiForMonitor`, `GetDpiForWindow`, `WM_DPICHANGED` and its
   suggested rectangle when the monitor goes to 192 DPI and back, and the
   window and monitor coordinates an aware, an unaware and a system-aware
@@ -498,46 +517,63 @@ To make the ISO yourself from a fresh build, run
   Terminal and into cmd.exe, CreateProcess with up to 32,766 characters,
   64- and 32-bit), `devices` (every PCI function and the driver that
   claimed it: AHCI, the VGA card, HD Audio, xHCI; bridges marked),
-  `glgeneric` (OpenGL 1.1 with no OpenGL driver installed, 64- and
-  32-bit), `hwcheck` audio DSP: NHLT digital microphones, the SOF
-  firmware manifest, the DSP boot (ROM, code loader, FW_READY, IPC4),
-  the IPC4 capture pipeline into a host ring, paused and run again, and
-  the boot again after sleep, on a modelled DSP, `hwcheck` (HD Audio
-  controller matching, a modelled ALC257 codec with its headphone jack,
-  a modelled I2C-HID touchpad); the touchpad in the boot's ACPI table is
-  found and its missing controller reported, `crashtest` (crash.exe's
-  report in `C:\NovaOS\Crashes`: exception, module+offset, stack,
-  modules; 64- and 32-bit), and the Terminal's `Crash report:` line and
-  `crashes last`, `wndthreads` (child windows of other threads, sends to
-  an ended thread's window, 64- and 32-bit), `hwcheck mic`: a modelled
-  audio DSP as the "Microphone Array" recording device (`waveIn`, WASAPI
-  and DirectSound list it, `soundtest record` and `capture` hear its
-  tone, before and after a modelled sleep), `fpstate` (x87 control word
-  and MXCSR on new threads, across switches, `RtlRestoreContext` and SEH
-  unwinds, 64- and 32-bit), `ramdisktest` (files on drive C: take the
-  memory their contents need: appended files, SetEndOfFile, deleting),
-  the first-boot setup, `start welcome` (name, time zone, keyboard
-  layout and display pages from the keyboard; German typed in the
-  layout's test field), `kbdtest` with German in effect and US put back,
-  then `whoami` as the name it gave (the program and the Terminal
-  command), `tztest` in the zone it chose (Tokyo: UTC+9 in GetLocalTime
-  and localtime; Berlin, Sydney and Los Angeles rules) and `tzutil /s
-  UTC`, `edgeupdtest` (Task Scheduler 2.0, DPAPI, UrlCombine and the
-  other APIs Microsoft Edge Update needs, 64- and 32-bit), `setuptest`
-  (run as administrator, Rich Edit with RTF, variant arithmetic, a 300
-  MB file on C:, 64- and 32-bit), `msxmltest` (MSXML 6 DOM, XPath, XSL
-  Patterns, SAX2 and registration, 64- and 32-bit), `cabtest`
-  (cabinet.dll: MSZIP and LZX cabinets, an attached container, a cabinet
-  set; 64- and 32-bit), `authtest` (Authenticode: WinVerifyTrust, signer
-  chains and timestamps, CryptQueryObject; 64- and 32-bit), `ndrtest`
-  (rpcrt4's NDR engine: stubless proxies, NdrStubCall2, CStdStubBuffer
-  and the NdrDll* entry points, 64- and 32-bit), `msiqtest` (Windows
-  Installer: 32-bit packages into SysWOW64, product information by
-  context, source lists, patch applicability; 64- and 32-bit), `crash
-  kernel`, a deliberate kernel fault whose serial log must show a
-  backtrace with function names, and last the kernel crash report: after
-  `crash kernel` and a reset, `crashes last` shows the fault's
-  backtrace.<!-- END generated:core-tests -->
+  `glgeneric` (OpenGL 1.1 with no OpenGL driver installed, drawing in
+  2D, 64- and 32-bit), `hwcheck` audio DSP: NHLT digital microphones,
+  the SOF firmware manifest, the DSP boot (ROM, code loader, FW_READY,
+  IPC4), the IPC4 capture pipeline into a host ring, paused and run
+  again, and the boot again after sleep, on a modelled DSP, `hwcheck`
+  (HD Audio controller matching, a modelled ALC257 codec with its
+  headphone jack, a modelled I2C-HID touchpad); the touchpad in the
+  boot's ACPI table is found and its missing controller reported,
+  `crashtest` (crash.exe's report in `C:\NovaOS\Crashes`: exception,
+  module+offset, stack, modules; 64- and 32-bit), and the Terminal's
+  `Crash report:` line and `crashes last`, `hwcheck` touchpad gestures
+  on a modelled precision touchpad: tap to click, two-finger tap for the
+  right button, two-finger scrolling (vertical and horizontal) as wheel
+  notches, palms ignored, `wndthreads` (child windows of other threads,
+  sends to an ended thread's window, 64- and 32-bit), `hwcheck mic`: a
+  modelled audio DSP as the "Microphone Array" recording device
+  (`waveIn`, WASAPI and DirectSound list it, `soundtest record` and
+  `capture` hear its tone, before and after a modelled sleep), `fpstate`
+  (x87 control word and MXCSR on new threads, across switches,
+  `RtlRestoreContext` and SEH unwinds, 64- and 32-bit), `ramdisktest`
+  (files on drive C: take the memory their contents need: appended
+  files, SetEndOfFile, deleting; the memory programs are told), the
+  first-boot setup, `start welcome` (name, time zone, keyboard layout
+  and display pages from the keyboard; German typed in the layout's test
+  field), `kbdtest` with German in effect and US put back, then `whoami`
+  as the name it gave (the program and the Terminal command), `tztest`
+  in the zone it chose (Tokyo: UTC+9 in GetLocalTime and localtime;
+  Berlin, Sydney and Los Angeles rules) and `tzutil /s UTC`,
+  `edgeupdtest` (Task Scheduler 2.0, DPAPI, UrlCombine and the other
+  APIs Microsoft Edge Update needs, 64- and 32-bit), `setuptest` (run as
+  administrator, Rich Edit with RTF, variant arithmetic, a 300 MB file
+  on C:, 64- and 32-bit), `msxmltest` (MSXML 6 DOM, XPath, XSL Patterns,
+  SAX2 and registration, 64- and 32-bit), `cabtest` (cabinet.dll: MSZIP
+  and LZX cabinets, an attached container, a cabinet set; 64- and
+  32-bit), `authtest` (Authenticode: WinVerifyTrust, signer chains and
+  timestamps, CryptQueryObject; 64- and 32-bit), `ndrtest` (rpcrt4's NDR
+  engine: stubless proxies, NdrStubCall2, CStdStubBuffer and the NdrDll*
+  entry points, 64- and 32-bit), `regtest` (registry keys and values
+  changed by several threads and processes at once; 64- and 32-bit),
+  `msiqtest` (Windows Installer: 32-bit packages into SysWOW64, product
+  information by context, source lists, patch applicability; 64- and
+  32-bit), `svctest` (a real service: start with arguments, status
+  handshake, controls, stop and delete; CopyFile keeps file times; 64-
+  and 32-bit), `comoop` (cross-process COM: LocalServer32 activation,
+  the standard marshaler and RPC channel, the IDispatch proxy/stub,
+  BSTR/VARIANT marshalling; 64- and 32-bit clients and servers),
+  `etwtest` (event-tracing controllers with no sessions: StartTrace,
+  StopTrace, ControlTrace, EnableTrace, QueryAllTraces, OpenTrace,
+  ProcessTrace, CloseTrace; 64- and 32-bit), `qtwebtest` (the calls Qt
+  WebEngine imports: Bluetooth and SDP records, Direct3D 12, WinUSB,
+  AppContainer profiles, proxy resolver, security zones and more; 64-
+  and 32-bit), `qtthemetest` (Windows.UI.ViewManagement UISettings and
+  UIViewSettings as Qt reads them, ColorValuesChanged, Schannel's cipher
+  suites; 64- and 32-bit), `crash kernel`, a deliberate kernel fault
+  whose serial log must show a backtrace with function names, and last
+  the kernel crash report: after `crash kernel` and a reset, `crashes
+  last` shows the fault's backtrace.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -576,7 +612,7 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), Roblox (installs; the client stops in its anti-cheat), Steam (installs and updates itself; its browser does not open the login window yet), Microsoft Edge WebView2 runtime (its updater runs; the install stops: no MSXML 6 yet), SumatraPDF, WinMerge, KeePassXC, VLC (plays an H.264 and AAC MP4 with sound), Audacity (records 10 s from the microphone and saves the project), Inkscape, Krita, Firefox, Notepad++, OpenTTD (free on GOG; installs with its installer and reaches its main menu) and PuTTY<!-- END generated:corpus -->.  The
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), Roblox (installs; the client stops in its anti-cheat), Steam (installs and updates itself; its browser does not open the login window yet), Microsoft Edge WebView2 runtime (its updater installs itself, runs the install and accepts the runtime's signature; its background pass then uninstalls it mid-install), SumatraPDF, WinMerge, KeePassXC, VLC (plays an H.264 and AAC MP4 with sound), Audacity (records 10 s from the microphone and saves the project), Inkscape, Krita, Firefox, Notepad++, OpenTTD (free on GOG; installs with its installer and reaches its main menu), Beneath a Steel Sky on ScummVM (free on GOG; installs with its installer, skips the intro and walks), Teeworlds (full screen, through its first-start questions to its start menu, with music) and PuTTY<!-- END generated:corpus -->.  The
 windowed programs run last, one at a time: SumatraPDF opens a PDF,
 WinMerge compares two files, Firefox installs from the App Store and
 loads a page from an HTTPS server on the host, Notepad++ opens a file and PuTTY makes a raw
@@ -588,7 +624,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `aligntest`, `anitest`, `apitest`, `authtest`, `bmpcurtest`, `boosttest`, `cabtest`, `cliptest`, `cmdlinetest`, `comtest`, `cppeh`, `crashtest`, `crttest`, `crtthreads`, `cursortest`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dpitest`, `edgeupdtest`, `errnotest`, `filetest`, `fpstate`, `glgeneric`, `httptest`, `icutest`, `inputtest`, `kbdtest`, `linktest`, `looptest`, `mmcsstest`, `montest`, `msiqtest`, `msitest`, `msxmltest`, `ndrtest`, `nlstest`, `nstest`, `overlaptest`, `pentest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `ramdisktest`, `rttest`, `savetest`, `sectest`, `setuptest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `syscalltest`, `threads`, `tlsslots`, `touchtest`, `tztest`, `unwindtest`, `usptest`, `wintabtest`, `wndthreads`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `aligntest`, `anitest`, `apitest`, `authtest`, `bmpcurtest`, `boosttest`, `cabtest`, `cliptest`, `cmdlinetest`, `comoop`, `comtest`, `cppeh`, `crashtest`, `crttest`, `crtthreads`, `cursortest`, `d3d9test`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dltest`, `dpitest`, `edgeupdtest`, `errnotest`, `etwtest`, `filetest`, `fpstate`, `gatetest`, `glgeneric`, `httptest`, `icutest`, `inputtest`, `kbdtest`, `linktest`, `loadtest`, `looptest`, `mmcsstest`, `montest`, `msiqtest`, `msitest`, `msxmltest`, `ndrtest`, `nlstest`, `nstest`, `overlaptest`, `padtest`, `pentest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `qtthemetest`, `qtwebtest`, `ramdisktest`, `regtest`, `rttest`, `savetest`, `sectest`, `setuptest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `svctest`, `syscalltest`, `threads`, `tlsslots`, `touchtest`, `tztest`, `unwindtest`, `usptest`, `wintabtest`, `wndthreads`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, records
   through `waveIn` and WASAPI capture, and lists the sound devices,
   chooses the default and sets each device's own volume;

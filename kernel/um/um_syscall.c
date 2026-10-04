@@ -704,10 +704,10 @@ static UINT32 open_other(UmProcess *p, const char *path, UINT32 access, UINT32 o
         if (!put_u64(handle_ptr, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
         return iosb(iosb_ptr, ST_SUCCESS, 1);
     }
-    if (um_pipe_name(path)) {                                   /* a pipe's client end */
+    if (um_pipe_name(path) || um_hid_name(path)) {              /* a pipe's client end, a HID device */
         UmObject *o;
-        bool rd, wr;
-        UINT32 pst = um_pipe_open(path, access, options, &o, &rd, &wr);
+        bool rd = true, wr = false;
+        UINT32 pst = um_hid_name(path) ? um_hid_open(path, options, &o) : um_pipe_open(path, access, options, &o, &rd, &wr);
         if (pst) return iosb(iosb_ptr, pst, 0);
         um_lock_excl(&p->lock);
         UINT64 hv = handle_alloc(p, &h);
@@ -778,7 +778,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     bool inherit = *oa_attrs() & 0x2;                           /* OBJ_INHERIT */
     UmHandleKind ck;
     UmHandle *h;
-    if (um_pipe_name(path) || is_console_name(path, &ck)) {     /* not files: under the big lock */
+    if (um_pipe_name(path) || um_hid_name(path) || is_console_name(path, &ck)) {   /* not files: under the big lock */
         FsUnlockShared();
         bkl_acquire();
         st = open_other(p, path, access, options, inherit, handle_ptr, iosb_ptr);
@@ -2122,7 +2122,9 @@ static void process_ob_destroy(UmObject *o)
  * UTF-8 strings, full paths ("C:\dir\prog.exe").  io: in: StdHandle[3]
  * (0 = the console), Flags (1: inherit handles, 2: no console),
  * Environment + EnvironmentSize (UTF-8 "NAME=value\0...\0"; NULL: the
- * default), RuntimeData + RuntimeDataSize (STARTUPINFO.lpReserved2);
+ * default), RuntimeData + RuntimeDataSize (STARTUPINFO.lpReserved2),
+ * HandleList + HandleCount (flag 16: of the inheritable handles only
+ * these go to the child, PROC_THREAD_ATTRIBUTE_HANDLE_LIST);
  * out: Process, Thread, ProcessId, ThreadId.  The new process
  * shares the creator's console, or (flag 8) gets a new one in a Terminal
  * window of its own. */
@@ -2130,6 +2132,8 @@ static void process_ob_destroy(UmObject *o)
 #define NCP_NO_CONSOLE 2u
 #define NCP_SUSPENDED  4u              /* CREATE_SUSPENDED */
 #define NCP_NEW_CONSOLE 8u             /* CREATE_NEW_CONSOLE */
+#define NCP_HANDLE_LIST 16u            /* inherit only the handles listed */
+#define NCP_LIST_MAX   2048
 #define NCP_ENV_MAX    (64 * 1024)
 
 static bool std_kind(UmHandleKind k) { return k == H_FILE || k == H_CON_IN || k == H_CON_OUT || k == H_OBJECT || k == H_NULL; }
@@ -2138,7 +2142,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
 {
     UmProcess *p = UmCurrent();
     char image[RAMFS_PATH_MAX], dir[RAMFS_PATH_MAX], *cmd = NULL;
-    UINT64 io[12];
+    UINT64 io[14];
     if (!get_str(a1, image, sizeof(image)) || (a3 && !get_str(a3, dir, sizeof(dir))) ||
         !NT_SUCCESS(CopyFromUser(io, (const void *)(uintptr_t)a4, sizeof(io))))
         return UM_STATUS_ACCESS_VIOLATION;
@@ -2160,12 +2164,30 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
         if (!rt) { kfree(env); return ST_NO_MEMORY; }
         if (!NT_SUCCESS(CopyFromUser(rt, (const void *)(uintptr_t)io[10], rt_len))) { kfree(rt); kfree(env); return UM_STATUS_ACCESS_VIOLATION; }
     }
+    UINT64 *list = NULL;
+    UINT32 nlist = (flags & NCP_HANDLE_LIST) ? (UINT32)io[13] : 0;
+    if (flags & NCP_HANDLE_LIST) {
+        if (!(flags & NCP_INHERIT) || !io[12] || !nlist || io[13] > NCP_LIST_MAX) { kfree(rt); kfree(env); return ST_INVALID_PARAMETER; }
+        list = kmalloc(8u * nlist);
+        if (!list) { kfree(rt); kfree(env); return ST_NO_MEMORY; }
+        if (!NT_SUCCESS(CopyFromUser(list, (const void *)(uintptr_t)io[12], 8u * nlist))) {
+            kfree(list); kfree(rt); kfree(env); return UM_STATUS_ACCESS_VIOLATION;
+        }
+    }
     UINT32 cmd_st = ST_SUCCESS;
     cmd = a2 ? get_cmdline(a2, &cmd_st) : kmalloc(sizeof(image));
-    if (!cmd) { kfree(rt); kfree(env); return cmd_st ? cmd_st : ST_NO_MEMORY; }
+    if (!cmd) { kfree(list); kfree(rt); kfree(env); return cmd_st ? cmd_st : ST_NO_MEMORY; }
     if (!a2) strcpy(cmd, image);
+    bool listed_ok = true;                          /* as on Windows, each listed handle must be inheritable */
+    um_lock_excl(&p->lock);
+    for (UINT32 k = 0; k < nlist; k++) {
+        UmHandle *h = handle(p, list[k]);
+        if (!h || !h->inherit) listed_ok = false;
+    }
+    um_unlock_excl(&p->lock);
+    if (!listed_ok) { kfree(cmd); kfree(list); kfree(rt); kfree(env); return ST_INVALID_PARAMETER; }
     UmHandle *inh = (flags & NCP_INHERIT) ? kzalloc(sizeof(UmHandle) * UM_MAX_HANDLES) : NULL;
-    if ((flags & NCP_INHERIT) && !inh) { kfree(cmd); kfree(rt); kfree(env); return ST_NO_MEMORY; }
+    if ((flags & NCP_INHERIT) && !inh) { kfree(cmd); kfree(list); kfree(rt); kfree(env); return ST_NO_MEMORY; }
 
     const char *ip = image, *dp = dir;
     if ((ip[0] | 0x20) == 'c' && ip[1] == ':') ip += 2;
@@ -2206,8 +2228,14 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     UmHandle std[3];
     memset(&opts, 0, sizeof(opts));
     memset(std, 0, sizeof(std));
-    for (int i = 0; inh && i < UM_MAX_HANDLES; i++)
+    for (int i = 0; inh && !list && i < UM_MAX_HANDLES; i++)
         if (p->handles[i].inherit && p->handles[i].kind != H_FREE) inh[i] = p->handles[i];
+    for (UINT32 k = 0; list && k < nlist; k++) {            /* a handle list: those, each inheritable */
+        UINT64 v = list[k];
+        if (v < 4 || (v & 3) || v / 4 - 1 >= UM_MAX_HANDLES) continue;
+        UmHandle *h = &p->handles[v / 4 - 1];
+        if (h->kind != H_FREE && h->inherit) inh[v / 4 - 1] = *h;
+    }
     for (int i = 0; i < 3; i++) {
         UmHandle *h = io[i] ? handle(p, io[i]) : NULL;
         if (!h || !std_kind(h->kind)) continue;
@@ -2234,6 +2262,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     DesktopUnlock();
     kfree(cmd);
     kfree(env);
+    kfree(list);
     kfree(rt);
     kfree(inh);
     if (st) { kfree(o); return st; }

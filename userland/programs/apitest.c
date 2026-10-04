@@ -94,7 +94,8 @@ int main(int argc, char **argv)
                                     !strcmp(buf, sizeof(void *) == 8 ? "C:\\Windows\\System32\\kernel32.dll"
                                                                            : "C:\\Windows\\SysWOW64\\kernel32.dll"));
     DWORD (WINAPI *vsize)(LPCSTR, LPDWORD) = (void *)fn("version.dll", "GetFileVersionInfoSizeA");
-    CHECK("no version resource", vsize && !vsize("C:\\Windows\\System32\\kernel32.dll", &n));
+    CHECK("version resource", vsize && vsize("C:\\Windows\\System32\\kernel32.dll", &n));   /* as on Windows */
+    CHECK("no version resource", vsize && !vsize("C:\\Windows\\System32\\psapi.dll", &n));
 
     /* ---- kernel32: file mapping, rename, attributes ---- */
     HANDLE f = CreateFileA("C:\\Temp\\map.bin", GENERIC_READ | GENERIC_WRITE, 0, 0, CREATE_ALWAYS, 0, 0);

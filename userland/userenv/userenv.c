@@ -206,3 +206,17 @@ UEAPI BOOL WINAPI GetProfileType(DWORD *flags)
     *flags = 0;
     return TRUE;
 }
+
+/* Group Policy change events: NovaOS applies no policy, so a registered
+ * event is never signalled; registering and unregistering only check it */
+UEAPI BOOL WINAPI RegisterGPNotification(HANDLE event, BOOL machine)
+{
+    (void)machine;
+    if (!event) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
+}
+UEAPI BOOL WINAPI UnregisterGPNotification(HANDLE event)
+{
+    if (!event) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
+}

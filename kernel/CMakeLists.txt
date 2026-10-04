@@ -132,6 +132,7 @@ set(KERNEL_C_SOURCES
     hal/acpi.c
     hal/aml.c
     hal/ec.c
+    hal/gpio.c
     hal/ioapic.c
     hal/hpet.c
     hal/display.c
@@ -182,6 +183,7 @@ set(KERNEL_C_SOURCES
     um/um_audio.c
     um/um_gpu.c
     um/um_pipe.c
+    um/um_hid.c
     um/um_gui.c
     um/um_services.c
     um/um_registry.c

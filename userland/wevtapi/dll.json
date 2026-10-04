@@ -1,0 +1,3 @@
+{
+  "deps": ["kernel32", "ntdll"]
+}

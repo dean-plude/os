@@ -1670,6 +1670,20 @@ K32 BOOL WINAPI WriteConsoleInputA(HANDLE h, const NOVA_INPUT_RECORD *rec, DWORD
 K32 BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, LPDWORD n) { return con_call(h, 5, 0, 0, n); }
 K32 BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { return con_call(h, 6, 0, 0, 0); }
 K32 BOOL WINAPI GetConsoleMode(HANDLE h, LPDWORD mode) { return con_call(h, 0, 0, 0, mode); }
+/* NovaOS consoles are always windows on the desktop: no full-screen mode */
+K32 BOOL WINAPI GetConsoleDisplayMode(LPDWORD flags)
+{
+    if (!flags) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *flags = 0;
+    return TRUE;
+}
+/* NovaOS starts only from its UEFI loader (bootloader/): FirmwareTypeUefi */
+K32 BOOL WINAPI GetFirmwareType(DWORD *type)
+{
+    if (!type) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *type = 2;
+    return TRUE;
+}
 K32 BOOL WINAPI SetConsoleMode(HANDLE h, DWORD mode) { return con_call(h, 1, 0, mode, 0); }
 K32 BOOL WINAPI GetNumberOfConsoleMouseButtons(LPDWORD n) { *n = 2; return TRUE; }
 

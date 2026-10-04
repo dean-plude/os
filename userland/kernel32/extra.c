@@ -523,16 +523,18 @@ static POBJECT_ATTRIBUTES sec_name(SecName *n, LPCWSTR name)
     return &n->oa;
 }
 
-/* @oa with OBJ_INHERIT when @inherit (an unnamed section gets one) */
-static POBJECT_ATTRIBUTES sec_inherit(SecName *n, POBJECT_ATTRIBUTES oa, BOOL inherit)
+/* @oa with @sa applied: OBJ_INHERIT when it asks, and its security
+ * descriptor (an unnamed section gets attributes for them) */
+static POBJECT_ATTRIBUTES sec_attrs(SecName *n, POBJECT_ATTRIBUTES oa, LPSECURITY_ATTRIBUTES sa)
 {
-    if (!inherit) return oa;
+    if (!sa || (!sa->bInheritHandle && !sa->lpSecurityDescriptor)) return oa;
     if (!oa) {
         memset(&n->oa, 0, sizeof(n->oa));
         n->oa.Length = sizeof(n->oa);
         oa = &n->oa;
     }
-    oa->Attributes |= OBJ_INHERIT;
+    if (sa->bInheritHandle) oa->Attributes |= OBJ_INHERIT;
+    oa->SecurityDescriptor = sa->lpSecurityDescriptor;
     return oa;
 }
 
@@ -561,7 +563,7 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingW(HANDLE file, LPSECURITY_ATTRIBUTES s
     LARGE_INTEGER max;
     max.QuadPart = (LONGLONG)size;
     HANDLE h = 0;
-    NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_inherit(&n, sec_name(&n, name), sa && sa->bInheritHandle), &max, protect & 0xFF,
+    NTSTATUS s = NtCreateSection(&h, 0xF001F /* SECTION_ALL_ACCESS */, sec_attrs(&n, sec_name(&n, name), sa), &max, protect & 0xFF,
                                  0x8000000 /* SEC_COMMIT */, file);
     if (!NT_SUCCESS(s)) return fail_status(s), (HANDLE)0;
     SetLastError(s == 0x40000000 /* STATUS_OBJECT_NAME_EXISTS */ ? ERROR_ALREADY_EXISTS : 0);
@@ -577,13 +579,12 @@ WINBASEAPI HANDLE WINAPI CreateFileMappingA(HANDLE file, LPSECURITY_ATTRIBUTES s
 
 WINBASEAPI HANDLE WINAPI OpenFileMappingW(DWORD access, BOOL inherit, LPCWSTR name)
 {
-    (void)access;
     SecName n;
     POBJECT_ATTRIBUTES oa = sec_name(&n, name);
     if (!oa) { SetLastError(ERROR_INVALID_PARAMETER); return 0; }
-    oa = sec_inherit(&n, oa, inherit);
+    if (inherit) oa->Attributes |= OBJ_INHERIT;
     HANDLE h = 0;
-    NTSTATUS s = NtOpenSection(&h, 0xF001F, oa);
+    NTSTATUS s = NtOpenSection(&h, access, oa);           /* (FILE_MAP_* are SECTION_* rights) */
     if (!NT_SUCCESS(s)) {
         if (s == (NTSTATUS)0xC0000034) SetLastError(ERROR_FILE_NOT_FOUND);
         else fail_status(s);
@@ -923,8 +924,13 @@ static char *env_utf8(LPVOID env, BOOL unicode, SIZE_T *len)
     return b;
 }
 
+static const HANDLE *handle_list(DWORD flags, const void *si, DWORD cb, SIZE_T *n);
+
+/* @list (@nlist handles): STARTUPINFOEX's handle list, the only handles
+ * the child inherits (NULL: every inheritable one) */
 static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE std[3], BOOL inherit,
-                           DWORD flags, LPVOID env, const void *rt, WORD rt_len, LPPROCESS_INFORMATION pi)
+                           DWORD flags, LPVOID env, const void *rt, WORD rt_len, const HANDLE *list, SIZE_T nlist,
+                           LPPROCESS_INFORMATION pi)
 {
     char name[MAX_PATH], image[MAX_PATH], cwdbuf[MAX_PATH];
     if (app) {
@@ -965,6 +971,12 @@ static BOOL create_process(const char *app, char *cmd, const char *dir, HANDLE s
     io.Flags = (inherit ? 1 : 0) | ((flags & (DETACHED_PROCESS | CREATE_NO_WINDOW)) ? 2 : 0) |
                ((flags & CREATE_SUSPENDED) ? 4 : 0);
     if ((flags & CREATE_NEW_CONSOLE) && !(flags & DETACHED_PROCESS)) io.Flags |= 8;
+    if (list) {
+        if (!inherit) { zfree(envb); zfree(batch); SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+        io.Flags |= 16;
+        io.HandleList = list;
+        io.HandleCount = nlist;
+    }
     io.Environment = envb;
     io.EnvironmentSize = env_len;
     if (rt && rt_len) { io.RuntimeData = rt; io.RuntimeDataSize = rt_len; }
@@ -1004,8 +1016,10 @@ WINBASEAPI BOOL WINAPI CreateProcessA(LPCSTR app, LPSTR cmd, LPSECURITY_ATTRIBUT
     HANDLE std[3];
     if (!app && !cmd) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     std_handles(si ? si->dwFlags : 0, flags, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    SIZE_T nlist;
+    const HANDLE *list = handle_list(flags, si, si ? si->cb : 0, &nlist);
     return create_process(app, cmd, dir, std, inherit, flags, env,
-                          si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
+                          si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, list, nlist, pi);
 }
 
 WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta, BOOL inherit,
@@ -1022,8 +1036,10 @@ WINBASEAPI BOOL WINAPI CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIB
     }
     HANDLE std[3];
     std_handles(si ? si->dwFlags : 0, flags, si ? si->hStdInput : 0, si ? si->hStdOutput : 0, si ? si->hStdError : 0, std);
+    SIZE_T nlist;
+    const HANDLE *list = handle_list(flags, si, si ? si->cb : 0, &nlist);
     BOOL ok = create_process(app ? wide_to_temp(app, a, sizeof(a)) : 0, c, dir ? wide_to_temp(dir, d, sizeof(d)) : 0,
-                             std, inherit, flags, env, si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, pi);
+                             std, inherit, flags, env, si ? si->lpReserved2 : 0, si ? si->cbReserved2 : 0, list, nlist, pi);
     zfree(c);
     return ok;
 }
@@ -1055,20 +1071,55 @@ WINBASEAPI DWORD WINAPI GetProcessId(HANDLE h)
     return (DWORD)info[0];
 }
 
+/* A process/thread attribute list, in the caller's buffer: room for @max
+ * attributes, @count set.  CreateProcess reads the handle list
+ * (PROC_THREAD_ATTRIBUTE_HANDLE_LIST); the others (parent process, pseudo
+ * console, mitigation policies) are kept and not acted on. */
+typedef struct { DWORD_PTR attr; PVOID value; SIZE_T size; } ProcAttr;
+typedef struct { DWORD max, count; BYTE pad[40]; ProcAttr a[1]; } ProcAttrList;
+
 WINBASEAPI BOOL WINAPI InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST l, DWORD n, DWORD flags, PSIZE_T size)
 {
-    (void)flags;
+    if (flags) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     SIZE_T need = 48 + (SIZE_T)n * 24;
     if (!l || *size < need) { *size = need; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
     memset(l, 0, need);
+    ((ProcAttrList *)l)->max = n;
     return TRUE;
 }
 
 WINBASEAPI BOOL WINAPI UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST l, DWORD flags, DWORD_PTR attr, PVOID v, SIZE_T n,
                                                  PVOID prev, PSIZE_T ret)
 {
-    (void)l; (void)flags; (void)attr; (void)v; (void)n; (void)prev; (void)ret;
-    return TRUE;                            /* attributes (handle lists, pseudo consoles) are ignored */
+    (void)prev; (void)ret;
+    ProcAttrList *pl = (ProcAttrList *)l;
+    if (!pl || flags) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (attr == PROC_THREAD_ATTRIBUTE_HANDLE_LIST && (!v || !n || n % sizeof(HANDLE))) {
+        SetLastError(ERROR_BAD_LENGTH);
+        return FALSE;
+    }
+    for (DWORD i = 0; i < pl->count; i++)
+        if (pl->a[i].attr == attr) { SetLastError(5010 /* ERROR_OBJECT_NAME_EXISTS */); return FALSE; }   /* (each once, as on Windows) */
+    if (pl->count >= pl->max) { SetLastError(ERROR_GEN_FAILURE); return FALSE; }
+    pl->a[pl->count].attr = attr;
+    pl->a[pl->count].value = v;
+    pl->a[pl->count].size = n;
+    pl->count++;
+    return TRUE;
+}
+
+/* The handle list of STARTUPINFOEX's attribute list, or NULL */
+static const HANDLE *handle_list(DWORD flags, const void *si, DWORD cb, SIZE_T *n)
+{
+    *n = 0;
+    if (!(flags & EXTENDED_STARTUPINFO_PRESENT) || !si || cb < sizeof(STARTUPINFOEXW)) return 0;
+    const ProcAttrList *pl = (const ProcAttrList *)((const STARTUPINFOEXW *)si)->lpAttributeList;
+    for (DWORD i = 0; pl && i < pl->count; i++)
+        if (pl->a[i].attr == PROC_THREAD_ATTRIBUTE_HANDLE_LIST) {
+            *n = pl->a[i].size / sizeof(HANDLE);
+            return pl->a[i].value;
+        }
+    return 0;
 }
 
 WINBASEAPI VOID WINAPI DeleteProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST l) { (void)l; }
@@ -1268,6 +1319,40 @@ WINBASEAPI BOOL WINAPI SetThreadContext(HANDLE t, const CONTEXT *c)
     NTSTATUS s = NtSetContextThread(t, c);
     return NT_SUCCESS(s) ? TRUE : fail_status(s);
 }
+
+#ifdef _WIN64
+/* WOW64_CONTEXT: an x86 CONTEXT as a 64-bit debugger sees a 32-bit thread */
+typedef struct {
+    DWORD ContextFlags;
+    DWORD Dr0, Dr1, Dr2, Dr3, Dr6, Dr7;
+    BYTE  FloatSave[112];
+    DWORD SegGs, SegFs, SegEs, SegDs;
+    DWORD Edi, Esi, Ebx, Edx, Ecx, Eax;
+    DWORD Ebp, Eip, SegCs, EFlags, Esp, SegSs;
+    BYTE  ExtendedRegisters[512];
+} WOW64_CONTEXT_;
+
+/* A 32-bit NovaOS thread runs on the CPU's own registers, so its x86 view
+ * is the low half of each one; the FXSAVE image is shared as it is. */
+WINBASEAPI BOOL WINAPI Wow64GetThreadContext(HANDLE t, WOW64_CONTEXT_ *w)
+{
+    if (!w) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    CONTEXT c;
+    memset(&c, 0, sizeof c);
+    c.ContextFlags = CONTEXT_ALL;
+    if (!GetThreadContext(t, &c)) return FALSE;
+    DWORD want = w->ContextFlags;
+    if (want & 0x01) { w->Ebp = (DWORD)c.Rbp; w->Eip = (DWORD)c.Rip; w->SegCs = c.SegCs; w->EFlags = c.EFlags;
+                       w->Esp = (DWORD)c.Rsp; w->SegSs = c.SegSs; }
+    if (want & 0x02) { w->Edi = (DWORD)c.Rdi; w->Esi = (DWORD)c.Rsi; w->Ebx = (DWORD)c.Rbx; w->Edx = (DWORD)c.Rdx;
+                       w->Ecx = (DWORD)c.Rcx; w->Eax = (DWORD)c.Rax; }
+    if (want & 0x04) { w->SegGs = c.SegGs; w->SegFs = c.SegFs; w->SegEs = c.SegEs; w->SegDs = c.SegDs; }
+    if (want & 0x10) { w->Dr0 = (DWORD)c.Dr0; w->Dr1 = (DWORD)c.Dr1; w->Dr2 = (DWORD)c.Dr2; w->Dr3 = (DWORD)c.Dr3;
+                       w->Dr6 = (DWORD)c.Dr6; w->Dr7 = (DWORD)c.Dr7; }
+    if (want & 0x20) memcpy(w->ExtendedRegisters, &c.FltSave, sizeof w->ExtendedRegisters);
+    return TRUE;
+}
+#endif
 
 /* ntdll's unwinder and friends, under their kernel32 names */
 __asm__(".section .drectve,\"yn\"\n\t"

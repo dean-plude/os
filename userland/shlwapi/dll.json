@@ -5,6 +5,8 @@
   "ordinals": {
     "ParseURLA": 1,
     "ParseURLW": 2,
-    "SHCreateMemStream": 12
+    "SHCreateMemStream": 12,
+    "QISearch": 219,
+    "IsOS": 437
   }
 }

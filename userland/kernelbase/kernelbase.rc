@@ -1,0 +1,30 @@
+/* kernelbase.rc — kernelbase's version resource, the Windows build ntdll reports
+ * (ntdll.rc).  Chromium reads it (base::win::OSInfo::Kernel32BaseVersion,
+ * kernelbase.dll first, then kernel32.dll) and stops when neither has one. */
+1 VERSIONINFO
+FILEVERSION 10,0,18362,1
+PRODUCTVERSION 10,0,18362,1
+FILEFLAGSMASK 0x3F
+FILEFLAGS 0
+FILEOS 0x40004
+FILETYPE 2
+FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "NovaOS"
+            VALUE "FileDescription", "Windows NT BASE API Client DLL"
+            VALUE "FileVersion", "10.0.18362.1"
+            VALUE "InternalName", "kernelbase.dll"
+            VALUE "OriginalFilename", "kernelbase.dll"
+            VALUE "ProductName", "NovaOS"
+            VALUE "ProductVersion", "10.0.18362.1"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
