@@ -6,6 +6,7 @@
   signature on the runtime's package~~ Done (`authtest`); ~~Edge Update
   seeing its own install running~~ Done (`proclisttest`); ~~delete on
   close~~ Done (`filetest`); ~~the runtime's setup unpacking its archive,
-  `wer.dll`~~ Done (`wvsetuptest`).  Still to do: the folder the setup is
-  refused inside its install folder ("Access is denied"), Windows'
-  `WOW6432Node` registry view, then the Chromium runtime itself.
+  `wer.dll`~~ Done (`wvsetuptest`); ~~the setup's permissions on its
+  install folder~~ Done (`acltest`).  Still to do: the Chromium runtime
+  itself, and Windows' `WOW6432Node` registry view for machine-wide
+  installs.

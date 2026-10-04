@@ -367,7 +367,8 @@ enforced when files are opened, deleted and renamed, and survive a
 restart.  A file without a descriptor of its own inherits from its
 folders, as on Windows; the new volume's root gives the user full control
 of what they create.  On FAT, C: is the folder `\NOVA\C`, and ACLs last
-only until restart.  Files from the OS image keep no descriptor across a
+only until restart; its root has the same permissions as a new NTFS
+volume's (Windows' for `C:\`), which folders without their own inherit.  Files from the OS image keep no descriptor across a
 restart either way.
 
 Saving runs on its own kernel thread and keeps no lock while the disk is

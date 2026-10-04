@@ -10,11 +10,11 @@
 # then unpacks the runtime's package, accepts Microsoft's signature on it
 # and starts the runtime's own setup (Chromium's mini_installer and
 # setup.exe), which maps and unpacks its 728 MB archive, copies the
-# runtime in, is then refused a folder inside it and rolls back, so
-# nothing is installed yet; the installer then deletes its temporary
-# files on close, which must not loop (docs/compatibility.md).  Once the setup passes, the next test expects
-# the runtime's files in C:\Programs\Microsoft\EdgeWebView.
-DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which unpacks the runtime but rolls back on a refused folder)'
+# runtime in, adds an entry to its folder's permissions and installs the
+# runtime; the installer then deletes its temporary files on close, which
+# must not loop (docs/compatibility.md).  The runtime itself
+# (msedgewebview2.exe) is not run yet.
+DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which installs the runtime)'
 import os, shutil
 
 INSTALLER = 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe'
