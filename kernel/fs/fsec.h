@@ -4,8 +4,11 @@
  * A node may carry a security descriptor (RamNode.sd, self-relative).  One
  * without inherits from the nearest directory above that has one: the
  * ACEs it passes to files (OBJECT_INHERIT) or directories
- * (CONTAINER_INHERIT), with CREATOR OWNER standing for the node's owner,
- * who is the user.  With no descriptor anywhere above, a node has no DACL
+ * (CONTAINER_INHERIT; a directory shows the ones meant only for files as
+ * inherit-only), with CREATOR OWNER standing for the node's owner, who is
+ * the user.  A DACL keeps its SE_DACL_PROTECTED and SE_DACL_AUTO_INHERITED
+ * bits; advapi32's SetNamedSecurityInfo merges a folder's inheritable
+ * entries into an unprotected DACL, as Windows does.  With no descriptor anywhere above, a node has no DACL
  * and everyone may do anything, as on FAT.
  *
  * Access is checked as the calling thread's effective token (its
