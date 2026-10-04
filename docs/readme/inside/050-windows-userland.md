@@ -12,7 +12,7 @@
   Boost.Math under `msvcp140_2`'s special math functions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
   hooks, per-monitor and per-thread DPI awareness with `WM_DPICHANGED`, controls and fonts at each window's DPI and rescaled when it changes, window coordinates converted between awareness contexts,
-  touch, pens and the mouse as `WM_POINTER` messages with `GetPointerPenInfo`, title bars included, and the pen signature in `GetMessageExtraInfo`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
+  touch, pens and the mouse as `WM_POINTER` messages with `GetPointerPenInfo`, title bars included, and the pen signature in `GetMessageExtraInfo`; `SetCursorPos` and `ClipCursor` for the window in front, as games recentre and confine the pointer), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
   as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
