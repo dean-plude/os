@@ -48,9 +48,12 @@
   MIT-licensed cnc-ddraw, every surface in memory and the screen drawn
   with Direct3D 9, OpenGL or GDI, in a display mode switched for the
   program), `dinput` (DirectInput 3 to 7, over the same devices as
-  `dinput8`), and
+  `dinput8`), `d3dcompiler_47` (the HLSL compiler: Wine's vkd3d-shader,
+  LGPL-2.1, turns HLSL into Direct3D 9, 10 and 11 bytecode for Chromium's
+  ANGLE and for games, with `D3DReflect`, `D3DDisassemble` and the shader
+  container parts), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
-  `dhcpcsvc`, `d3dcompiler_47`), the ones Qt WebEngine imports
+  `dhcpcsvc`), the ones Qt WebEngine imports
   (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12
   device or WinUSB device, as on a PC without them, with Bluetooth's SDP
   record parsers working in full), and more.
