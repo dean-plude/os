@@ -370,6 +370,29 @@ static BOOL attach_new_modules(int first)
     return TRUE;
 }
 
+/* A DLL the program imports returned FALSE from its DllMain while the
+ * process started: as on Windows, the process ends with
+ * STATUS_DLL_INIT_FAILED (0xC0000142, "The application was unable to
+ * start correctly") before the program's entry point runs, and without
+ * attaching the DLLs after it (a UPX-packed DLL that refuses to load has
+ * not even relocated itself, so going on would crash in it later) */
+static void init_failed(void)
+{
+    char msg[160] = "[LDR] process start failed: DllMain of ";
+    int n = (int)strlen(msg);
+    for (int i = 0; i < g_nmod; i++)
+        if (g_mod[i].attached && g_mod[i].is_dll && !(g_mod[i].entry.Flags & LDRP_PROCESS_ATTACH_CALLED)) {
+            for (const char *c = g_mod[i].name; *c && n < 120; c++) msg[n++] = *c;
+            break;
+        }
+    const char *tail = " returned FALSE (0xC0000142)\n";
+    for (const char *c = tail; *c; c++) msg[n++] = *c;
+    msg[n] = 0;
+    NtNovaDebugPrint(msg, (ULONG)n);
+    NtTerminateProcess(NtCurrentProcess(), STATUS_DLL_INIT_FAILED);
+    for (;;) NtYieldExecution();
+}
+
 static void ldr_init_process(void)
 {
     PPEB peb = RtlGetCurrentPeb();
@@ -384,7 +407,7 @@ static void ldr_init_process(void)
     RtlNovaInitExceptions();
     int first = absorb_new_modules();
     setup_thread_tls();                              /* first thread's TLS before any DllMain */
-    attach_new_modules(first);
+    if (!attach_new_modules(first)) init_failed();
     g_process_ready = 1;
     ntdll_run_apcs();                                /* APCs the DLLs queued to this thread (as Windows) */
 }
