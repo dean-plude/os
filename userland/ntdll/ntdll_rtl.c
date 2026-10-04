@@ -1254,18 +1254,6 @@ NTSYSAPI NTSTATUS NTAPI NtTestAlert(void)
 /* Whether the process is shutting down (DLL_PROCESS_DETACH at exit) */
 NTSYSAPI BOOLEAN NTAPI RtlDllShutdownInProgress(void) { extern BOOLEAN g_shutdown; return g_shutdown; }
 
-/* Device I/O controls: no driver here answers them (pipes and the file
- * system use NtFsControlFile) */
-#ifndef _WIN64
-NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
-                                              PVOID in, ULONG in_len, PVOID out, ULONG out_len)
-{
-    (void)h; (void)ev; (void)apc; (void)ctx; (void)code; (void)in; (void)in_len; (void)out; (void)out_len;
-    if (io) { io->Status = (NTSTATUS)0xC0000010; io->Information = 0; }
-    return (NTSTATUS)0xC0000010;                         /* STATUS_INVALID_DEVICE_REQUEST */
-}
-#endif  /* x64: system calls (the stubs in ntdll.c) */
-
 /* The return addresses of the calling stack: @skip frames above this one,
  * at most @count; @hash (optional) gets their sum */
 NTSYSAPI USHORT NTAPI RtlCaptureStackBackTrace(ULONG skip, ULONG count, PVOID *frames, PULONG hash)

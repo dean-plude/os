@@ -66,9 +66,63 @@ static LONG run_vectored(VEH *list, PEXCEPTION_POINTERS info)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Reads @n bytes at @a, false where they are not mapped */
+static BOOLEAN peek(ULONG_PTR a, void *out, SIZE_T n)
+{
+    SIZE_T got = 0;
+    return a && NtReadVirtualMemory((HANDLE)-1, (PVOID)a, out, n, &got) >= 0 && got == n;
+}
+
+/* An unhandled C++ exception (0xE06D7363) ends the process with nothing
+ * but "abnormal program termination" from the program's own filter: the
+ * debug output names what was thrown first, the type from the throw's
+ * ThrowInfo and, for a std::exception, its message */
+static void note_cxx_exception(const EXCEPTION_RECORD *rec)
+{
+    if (rec->ExceptionCode != 0xE06D7363u || rec->NumberParameters < 3) return;
+    ULONG_PTR obj = rec->ExceptionInformation[1], ti = rec->ExceptionInformation[2], base = 0;
+#ifdef _WIN64
+    if (rec->NumberParameters < 4) return;
+    base = rec->ExceptionInformation[3];
+#endif
+    int f[4], n = 0, ct[2];
+    char name[96] = "?", what[160] = "";
+    ULONG_PTR cta, td, str = 0;
+    /* ThrowInfo { attributes, unwind, forward compat, catchable type array }:
+     * image-relative offsets on x64, pointers on x86 */
+    if (ti && peek(ti, f, sizeof(f)) && (cta = base + (ULONG)f[3]) && peek(cta, &n, sizeof(n)) && n > 0 &&
+        peek(cta + 4, &ct[0], sizeof(int)) && peek(base + (ULONG)ct[0] + 4, &ct[1], sizeof(int))) {
+        td = base + (ULONG)ct[1];                       /* TypeDescriptor { vftable, spare, name } */
+        if (!peek(td + 2 * sizeof(void *), name, sizeof(name) - 1)) name[0] = '?', name[1] = 0;
+        name[sizeof(name) - 1] = 0;
+    }
+    /* std::exception { vftable, { const char *what, bool free } } */
+    for (int i = 0; i < n && i < 16; i++) {
+        int c, t;
+        char tn[32];
+        if (!peek(cta + 4 + 4 * (ULONG_PTR)i, &c, sizeof(c)) || !peek(base + (ULONG)c + 4, &t, sizeof(t)) ||
+            !peek(base + (ULONG)t + 2 * sizeof(void *), tn, sizeof(tn))) break;
+        if (!__builtin_memcmp(tn, ".?AVexception@std@@", 20)) {
+            if (peek(obj + sizeof(void *), &str, sizeof(str)) && str) {
+                SIZE_T k = 0;
+                while (k < sizeof(what) - 1 && peek(str + k, &what[k], 1) && what[k]) k++;
+                what[k] = 0;
+            }
+            break;
+        }
+    }
+    char msg[320];
+    SIZE_T m = 0;
+    const char *parts[] = { "unhandled C++ exception ", name, what[0] ? ": " : "", what, "\n" };
+    for (int i = 0; i < 5; i++)
+        for (const char *p = parts[i]; *p && m < sizeof(msg) - 1; p++) msg[m++] = *p;
+    NtNovaDebugPrint(msg, (ULONG)m);
+}
+
 /* Called by the loader's top-level __except filter (last resort) */
 LONG nova_top_level_filter(PEXCEPTION_POINTERS info)
 {
+    if (info && info->ExceptionRecord) note_cxx_exception(info->ExceptionRecord);
     LONG r = g_top_filter ? g_top_filter(info) : EXCEPTION_EXECUTE_HANDLER;
     /* ending the process: the kernel says where it crashed (second chance) */
     if (r == EXCEPTION_EXECUTE_HANDLER && info && info->ExceptionRecord && info->ContextRecord)
@@ -483,10 +537,11 @@ __asm__(
     ".ascii \" /EXPORT:RtlCaptureContext\"\n\t"
     ".text\n");
 
+static void resume_at(CONTEXT *c);
 VOID NTAPI RtlRestoreContext(PCONTEXT c, PEXCEPTION_RECORD rec)
 {
     (void)rec;
-    NtContinue(c, FALSE);                            /* the kernel reloads and IRETs */
+    resume_at(c);                                    /* the kernel reloads and IRETs */
 }
 
 /* -----------------------------------------------------------------------
@@ -514,21 +569,54 @@ static void set_handler_ctx(DISPATCHER_CONTEXT *dc, DWORD64 control_pc, DWORD64 
  * of Windows' own fields; an entry goes when its handler returns or when
  * an unwind resumes in a frame above it. */
 #define TEB_NOVA_EXC_STATE 0x1F00
-typedef struct ExcState { struct ExcState *prev; CONTEXT *dispatch, *frame_ctx, *target; } ExcState;
+typedef struct ExcState { struct ExcState *prev; CONTEXT *dispatch, *frame_ctx, *target; DWORD64 check; } ExcState;
+#define EXC_STATE_MAGIC 0x4E6F7661457843ull           /* check = address ^ this while the entry is live */
 static ExcState **exc_head(void) { return (ExcState **)(NtCurrentTebBytes() + TEB_NOVA_EXC_STATE); }
 static void exc_push(ExcState *e, CONTEXT *dispatch, CONTEXT *frame_ctx)
 {
     ExcState **h = exc_head();
     e->prev = *h; e->dispatch = dispatch; e->frame_ctx = frame_ctx; e->target = 0;
+    e->check = (DWORD64)e ^ EXC_STATE_MAGIC;
     *h = e;
 }
-static void exc_pop(ExcState *e) { *exc_head() = e->prev; }
+static void exc_pop(ExcState *e) { *exc_head() = e->prev; e->check = 0; }
+/* The live entries, for code running at @sp: those below it were left
+ * by a longjmp or by a handler that resumed with NtContinue (our own
+ * C++ runtime's), and so is an entry that no longer checks out (its
+ * frame reused since); the chain ends before one */
+static ExcState **exc_live(void *sp)
+{
+    ExcState **h = exc_head();
+    while (*h && (DWORD64)*h < (DWORD64)sp) *h = (*h)->prev;
+    for (ExcState **p = h; *p; p = &(*p)->prev)
+        if ((*p)->check != ((DWORD64)*p ^ EXC_STATE_MAGIC)) { *p = 0; break; }
+    return h;
+}
 /* Resuming at @c: what was running below its stack pointer is gone */
 static void resume_at(CONTEXT *c)
 {
-    ExcState **h = exc_head();
-    while (*h && (DWORD64)*h < c->Rsp) *h = (*h)->prev;
+    exc_live((void *)c->Rsp);
     NtContinue(c, FALSE);
+}
+
+/* Walking up from @cur, past the frames handling an outer exception
+ * (@outer and the entries after it): carry on where that exception
+ * happened (its dispatch's CONTEXT) or in the frame whose catch block is
+ * running (a consolidating unwind's target), as the unwind data of
+ * KiUserExceptionDispatcher and of the consolidation frame lead on
+ * Windows, instead of up the dispatcher's own stack, which ends in frames
+ * without unwind data.  Returns the entries still above @cur. */
+static ExcState *past_handling_frames(CONTEXT *cur, ExcState *outer)
+{
+    while (outer && cur->Rsp > (DWORD64)outer) {
+        ExcState *e = outer;
+        CONTEXT *to = e->dispatch ? e->dispatch : e->target;
+        outer = e->prev;
+        if (!to) continue;
+        *cur = *to;
+        while (outer && (DWORD64)outer < cur->Rsp) outer = outer->prev;
+    }
+    return outer;
 }
 
 /* Is @sp a frame on this thread's stack (TEB DeallocationStack, or
@@ -551,8 +639,13 @@ BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
     if (run_vectored(g_veh, &ep) == EXCEPTION_CONTINUE_EXECUTION) return TRUE;
 
     CONTEXT cur = *ctx;                              /* walked; the original stays for resume */
+    /* Raised in a handler or in a catch block (MSVC's C++ runtime runs it
+     * from RtlUnwindEx's consolidation callback, a rethrow or a new
+     * throw): the frames above the one it is handling are searched too */
+    ExcState *outer = *exc_live(&cur);
     for (;;) {
         DWORD64 base = 0, frame = 0;
+        outer = past_handling_frames(&cur, outer);
         if (!on_stack(cur.Rsp)) { rec->ExceptionFlags |= EXCEPTION_STACK_INVALID; break; }
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
         if (!f) {
@@ -609,8 +702,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
     if (!target_frame) rec->ExceptionFlags |= EXCEPTION_EXIT_UNWIND;
 
     CONTEXT cur;
-    ExcState **h = exc_head();
-    while (*h && (DWORD64)*h < (DWORD64)&cur) *h = (*h)->prev;    /* left by a longjmp */
+    ExcState **h = exc_live(&cur);
     ExcState *in = *h;
     if (in && !in->dispatch && !in->frame_ctx) in = 0;              /* (in a catch block) */
     if (in && in->frame_ctx) {
@@ -633,14 +725,7 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
          * where that exception happened, as KiUserExceptionDispatcher's
          * unwind data leads on Windows, instead of up the dispatcher's own
          * stack, which never reaches the target frame */
-        while (outer && cur.Rsp > (DWORD64)outer) {
-            ExcState *e = outer;
-            CONTEXT *to = e->dispatch ? e->dispatch : e->target;
-            outer = e->prev;
-            if (!to) continue;
-            cur = *to;
-            while (outer && (DWORD64)outer < cur.Rsp) outer = outer->prev;
-        }
+        outer = past_handling_frames(&cur, outer);
         if (!on_stack(cur.Rsp)) break;               /* (Windows raises STATUS_BAD_STACK) */
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
         if (!f) {

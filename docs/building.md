@@ -459,7 +459,7 @@ requests never go red on the runner alone.  Every job's summary and the corpus t
 the test VMs used.
 
 The graphics suite downloads 7-Zip, Mesa and DXVK, builds Venus
-(`tools/build_venus.py`) and gltest/d3dtest/d2dtest/dwtest, and runs on a
+(`tools/build_venus.py`) and gltest/d3dtest/d2dtest/dwtest/dw3test, and runs on a
 QEMU with Venus (`tools/ci/build-qemu-venus.sh`; without one the first
 monitor is a standard VGA and the Venus tests fail) with an OpenGL display,
 so on a machine without a screen it runs under `xvfb-run`:
@@ -616,8 +616,13 @@ a DC render target and compares it with `d2dref.bmp`, the image
 re-run it when the scene changes), then shows the scene in a window.  Next
 `dwtest`, x64 and x86, lays out Latin, Arabic and Devanagari in one line
 with DirectWrite from a Latin-only font and checks the fallback fonts, the
-shaping, the direction and the drawing, and shows the line in a window.  It
-then types `store
+shaping, the direction and the drawing, and shows the line in a window.
+`dw3test`, x64 and x86, goes through DirectWrite's Windows 10 font model
+as Chromium and Skia use it: `IDWriteFactory2` and `IDWriteFactory3`, the
+system font set and face references, matching by full and PostScript
+name, set builders and collections made from sets, `IDWriteFont3` and
+`IDWriteFontFace3`, the system font fallback and a built one, grayscale
+glyph run analysis and rendering params.  It then types `store
 install Mesa 3D`, `store install DXVK` and `store install Venus` (the
 archives are already in `C:\Downloads`, so the App Store installs without
 a network) and then runs `gltest` (on virgl and, with

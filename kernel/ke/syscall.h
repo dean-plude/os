@@ -245,6 +245,10 @@
 #define SYSCALL_NtQueryFullAttributesFile         0x0140
 #define SYSCALL_NtAlertThreadByThreadId           0x006F
 #define SYSCALL_NtWaitForAlertByThreadId          0x01CA
+#define SYSCALL_NtCreateKeyedEvent                0x00AC
+#define SYSCALL_NtOpenKeyedEvent                  0x011E
+#define SYSCALL_NtReleaseKeyedEvent               0x0168
+#define SYSCALL_NtWaitForKeyedEvent               0x01CC
 /* Services ntdll used to answer itself (um_services.c) */
 #define SYSCALL_NtSetEaFile                       0x018B
 #define SYSCALL_NtQueryEaFile                     0x013F

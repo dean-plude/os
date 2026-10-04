@@ -7,8 +7,13 @@
 # kernel.new once and the new kernel makes it the installed one), and
 # restarts cleanly again.  Then v2's update is staged, and the machine is
 # reset while the new kernel is still starting: the next start goes back
-# to the v1 kernel and throws the update away.  Both channels are signed
+# to the v1 kernel and throws the update away.  Every channel is signed
 # with the self-tests' key (005-signature.py).
+#
+# Version order around the rolling build's channel (docs/updates.md): first
+# a channel of this very version (same/) is up to date and a development
+# build of it (dev/, "0.1.0+dev.<time>" as .github/workflows/ci.yml stamps
+# main's) is newer; once v1 ("0.1.1-test") is installed, dev/ is older.
 import os, re, time
 
 DOC = ('an installed NovaOS updating itself from an update channel to a newer test build, restarting into it '
@@ -29,6 +34,7 @@ def _version():
 
 
 VER, V1, V2 = _version()
+DEV = VER + '+dev.20261004125600'
 CHANNEL = 'http://10.0.2.2:18090/{}/novaos-update.txt'
 
 
@@ -55,6 +61,12 @@ def E(v):
 
 
 TESTS = [
+    Test('same channel', f'update channel {CHANNEL.format("same")}', [r'Update channel: http://10\.0\.2\.2:18090/same/'],
+         builtin=True),
+    Test('same version up to date', 'update', [rf'NovaOS {E(VER)} is up to date'], builtin=True, timeout=120),
+    Test('dev channel', f'update channel {CHANNEL.format("dev")}', [r'Update channel: http://10\.0\.2\.2:18090/dev/'],
+         builtin=True),
+    Test('dev build newer', 'update', [rf'NovaOS {E(DEV)} is available \('], builtin=True, timeout=120),
     Test('update channel', f'update channel {CHANNEL.format("v1")}', [r'Update channel: http://10\.0\.2\.2:18090/v1/'],
          builtin=True),
     Test('update check', 'update', [rf'NovaOS {E(V1)} is available \(', r"Type 'update install'"], builtin=True, timeout=120,
@@ -67,6 +79,9 @@ TESTS = [
          boot_expect=[rf'\[UPDATE\] Updated NovaOS from {E(VER)} to {E(V1)}']),
     Test('restart again', 'shutdown /r', [rf'\[version {E(V1)}\]'], reboot=True, timeout=600),
     Test('up to date', 'update', [rf'NovaOS {E(V1)} is up to date'], builtin=True, timeout=120),
+    Test('dev channel again', f'update channel {CHANNEL.format("dev")}',
+         [r'Update channel: http://10\.0\.2\.2:18090/dev/'], builtin=True),
+    Test('dev build older', 'update', [rf'NovaOS {E(V1)} is up to date'], builtin=True, timeout=120),
     Test('next update', f'update channel {CHANNEL.format("v2")}', [r'Update channel: http://10\.0\.2\.2:18090/v2/'],
          builtin=True),
     Test('stage it', 'update install', [rf'NovaOS {E(V2)} is ready: restart'], builtin=True, timeout=900),

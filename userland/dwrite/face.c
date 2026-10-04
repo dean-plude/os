@@ -1,7 +1,7 @@
 /*
- * face.c — NovaOS DirectWrite: font faces (IDWriteFontFace1), glyph run
- * outlines and glyph run analysis (the anti-aliased coverage that
- * renderers such as Skia and Direct2D blend)
+ * face.c — NovaOS DirectWrite: font faces (IDWriteFontFace3), glyph run
+ * outlines, glyph run analysis (the anti-aliased coverage that renderers
+ * such as Skia and Direct2D blend) and color glyph runs (COLR/CPAL layers)
  */
 #include "dwrite_int.h"
 
@@ -17,12 +17,13 @@ FontFace *font_face_from(void *iface)
 static int iround(double x) { return (int)dw_floor(x + 0.5); }
 
 /* -----------------------------------------------------------------------
- * IDWriteFontFace / IDWriteFontFace1
+ * IDWriteFontFace through IDWriteFontFace3
  * ----------------------------------------------------------------------- */
 static HRESULT STDMETHODCALLTYPE fc_qi(FontFace *f, REFIID riid, void **out)
 {
     if (IsEqualGUID(riid, &IID_IUnknown) || IsEqualGUID(riid, &IID_IDWriteFontFace) ||
-        IsEqualGUID(riid, &IID_IDWriteFontFace1)) {
+        IsEqualGUID(riid, &IID_IDWriteFontFace1) || IsEqualGUID(riid, &IID_IDWriteFontFace2) ||
+        IsEqualGUID(riid, &IID_IDWriteFontFace3)) {
         *out = f; InterlockedIncrement(&f->ref); return S_OK;
     }
     *out = NULL;
@@ -289,12 +290,166 @@ static HRESULT STDMETHODCALLTYPE fc_vertical_variants(FontFace *f, UINT32 n, con
 }
 static BOOL STDMETHODCALLTYPE fc_has_vertical(FontFace *f) { (void)f; return FALSE; }
 
+/* ---- color fonts: COLR (version 0 layers) and CPAL palettes ---- */
+static UINT16 be16(const BYTE *p) { return (UINT16)(p[0] << 8 | p[1]); }
+static UINT32 be32(const BYTE *p) { return (UINT32)p[0] << 24 | (UINT32)p[1] << 16 | (UINT32)p[2] << 8 | p[3]; }
+
+typedef struct { const BYTE *colr, *cpal; UINT32 colr_size, cpal_size; } ColorTables;
+
+static BOOL color_tables(const FaceData *f, ColorTables *t)
+{
+    t->colr = sfnt_table(f, "COLR", &t->colr_size);
+    t->cpal = sfnt_table(f, "CPAL", &t->cpal_size);
+    return t->colr && t->cpal && t->colr_size >= 14 && t->cpal_size >= 12;
+}
+BOOL face_is_color(const FaceData *f)
+{
+    ColorTables t;
+    return color_tables(f, &t);
+}
+static UINT32 cpal_palettes(const ColorTables *t) { return be16(t->cpal + 4); }
+static UINT32 cpal_entries(const ColorTables *t) { return be16(t->cpal + 2); }
+/* a palette entry as DWRITE_COLOR_F; FALSE if out of range */
+static BOOL cpal_color(const ColorTables *t, UINT32 palette, UINT32 entry, DW_COLOR_F *c)
+{
+    if (palette >= cpal_palettes(t) || entry >= cpal_entries(t) || 12 + palette * 2 + 2 > t->cpal_size) return FALSE;
+    UINT32 first = be16(t->cpal + 12 + palette * 2);
+    UINT32 off = be32(t->cpal + 8) + (first + entry) * 4;
+    if (off + 4 > t->cpal_size) return FALSE;
+    const BYTE *p = t->cpal + off;          /* blue, green, red, alpha */
+    c->b = p[0] / 255.0f; c->g = p[1] / 255.0f; c->r = p[2] / 255.0f; c->a = p[3] / 255.0f;
+    return TRUE;
+}
+/* the layers of a base glyph: the index of its first layer record and how many */
+static UINT32 colr_layers(const ColorTables *t, UINT16 glyph, UINT32 *first)
+{
+    UINT32 nbase = be16(t->colr + 2), base = be32(t->colr + 4), layers = be32(t->colr + 8), nlayers = be16(t->colr + 12);
+    if (base + nbase * 6 > t->colr_size || layers + nlayers * 4 > t->colr_size) return 0;
+    UINT32 lo = 0, hi = nbase;
+    while (lo < hi) {
+        UINT32 mid = (lo + hi) / 2;
+        const BYTE *r = t->colr + base + mid * 6;
+        UINT16 g = be16(r);
+        if (g == glyph) {
+            UINT32 f = be16(r + 2), n = be16(r + 4);
+            if (f + n > nlayers) return 0;
+            *first = f;
+            return n;
+        }
+        if (g < glyph) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+
+/* ---- IDWriteFontFace2 ---- */
+static BOOL STDMETHODCALLTYPE fc_is_color(FontFace *f) { return face_is_color(f->face); }
+static UINT32 STDMETHODCALLTYPE fc_palette_count(FontFace *f)
+{
+    ColorTables t;
+    return color_tables(f->face, &t) ? cpal_palettes(&t) : 0;
+}
+static UINT32 STDMETHODCALLTYPE fc_palette_entry_count(FontFace *f)
+{
+    ColorTables t;
+    return color_tables(f->face, &t) ? cpal_entries(&t) : 0;
+}
+static HRESULT STDMETHODCALLTYPE fc_palette_entries(FontFace *f, UINT32 palette, UINT32 first, UINT32 n, DW_COLOR_F *out)
+{
+    ColorTables t;
+    if (!color_tables(f->face, &t)) return DWRITE_E_NOCOLOR;
+    if (palette >= cpal_palettes(&t) || first > cpal_entries(&t) || n > cpal_entries(&t) - first) return E_INVALIDARG;
+    for (UINT32 i = 0; i < n; i++)
+        if (!cpal_color(&t, palette, first + i, &out[i])) return E_INVALIDARG;
+    return S_OK;
+}
+static UINT32 grid_fit(UINT32 mode, void *params)
+{
+    if (params) {
+        void *p2 = NULL;
+        if (SUCCEEDED(COM_QI(params, &IID_IDWriteRenderingParams2, &p2)) && p2) {
+            UINT32 g = ((UINT32 (STDMETHODCALLTYPE *)(void *))VT(p2)[9])(p2);
+            COM_RELEASE(p2);
+            if (g != GRID_FIT_DEFAULT) return g;
+        }
+    }
+    return mode == RMODE_GDI_CLASSIC || mode == RMODE_GDI_NATURAL || mode == RMODE_ALIASED ? GRID_FIT_ENABLED : GRID_FIT_DISABLED;
+}
+static HRESULT STDMETHODCALLTYPE fc_recommended2(FontFace *f, float em, float dpi_x, float dpi_y, const DW_MATRIX *t,
+                                                 BOOL sideways, UINT32 threshold, UINT32 measuring, void *params,
+                                                 UINT32 *mode, UINT32 *gridfit)
+{
+    (void)f; (void)dpi_x; (void)sideways; (void)threshold;
+    *mode = recommend(pixel_em(em, dpi_y / 96.0f, t), measuring, params);
+    *gridfit = grid_fit(*mode, params);
+    return S_OK;
+}
+
+/* ---- IDWriteFontFace3 ---- */
+static HRESULT STDMETHODCALLTYPE fc_face_ref(FontFace *f, void **out) { return face_ref_create(f->file, f->index, f->sims, out); }
+static void STDMETHODCALLTYPE fc_panose(FontFace *f, BYTE *p) { memcpy(p, f->face->panose, 10); }
+static UINT32 STDMETHODCALLTYPE fc_weight(FontFace *f) { return f->face->weight; }
+static UINT32 STDMETHODCALLTYPE fc_stretch(FontFace *f) { return f->face->stretch; }
+static UINT32 STDMETHODCALLTYPE fc_style(FontFace *f)
+{
+    return (f->sims & SIM_OBLIQUE) && f->face->style == STYLE_NORMAL ? STYLE_OBLIQUE : f->face->style;
+}
+static HRESULT names_of(FontFace *f, UINT32 id, UINT32 fallback, void **out)
+{
+    WCHAR s[256];
+    if (!face_info_string(f->face, id, s, 256) && !face_info_string(f->face, fallback, s, 256)) s[0] = 0;
+    return dw_locstrings(s, out);
+}
+/* the weight/stretch/style family and face names (informational strings 19 and 12 as fallbacks) */
+static HRESULT STDMETHODCALLTYPE fc_family_names(FontFace *f, void **out) { return names_of(f, 19, 13, out); }
+static HRESULT STDMETHODCALLTYPE fc_face_names(FontFace *f, void **out) { return names_of(f, 14, 12, out); }
+static HRESULT STDMETHODCALLTYPE fc_info_strings(FontFace *f, UINT32 id, void **out, BOOL *exists)
+{
+    WCHAR s[256];
+    *out = NULL;
+    *exists = face_info_string(f->face, id, s, 256) != 0;
+    return *exists ? dw_locstrings(s, out) : S_OK;
+}
+static BOOL STDMETHODCALLTYPE fc_has_char(FontFace *f, UINT32 cp) { return face_glyph_index(f->face, cp) != 0; }
+static HRESULT STDMETHODCALLTYPE fc_recommended3(FontFace *f, float em, float dpi_x, float dpi_y, const DW_MATRIX *t,
+                                                 BOOL sideways, UINT32 threshold, UINT32 measuring, void *params,
+                                                 UINT32 *mode, UINT32 *gridfit)
+{
+    HRESULT hr = fc_recommended2(f, em, dpi_x, dpi_y, t, sideways, threshold, measuring, params, mode, gridfit);
+    if (params) {                     /* IDWriteRenderingParams3 carries a DWRITE_RENDERING_MODE1 */
+        void *p3 = NULL;
+        if (SUCCEEDED(COM_QI(params, &IID_IDWriteRenderingParams3, &p3)) && p3) {
+            UINT32 m = ((UINT32 (STDMETHODCALLTYPE *)(void *))VT(p3)[10])(p3);
+            COM_RELEASE(p3);
+            if (m != RMODE_DEFAULT) *mode = m;
+        }
+    }
+    return hr;
+}
+/* every font is a local file: nothing is ever downloaded */
+static BOOL STDMETHODCALLTYPE fc_char_local(FontFace *f, UINT32 cp) { (void)f; (void)cp; return TRUE; }
+static BOOL STDMETHODCALLTYPE fc_glyph_local(FontFace *f, UINT16 g) { (void)f; (void)g; return TRUE; }
+static HRESULT STDMETHODCALLTYPE fc_chars_local(FontFace *f, const WCHAR *s, UINT32 n, BOOL enqueue, BOOL *local)
+{
+    (void)f; (void)s; (void)n; (void)enqueue;
+    *local = TRUE;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE fc_glyphs_local(FontFace *f, const UINT16 *g, UINT32 n, BOOL enqueue, BOOL *local)
+{
+    (void)f; (void)g; (void)n; (void)enqueue;
+    *local = TRUE;
+    return S_OK;
+}
+
 const void *const face_vtbl[] = {
     fc_qi, fc_addref, fc_release, fc_type, fc_files, fc_index, fc_sims, fc_symbol, fc_metrics, fc_glyph_count,
     fc_design_glyph_metrics, fc_glyph_indices, fc_table, fc_release_table, fc_outline, fc_recommended,
     fc_gdi_metrics, fc_gdi_glyph_metrics,
     fc_metrics1, fc_gdi_metrics1, fc_caret, fc_ranges, fc_mono, fc_design_advances, fc_gdi_advances,
     fc_kerning, fc_has_kerning, fc_recommended1, fc_vertical_variants, fc_has_vertical,
+    fc_is_color, fc_palette_count, fc_palette_entry_count, fc_palette_entries, fc_recommended2,
+    fc_face_ref, fc_panose, fc_weight, fc_stretch, fc_style, fc_family_names, fc_face_names, fc_info_strings,
+    fc_has_char, fc_recommended3, fc_char_local, fc_glyph_local, fc_chars_local, fc_glyphs_local,
 };
 
 HRESULT font_face_create(FontFile *file, UINT32 index, UINT32 sims, FontFace **out)
@@ -325,6 +480,7 @@ typedef struct {
     const void *const *vtbl;
     LONG   ref;
     UINT32 mode;
+    UINT32 tex;             /* the texture type the coverage is in */
     RECT   bounds;          /* device pixels; empty when the run draws nothing */
     BYTE  *alpha;           /* 8-bit coverage over bounds */
 } Analysis;
@@ -344,10 +500,7 @@ static ULONG STDMETHODCALLTYPE an_release(Analysis *a)
     if (!r) { dw_free(a->alpha); dw_free(a); }
     return (ULONG)r;
 }
-static BOOL type_matches(Analysis *a, UINT32 type)
-{
-    return (a->mode == RMODE_ALIASED) == (type == TEX_ALIASED_1x1);
-}
+static BOOL type_matches(Analysis *a, UINT32 type) { return a->tex == type; }
 static HRESULT STDMETHODCALLTYPE an_bounds(Analysis *a, UINT32 type, RECT *r)
 {
     if (type > TEX_CLEARTYPE_3x1) return E_INVALIDARG;
@@ -404,7 +557,7 @@ static void glyph_matrix(const DW_MATRIX *m, float s, float shear, float gx, flo
     g->dy = gx * m->m12 + gy * m->m22 + m->dy;
 }
 
-HRESULT glyph_run_analysis_create(const DW_GLYPH_RUN *run, float ppd, const DW_MATRIX *t, UINT32 mode,
+HRESULT glyph_run_analysis_create(const DW_GLYPH_RUN *run, float ppd, const DW_MATRIX *t, UINT32 mode, UINT32 aa,
                                   float ox, float oy, void **out)
 {
     *out = NULL;
@@ -416,6 +569,8 @@ HRESULT glyph_run_analysis_create(const DW_GLYPH_RUN *run, float ppd, const DW_M
     a->vtbl = an_vtbl;
     a->ref = 1;
     a->mode = mode == RMODE_ALIASED ? RMODE_ALIASED : RMODE_NATURAL_SYMMETRIC;
+    /* aliased runs and grayscale anti-aliasing are 1x1 textures, ClearType ones 3x1 */
+    a->tex = mode == RMODE_ALIASED || aa == AA_GRAYSCALE ? TEX_ALIASED_1x1 : TEX_CLEARTYPE_3x1;
 
     DW_MATRIX m = t ? *t : (DW_MATRIX){ 1, 0, 0, 1, 0, 0 };
     m.m11 *= ppd; m.m12 *= ppd; m.m21 *= ppd; m.m22 *= ppd; m.dx *= ppd; m.dy *= ppd;
@@ -471,5 +626,126 @@ HRESULT glyph_run_analysis_create(const DW_GLYPH_RUN *run, float ppd, const DW_M
     }
     dw_free(gm);
     *out = a;
+    return S_OK;
+}
+
+/* -----------------------------------------------------------------------
+ * IDWriteColorGlyphRunEnumerator: a glyph run split into one run per color
+ * layer (COLR version 0).  Glyphs with no layers come out as runs of their
+ * own with palette index 0xFFFF: drawn in the text's color.
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    const void *const *vtbl;
+    LONG    ref;
+    UINT32  n, cur;                 /* runs, and 1 + the current one (0 before the first MoveNext) */
+    DW_COLOR_GLYPH_RUN *runs;
+    UINT16 *glyphs;                 /* one per run */
+    float  *advances;
+    DW_GLYPH_OFFSET *offsets;
+    DW_GLYPH_RUN_DESCRIPTION desc;
+    void   *face;
+} ColorRuns;
+
+static HRESULT STDMETHODCALLTYPE cr_qi(ColorRuns *c, REFIID riid, void **out)
+{
+    if (IsEqualGUID(riid, &IID_IUnknown) || IsEqualGUID(riid, &IID_IDWriteColorGlyphRunEnumerator)) {
+        *out = c; InterlockedIncrement(&c->ref); return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static ULONG STDMETHODCALLTYPE cr_addref(ColorRuns *c) { return (ULONG)InterlockedIncrement(&c->ref); }
+static ULONG STDMETHODCALLTYPE cr_release(ColorRuns *c)
+{
+    LONG r = InterlockedDecrement(&c->ref);
+    if (!r) {
+        COM_RELEASE(c->face);
+        dw_free(c->runs); dw_free(c->glyphs); dw_free(c->advances); dw_free(c->offsets);
+        dw_free(c);
+    }
+    return (ULONG)r;
+}
+static HRESULT STDMETHODCALLTYPE cr_next(ColorRuns *c, BOOL *has)
+{
+    if (c->cur < c->n) c->cur++;
+    else c->cur = c->n + 1;
+    *has = c->cur <= c->n;
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE cr_current(ColorRuns *c, const DW_COLOR_GLYPH_RUN **run)
+{
+    if (!c->cur || c->cur > c->n) { *run = NULL; return (HRESULT)0x8007139FL; }   /* E_NOT_VALID_STATE */
+    *run = &c->runs[c->cur - 1];
+    return S_OK;
+}
+static const void *const cr_vtbl[] = { cr_qi, cr_addref, cr_release, cr_next, cr_current };
+
+HRESULT color_glyph_run_translate(float ox, float oy, const DW_GLYPH_RUN *run, const DW_GLYPH_RUN_DESCRIPTION *desc,
+                                  UINT32 palette, void **out)
+{
+    *out = NULL;
+    FontFace *f = run ? font_face_from(run->fontFace) : NULL;
+    if (!f || (run->glyphCount && !run->glyphIndices)) return E_INVALIDARG;
+    ColorTables t;
+    if (!color_tables(f->face, &t)) return DWRITE_E_NOCOLOR;
+    if (palette >= cpal_palettes(&t)) return DWRITE_E_NOCOLOR;
+    UINT32 total = 0;
+    BOOL any = FALSE;
+    for (UINT32 i = 0; i < run->glyphCount; i++) {
+        UINT32 first, n = colr_layers(&t, run->glyphIndices[i], &first);
+        total += n ? n : 1;
+        if (n) any = TRUE;
+    }
+    if (!any) return DWRITE_E_NOCOLOR;
+
+    ColorRuns *c = dw_zalloc(sizeof(*c));
+    if (!c) return E_OUTOFMEMORY;
+    c->vtbl = cr_vtbl;
+    c->ref = 1;
+    c->runs = dw_zalloc(total * sizeof(DW_COLOR_GLYPH_RUN));
+    c->glyphs = dw_zalloc(total * sizeof(UINT16));
+    c->advances = dw_zalloc(total * sizeof(float));
+    c->offsets = dw_zalloc(total * sizeof(DW_GLYPH_OFFSET));
+    if (!c->runs || !c->glyphs || !c->advances || !c->offsets) {
+        dw_free(c->runs); dw_free(c->glyphs); dw_free(c->advances); dw_free(c->offsets); dw_free(c);
+        return E_OUTOFMEMORY;
+    }
+    c->face = run->fontFace;
+    COM_ADDREF(c->face);
+    if (desc) c->desc = *desc;
+
+    UINT32 layers = be32(t.colr + 8);
+    float s = run->fontEmSize / f->face->upem, pen = 0;
+    BOOL rtl = run->bidiLevel & 1;
+    for (UINT32 i = 0; i < run->glyphCount; i++) {
+        float adv;
+        if (run->glyphAdvances) adv = run->glyphAdvances[i];
+        else { DW_GLYPH_METRICS g; face_glyph_metrics(f->face, run->glyphIndices[i], &g); adv = g.advanceWidth * s; }
+        /* each glyph's own run starts at its pen position, in the direction the run reads */
+        float gx = ox + (rtl ? -pen : pen);
+        pen += adv;
+        UINT32 first = 0, n = colr_layers(&t, run->glyphIndices[i], &first);
+        for (UINT32 k = 0; k < (n ? n : 1); k++) {
+            UINT32 r = c->n++;
+            DW_COLOR_GLYPH_RUN *cr = &c->runs[r];
+            const BYTE *rec = n ? t.colr + layers + (first + k) * 4 : NULL;
+            c->glyphs[r] = rec ? be16(rec) : run->glyphIndices[i];
+            c->advances[r] = k + 1 == (n ? n : 1) ? adv : 0;
+            if (run->glyphOffsets) c->offsets[r] = run->glyphOffsets[i];
+            cr->glyphRun = *run;
+            cr->glyphRun.glyphCount = 1;
+            cr->glyphRun.glyphIndices = &c->glyphs[r];
+            cr->glyphRun.glyphAdvances = &c->advances[r];
+            cr->glyphRun.glyphOffsets = &c->offsets[r];
+            cr->glyphRunDescription = desc ? &c->desc : NULL;
+            cr->baselineOriginX = gx;
+            cr->baselineOriginY = oy;
+            UINT16 pi = rec ? be16(rec + 2) : 0xFFFF;
+            cr->paletteIndex = pi;
+            if (pi == 0xFFFF || !cpal_color(&t, palette, pi, &cr->runColor))
+                cr->runColor = (DW_COLOR_F){ 0, 0, 0, 0 };
+        }
+    }
+    *out = c;
     return S_OK;
 }

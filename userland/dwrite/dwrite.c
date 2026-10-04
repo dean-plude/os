@@ -8,9 +8,11 @@
  * programs ask for by default ("Segoe UI", "Arial", "Consolas"...) are
  * also listed, backed by Inter and DejaVu Sans Mono.
  *
- * Text layout objects (IDWriteTextFormat, IDWriteTextLayout,
- * IDWriteTextAnalyzer) are not provided: browsers and toolkits shape text
- * themselves and use DirectWrite for fonts, metrics and glyph rendering.
+ * The factory is an IDWriteFactory3 (Windows 10's font sets, font face
+ * references and font fallback, in fontset.c); text formats and layouts are
+ * in layout.c.  IDWriteTextAnalyzer is not provided: browsers and toolkits
+ * shape text themselves and use DirectWrite for fonts, metrics and glyph
+ * rendering.
  */
 #include "dwrite_int.h"
 
@@ -93,6 +95,8 @@ void dw_log(const char *fmt, ...)
 
 #define IS(riid, iid) IsEqualGUID(riid, &(iid))
 
+static HRESULT locstrings_new(const WCHAR *str, void **out);
+
 /* -----------------------------------------------------------------------
  * IDWriteLocalizedStrings
  * ----------------------------------------------------------------------- */
@@ -159,6 +163,8 @@ static HRESULT STDMETHODCALLTYPE ls_string(LocStrings *s, UINT32 i, WCHAR *buf, 
 static const void *const ls_vtbl[] = {
     ls_qi, ls_addref, ls_release, ls_count, ls_find, ls_locale_len, ls_locale, ls_string_len, ls_string,
 };
+
+HRESULT dw_locstrings(const WCHAR *str, void **out) { return locstrings_new(str, out); }
 
 static HRESULT locstrings_new(const WCHAR *str, void **out)
 {
@@ -389,6 +395,16 @@ static FontFile *local_file_new(const WCHAR *path)
 {
     return font_file_new(&g_local_loader, path, (wlen(path) + 1) * sizeof(WCHAR));
 }
+FontFile *font_file_local(const WCHAR *path) { return local_file_new(path); }
+FontFile *font_file_from(void *iface) { return iface && *(void **)iface == (void *)ff_vtbl ? iface : NULL; }
+/* the same file: one object, or the same loader and key */
+BOOL font_file_equal(FontFile *a, FontFile *b)
+{
+    if (a == b) return TRUE;
+    if (!a || !b || a->loader != b->loader || a->key_size != b->key_size) return FALSE;
+    if (a->loader == &g_local_loader) return dw_wcsieq((const WCHAR *)a->key, (const WCHAR *)b->key);
+    return !memcmp(a->key, b->key, a->key_size);
+}
 
 /* -----------------------------------------------------------------------
  * Font collections
@@ -453,27 +469,33 @@ static void family_add(Family *f, FontEntry *e)
     f->fonts[f->n++] = e;
 }
 
+/* adds one face of a font file to the collection; d is the file's data, already loaded */
+static BOOL coll_add_face(Collection *c, FontFile *file, FontData *d, UINT32 i)
+{
+    FaceData *face = font_face_data(d, i);
+    if (!face) return TRUE;
+    WCHAR fam[64];
+    if (!sfnt_name(face, 16, fam, 64) && !sfnt_name(face, 1, fam, 64)) return TRUE;
+    FontEntry *e = dw_zalloc(sizeof(*e));
+    if (!e) return FALSE;
+    e->file = file;
+    ff_addref(file);
+    e->face = face;
+    e->index = i;
+    if (!sfnt_name(face, 17, e->face_name, 64) && !sfnt_name(face, 2, e->face_name, 64))
+        memcpy(e->face_name, L"Regular", 16);
+    Family *f = coll_family(c, fam, TRUE);
+    if (f) family_add(f, e);
+    return TRUE;
+}
+
 /* adds every face of a font file to the collection */
 static void coll_add_file(Collection *c, FontFile *file)
 {
     FontData *d = NULL;
     if (FAILED(font_file_data(file, &d)) || !d) return;
-    for (UINT32 i = 0; i < d->num_faces; i++) {
-        FaceData *face = font_face_data(d, i);
-        if (!face) continue;
-        WCHAR fam[64];
-        if (!sfnt_name(face, 16, fam, 64) && !sfnt_name(face, 1, fam, 64)) continue;
-        FontEntry *e = dw_zalloc(sizeof(*e));
-        if (!e) break;
-        e->file = file;
-        ff_addref(file);
-        e->face = face;
-        e->index = i;
-        if (!sfnt_name(face, 17, e->face_name, 64) && !sfnt_name(face, 2, e->face_name, 64))
-            memcpy(e->face_name, L"Regular", 16);
-        Family *f = coll_family(c, fam, TRUE);
-        if (f) family_add(f, e);
-    }
+    for (UINT32 i = 0; i < d->num_faces; i++)
+        if (!coll_add_face(c, file, d, i)) break;
     font_data_release(d);
 }
 
@@ -554,7 +576,7 @@ static Collection *system_collection(void)
 }
 
 /* ---- matching (CSS-style: stretch, then style, then weight) ---- */
-static UINT32 match_score(const FaceData *f, UINT32 weight, UINT32 stretch, UINT32 style)
+UINT32 dw_match_score(const FaceData *f, UINT32 weight, UINT32 stretch, UINT32 style)
 {
     UINT32 s = (UINT32)(f->stretch > stretch ? f->stretch - stretch : stretch - f->stretch) * 10000;
     if (f->style != style) s += (style != STYLE_NORMAL && f->style != STYLE_NORMAL) ? 1000 : 3000;
@@ -591,7 +613,7 @@ static HRESULT first_matching(Collection *c, UINT32 fi, UINT32 weight, UINT32 st
     FontEntry *best = f->fonts[0];
     UINT32 bs = 0xFFFFFFFF;
     for (UINT32 i = 0; i < f->n; i++) {
-        UINT32 s = match_score(f->fonts[i]->face, weight, stretch, style);
+        UINT32 s = dw_match_score(f->fonts[i]->face, weight, stretch, style);
         if (s < bs) { bs = s; best = f->fonts[i]; }
     }
     UINT32 sims = 0, st = best->face->style;
@@ -603,7 +625,7 @@ static HRESULT first_matching(Collection *c, UINT32 fi, UINT32 weight, UINT32 st
 /* ---- IDWriteFontCollection ---- */
 static HRESULT STDMETHODCALLTYPE coll_qi(Collection *c, REFIID riid, void **out)
 {
-    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFontCollection)) {
+    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFontCollection) || IS(riid, IID_IDWriteFontCollection1)) {
         *out = c; InterlockedIncrement(&c->ref); return S_OK;
     }
     *out = NULL;
@@ -659,14 +681,64 @@ static HRESULT STDMETHODCALLTYPE coll_from_face(Collection *c, void *face, void 
             }
     return DWRITE_E_NOFONT;
 }
+/* ---- IDWriteFontCollection1 ---- */
+/* the collection's fonts as a font set: each face once (the default names share their fonts) */
+static HRESULT STDMETHODCALLTYPE coll_font_set(Collection *c, void **out)
+{
+    UINT32 total = 0, n = 0;
+    *out = NULL;
+    for (UINT32 i = 0; i < c->n; i++) total += c->fams[i].n;
+    FontEntry **seen = dw_alloc((total + 1) * sizeof(FontEntry *));
+    FontFile **files = dw_alloc((total + 1) * sizeof(FontFile *));
+    UINT32 *index = dw_alloc((total + 1) * sizeof(UINT32));
+    HRESULT hr = E_OUTOFMEMORY;
+    if (seen && files && index) {
+        for (UINT32 i = 0; i < c->n; i++)
+            for (UINT32 k = 0; k < c->fams[i].n; k++) {
+                FontEntry *e = c->fams[i].fonts[k];
+                UINT32 j = 0;
+                while (j < n && seen[j] != e) j++;
+                if (j < n) continue;
+                seen[n] = e;
+                files[n] = e->file;
+                index[n++] = e->index;
+            }
+        hr = font_set_create(files, index, n, c == g_system, out);
+    }
+    dw_free(seen); dw_free(files); dw_free(index);
+    return hr;
+}
 const void *const coll_vtbl[] = {
     coll_qi, coll_addref, coll_release, coll_count, coll_family_at, coll_find, coll_from_face,
+    coll_font_set, coll_family_at,
 };
+
+void *dw_system_collection(void)
+{
+    Collection *c = system_collection();
+    if (c) coll_addref(c);
+    return c;
+}
+
+HRESULT dw_collection_from_faces(FontFile *const *files, const UINT32 *index, UINT32 n, void **out)
+{
+    Collection *c = coll_new();
+    *out = c;
+    if (!c) return E_OUTOFMEMORY;
+    for (UINT32 i = 0; i < n; i++) {
+        FontData *d = NULL;
+        if (FAILED(font_file_data(files[i], &d)) || !d) continue;
+        coll_add_face(c, files[i], d, index[i]);
+        font_data_release(d);
+    }
+    return S_OK;
+}
 
 /* ---- IDWriteFontFamily (and the IDWriteFontList it extends) ---- */
 static HRESULT STDMETHODCALLTYPE fam_qi(FamilyObj *f, REFIID riid, void **out)
 {
-    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFontFamily) || IS(riid, IID_IDWriteFontList)) {
+    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFontFamily) || IS(riid, IID_IDWriteFontList) ||
+        IS(riid, IID_IDWriteFontFamily1)) {
         *out = f; InterlockedIncrement(&f->ref); return S_OK;
     }
     *out = NULL;
@@ -705,8 +777,8 @@ static HRESULT STDMETHODCALLTYPE fam_matching(FamilyObj *f, UINT32 weight, UINT3
     if (!l || !v) { dw_free(l); dw_free(v); *out = NULL; return E_OUTOFMEMORY; }
     memcpy(v, fam->fonts, fam->n * sizeof(FontEntry *));
     for (UINT32 i = 1; i < fam->n; i++)          /* best match first */
-        for (UINT32 k = i; k > 0 && match_score(v[k]->face, weight, stretch, style) <
-                                   match_score(v[k - 1]->face, weight, stretch, style); k--) {
+        for (UINT32 k = i; k > 0 && dw_match_score(v[k]->face, weight, stretch, style) <
+                                   dw_match_score(v[k - 1]->face, weight, stretch, style); k--) {
             FontEntry *t = v[k]; v[k] = v[k - 1]; v[k - 1] = t;
         }
     l->vtbl = list_vtbl;
@@ -719,14 +791,23 @@ static HRESULT STDMETHODCALLTYPE fam_matching(FamilyObj *f, UINT32 weight, UINT3
     *out = l;
     return S_OK;
 }
+/* ---- IDWriteFontFamily1 (every font is a local file) ---- */
+static UINT32 STDMETHODCALLTYPE fam_locality(FamilyObj *f, UINT32 i) { (void)f; (void)i; return LOCALITY_LOCAL; }
+static HRESULT STDMETHODCALLTYPE fam_face_ref(FamilyObj *f, UINT32 i, void **out)
+{
+    Family *fam = &f->c->fams[f->fi];
+    if (i >= fam->n) { *out = NULL; return E_INVALIDARG; }
+    return face_ref_create(fam->fonts[i]->file, fam->fonts[i]->index, 0, out);
+}
 const void *const fam_vtbl[] = {
     fam_qi, fam_addref, fam_release, fam_collection, fam_count, fam_font, fam_names, fam_first, fam_matching,
+    fam_locality, fam_font, fam_face_ref,
 };
 
 /* ---- IDWriteFontList ---- */
 static HRESULT STDMETHODCALLTYPE list_qi(FontListObj *l, REFIID riid, void **out)
 {
-    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFontList)) {
+    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFontList) || IS(riid, IID_IDWriteFontList1)) {
         *out = l; InterlockedIncrement(&l->ref); return S_OK;
     }
     *out = NULL;
@@ -746,12 +827,21 @@ static HRESULT STDMETHODCALLTYPE list_font(FontListObj *l, UINT32 i, void **out)
     if (i >= l->n) { *out = NULL; return E_INVALIDARG; }
     return font_obj_new(l->c, l->fi, l->fonts[i], 0, l->fonts[i]->face->style, out);
 }
-const void *const list_vtbl[] = { list_qi, list_addref, list_release, list_collection, list_count, list_font };
+static UINT32 STDMETHODCALLTYPE list_locality(FontListObj *l, UINT32 i) { (void)l; (void)i; return LOCALITY_LOCAL; }
+static HRESULT STDMETHODCALLTYPE list_face_ref(FontListObj *l, UINT32 i, void **out)
+{
+    if (i >= l->n) { *out = NULL; return E_INVALIDARG; }
+    return face_ref_create(l->fonts[i]->file, l->fonts[i]->index, 0, out);
+}
+const void *const list_vtbl[] = {
+    list_qi, list_addref, list_release, list_collection, list_count, list_font,
+    list_locality, list_font, list_face_ref,
+};
 
 /* ---- IDWriteFont / IDWriteFont1 ---- */
 static HRESULT STDMETHODCALLTYPE font_qi(FontObj *f, REFIID riid, void **out)
 {
-    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFont) || IS(riid, IID_IDWriteFont1)) {
+    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFont) || IS(riid, IID_IDWriteFont1) || IS(riid, IID_IDWriteFont3)) {
         *out = f; InterlockedIncrement(&f->ref); return S_OK;
     }
     *out = NULL;
@@ -786,20 +876,22 @@ static HRESULT STDMETHODCALLTYPE font_face_names(FontObj *f, void **out)
     n[k] = 0;
     return locstrings_new(n, out);
 }
-static HRESULT STDMETHODCALLTYPE font_info_strings(FontObj *f, UINT32 id, void **out, BOOL *exists)
+int face_info_string(const FaceData *f, UINT32 id, WCHAR *out, int cap)
 {
     static const signed char name_ids[] = { -1, 0, 5, 7, 8, 9, 12, 10, 11, 13, 14, 1, 2, 16, 17, 19, 4, 6, 20, 21 };
-    *out = NULL;
-    *exists = FALSE;
-    if (id >= sizeof(name_ids) || name_ids[id] < 0) return S_OK;
+    if (id >= sizeof(name_ids) || name_ids[id] < 0) return 0;
+    if (sfnt_name(f, name_ids[id], out, cap)) return 1;
+    if (id == 13) return sfnt_name(f, 1, out, cap);        /* typographic family falls back to the family */
+    if (id == 14) return sfnt_name(f, 2, out, cap);
+    if (id == 19) return sfnt_name(f, 16, out, cap) || sfnt_name(f, 1, out, cap);   /* weight/stretch/style family */
+    return 0;
+}
+static HRESULT STDMETHODCALLTYPE font_info_strings(FontObj *f, UINT32 id, void **out, BOOL *exists)
+{
     WCHAR s[256];
-    if (!sfnt_name(f->e->face, name_ids[id], s, 256)) {
-        if (id == 13 && sfnt_name(f->e->face, 1, s, 256)) { }       /* typographic family falls back to the family */
-        else if (id == 14 && sfnt_name(f->e->face, 2, s, 256)) { }
-        else return S_OK;
-    }
-    *exists = TRUE;
-    return locstrings_new(s, out);
+    *out = NULL;
+    *exists = face_info_string(f->e->face, id, s, 256) != 0;
+    return *exists ? locstrings_new(s, out) : S_OK;
 }
 static UINT32 STDMETHODCALLTYPE font_sims(FontObj *f) { return f->sims; }
 static void STDMETHODCALLTYPE font_metrics(FontObj *f, DW_FONT_METRICS *m) { *m = f->e->face->metrics.m; }
@@ -820,10 +912,21 @@ static HRESULT STDMETHODCALLTYPE font_ranges(FontObj *f, UINT32 max, DW_UNICODE_
     return *count > max ? E_NOT_SUFFICIENT_BUFFER_ : S_OK;
 }
 static BOOL STDMETHODCALLTYPE font_mono(FontObj *f) { return f->e->face->mono; }
+/* IDWriteFont2, IDWriteFont3 */
+static BOOL STDMETHODCALLTYPE font_color(FontObj *f) { return face_is_color(f->e->face); }
+static BOOL STDMETHODCALLTYPE font_equals(FontObj *f, FontObj *o)
+{
+    if (!o || o->vtbl != font_vtbl) return FALSE;
+    return o->sims == f->sims && (o->e == f->e || (o->e->index == f->e->index && font_file_equal(o->e->file, f->e->file)));
+}
+static HRESULT STDMETHODCALLTYPE font_face_ref(FontObj *f, void **out) { return face_ref_create(f->e->file, f->e->index, f->sims, out); }
+static BOOL STDMETHODCALLTYPE font_has_char3(FontObj *f, UINT32 cp) { return face_glyph_index(f->e->face, cp) != 0; }
+static UINT32 STDMETHODCALLTYPE font_locality(FontObj *f) { (void)f; return LOCALITY_LOCAL; }
 const void *const font_vtbl[] = {
     font_qi, font_addref, font_release, font_family, font_weight, font_stretch, font_style, font_symbol,
     font_face_names, font_info_strings, font_sims, font_metrics, font_has_char, font_create_face,
     font_metrics1, font_panose, font_ranges, font_mono,
+    font_color, font_create_face, font_equals, font_face_ref, font_has_char3, font_locality,
 };
 
 /* -----------------------------------------------------------------------
@@ -833,12 +936,13 @@ typedef struct {
     const void *const *vtbl;
     LONG  ref;
     float gamma, contrast, gray_contrast, cleartype;
-    UINT32 geometry, mode;
+    UINT32 geometry, mode, gridfit;     /* mode is a DWRITE_RENDERING_MODE1 */
 } Params;
 
 static HRESULT STDMETHODCALLTYPE rp_qi(Params *p, REFIID riid, void **out)
 {
-    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteRenderingParams) || IS(riid, IID_IDWriteRenderingParams1)) {
+    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteRenderingParams) || IS(riid, IID_IDWriteRenderingParams1) ||
+        IS(riid, IID_IDWriteRenderingParams2) || IS(riid, IID_IDWriteRenderingParams3)) {
         *out = p; InterlockedIncrement(&p->ref); return S_OK;
     }
     *out = NULL;
@@ -855,22 +959,31 @@ static float STDMETHODCALLTYPE rp_gamma(Params *p) { return p->gamma; }
 static float STDMETHODCALLTYPE rp_contrast(Params *p) { return p->contrast; }
 static float STDMETHODCALLTYPE rp_cleartype(Params *p) { return p->cleartype; }
 static UINT32 STDMETHODCALLTYPE rp_geometry(Params *p) { return p->geometry; }
-static UINT32 STDMETHODCALLTYPE rp_mode(Params *p) { return p->mode; }
+/* DWRITE_RENDERING_MODE has no NATURAL_SYMMETRIC_DOWNSAMPLED */
+static UINT32 STDMETHODCALLTYPE rp_mode(Params *p) { return p->mode == RMODE1_NATURAL_SYMMETRIC_DOWNSAMPLED ? RMODE_NATURAL_SYMMETRIC : p->mode; }
 static float STDMETHODCALLTYPE rp_gray_contrast(Params *p) { return p->gray_contrast; }
+static UINT32 STDMETHODCALLTYPE rp_gridfit(Params *p) { return p->gridfit; }
+static UINT32 STDMETHODCALLTYPE rp_mode1(Params *p) { return p->mode; }
 static const void *const rp_vtbl[] = {
     rp_qi, rp_addref, rp_release, rp_gamma, rp_contrast, rp_cleartype, rp_geometry, rp_mode, rp_gray_contrast,
+    rp_gridfit, rp_mode1,
 };
 
-static HRESULT params_new(float gamma, float contrast, float gray, float ct, UINT32 geometry, UINT32 mode, void **out)
+static HRESULT params_new3(float gamma, float contrast, float gray, float ct, UINT32 geometry, UINT32 mode,
+                           UINT32 gridfit, void **out)
 {
     Params *p = dw_zalloc(sizeof(*p));
     if (!p) { *out = NULL; return E_OUTOFMEMORY; }
     p->vtbl = rp_vtbl;
     p->ref = 1;
     p->gamma = gamma; p->contrast = contrast; p->gray_contrast = gray; p->cleartype = ct;
-    p->geometry = geometry; p->mode = mode;
+    p->geometry = geometry; p->mode = mode; p->gridfit = gridfit;
     *out = p;
     return S_OK;
+}
+static HRESULT params_new(float gamma, float contrast, float gray, float ct, UINT32 geometry, UINT32 mode, void **out)
+{
+    return params_new3(gamma, contrast, gray, ct, geometry, mode, GRID_FIT_DEFAULT, out);
 }
 
 /* -----------------------------------------------------------------------
@@ -986,7 +1099,7 @@ static const void *const gi_vtbl[] = {
 static GdiInterop g_gdi_interop = { gi_vtbl };
 
 /* -----------------------------------------------------------------------
- * IDWriteFactory / IDWriteFactory1
+ * IDWriteFactory through IDWriteFactory3
  * ----------------------------------------------------------------------- */
 typedef struct { const void *const *vtbl; } Factory;
 
@@ -1021,7 +1134,8 @@ static HRESULT unregister_loader(void **list, void *loader)
 
 static HRESULT STDMETHODCALLTYPE fa_qi(Factory *f, REFIID riid, void **out)
 {
-    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFactory) || IS(riid, IID_IDWriteFactory1)) {
+    if (IS(riid, IID_IUnknown) || IS(riid, IID_IDWriteFactory) || IS(riid, IID_IDWriteFactory1) ||
+        IS(riid, IID_IDWriteFactory2) || IS(riid, IID_IDWriteFactory3)) {
         *out = f; return S_OK;
     }
     *out = NULL;
@@ -1160,7 +1274,7 @@ static HRESULT STDMETHODCALLTYPE fa_glyph_run_analysis(Factory *f, const DW_GLYP
                                                        UINT32 mode, UINT32 measuring, float ox, float oy, void **out)
 {
     (void)f; (void)measuring;
-    return glyph_run_analysis_create(run, ppd, m, mode, ox, oy, out);
+    return glyph_run_analysis_create(run, ppd, m, mode, AA_CLEARTYPE, ox, oy, out);
 }
 static HRESULT STDMETHODCALLTYPE fa_eudc(Factory *f, void **out, BOOL check)
 {
@@ -1175,12 +1289,120 @@ static HRESULT STDMETHODCALLTYPE fa_custom_params1(Factory *f, float gamma, floa
     (void)f;
     return params_new(gamma, contrast, gray, ct, geometry, mode, out);
 }
+
+/* ---- IDWriteFactory2 ---- */
+static HRESULT STDMETHODCALLTYPE fa_system_fallback(Factory *f, void **out) { (void)f; return font_fallback_system(out); }
+static HRESULT STDMETHODCALLTYPE fa_fallback_builder(Factory *f, void **out) { (void)f; return font_fallback_builder_create(out); }
+static HRESULT STDMETHODCALLTYPE fa_translate_color(Factory *f, float ox, float oy, const DW_GLYPH_RUN *run,
+                                                    const DW_GLYPH_RUN_DESCRIPTION *desc, UINT32 measuring,
+                                                    const DW_MATRIX *m, UINT32 palette, void **out)
+{
+    (void)f; (void)measuring; (void)m;
+    if (!out) return E_INVALIDARG;
+    return color_glyph_run_translate(ox, oy, run, desc, palette, out);
+}
+static BOOL params_ok(float gamma, float contrast, float gray, float ct, UINT32 geometry)
+{
+    return gamma > 0 && gamma <= 256 && contrast >= 0 && gray >= 0 && ct >= 0 && ct <= 1 && geometry <= 2;
+}
+static HRESULT STDMETHODCALLTYPE fa_custom_params2(Factory *f, float gamma, float contrast, float gray, float ct,
+                                                   UINT32 geometry, UINT32 mode, UINT32 gridfit, void **out)
+{
+    (void)f;
+    *out = NULL;
+    if (!params_ok(gamma, contrast, gray, ct, geometry) || mode > RMODE_OUTLINE || gridfit > GRID_FIT_ENABLED) return E_INVALIDARG;
+    return params_new3(gamma, contrast, gray, ct, geometry, mode, gridfit, out);
+}
+static HRESULT analysis2(const DW_GLYPH_RUN *run, const DW_MATRIX *m, UINT32 mode, UINT32 gridfit, UINT32 aa,
+                         float ox, float oy, void **out)
+{
+    *out = NULL;
+    /* the DEFAULT and OUTLINE modes are not ones to rasterize in; ClearType coverage needs a ClearType mode */
+    if (mode == RMODE_DEFAULT || mode == RMODE_OUTLINE || gridfit > GRID_FIT_ENABLED || aa > AA_GRAYSCALE) return E_INVALIDARG;
+    if (mode == RMODE_ALIASED && aa != AA_CLEARTYPE) return E_INVALIDARG;
+    return glyph_run_analysis_create(run, 1.0f, m, mode, aa, ox, oy, out);
+}
+static HRESULT STDMETHODCALLTYPE fa_glyph_run_analysis2(Factory *f, const DW_GLYPH_RUN *run, const DW_MATRIX *m, UINT32 mode,
+                                                        UINT32 measuring, UINT32 gridfit, UINT32 aa, float ox, float oy,
+                                                        void **out)
+{
+    (void)f; (void)measuring;
+    if (mode > RMODE_OUTLINE) { *out = NULL; return E_INVALIDARG; }
+    return analysis2(run, m, mode, gridfit, aa, ox, oy, out);
+}
+
+/* ---- IDWriteFactory3 ---- */
+static HRESULT STDMETHODCALLTYPE fa_glyph_run_analysis3(Factory *f, const DW_GLYPH_RUN *run, const DW_MATRIX *m, UINT32 mode,
+                                                        UINT32 measuring, UINT32 gridfit, UINT32 aa, float ox, float oy,
+                                                        void **out)
+{
+    (void)f; (void)measuring;
+    if (mode > RMODE1_NATURAL_SYMMETRIC_DOWNSAMPLED) { *out = NULL; return E_INVALIDARG; }
+    return analysis2(run, m, mode, gridfit, aa, ox, oy, out);
+}
+static HRESULT STDMETHODCALLTYPE fa_custom_params3(Factory *f, float gamma, float contrast, float gray, float ct,
+                                                   UINT32 geometry, UINT32 mode, UINT32 gridfit, void **out)
+{
+    (void)f;
+    *out = NULL;
+    if (!params_ok(gamma, contrast, gray, ct, geometry) || mode > RMODE1_NATURAL_SYMMETRIC_DOWNSAMPLED ||
+        gridfit > GRID_FIT_ENABLED) return E_INVALIDARG;
+    return params_new3(gamma, contrast, gray, ct, geometry, mode, gridfit, out);
+}
+static HRESULT STDMETHODCALLTYPE fa_face_ref_file(Factory *f, void *file, UINT32 index, UINT32 sims, void **out)
+{
+    (void)f;
+    *out = NULL;
+    FontFile *ff = font_file_from(file);
+    if (!ff || (sims & ~(SIM_BOLD | SIM_OBLIQUE))) return E_INVALIDARG;
+    return face_ref_create(ff, index, sims, out);
+}
+static HRESULT STDMETHODCALLTYPE fa_face_ref_path(Factory *f, const WCHAR *path, const FILETIME *t, UINT32 index,
+                                                  UINT32 sims, void **out)
+{
+    void *file = NULL;
+    HRESULT hr = fa_file_ref(f, path, t, &file);
+    if (FAILED(hr)) { *out = NULL; return hr; }
+    hr = fa_face_ref_file(f, file, index, sims, out);
+    ff_release(file);
+    return hr;
+}
+static HRESULT STDMETHODCALLTYPE fa_system_font_set(Factory *f, void **out)
+{
+    (void)f;
+    Collection *c = system_collection();
+    *out = NULL;
+    return c ? coll_font_set(c, out) : E_OUTOFMEMORY;
+}
+static HRESULT STDMETHODCALLTYPE fa_font_set_builder(Factory *f, void **out) { (void)f; return font_set_builder_create(out); }
+static HRESULT STDMETHODCALLTYPE fa_collection_from_set(Factory *f, void *set, void **out)
+{
+    (void)f;
+    FontFile **files = NULL;
+    UINT32 *index = NULL, n = 0;
+    *out = NULL;
+    HRESULT hr = font_set_faces(set, &files, &index, &n);
+    if (SUCCEEDED(hr)) hr = dw_collection_from_faces(files, index, n, out);
+    dw_free(files);
+    dw_free(index);
+    return hr;
+}
+static HRESULT STDMETHODCALLTYPE fa_system_collection3(Factory *f, BOOL downloadable, void **out, BOOL check)
+{
+    (void)downloadable;
+    return fa_system_collection(f, out, check);
+}
+static HRESULT STDMETHODCALLTYPE fa_download_queue(Factory *f, void **out) { (void)f; return font_download_queue(out); }
+
 static const void *const fa_vtbl[] = {
     fa_qi, fa_addref, fa_release, fa_system_collection, fa_custom_collection, fa_register_coll_loader,
     fa_unregister_coll_loader, fa_file_ref, fa_custom_file_ref, fa_font_face, fa_params, fa_monitor_params,
     fa_custom_params, fa_register_file_loader, fa_unregister_file_loader, fa_text_format, fa_typography,
     fa_gdi_interop, fa_text_layout, fa_gdi_text_layout, fa_ellipsis, fa_text_analyzer, fa_number_subst,
     fa_glyph_run_analysis, fa_eudc, fa_custom_params1,
+    fa_system_fallback, fa_fallback_builder, fa_translate_color, fa_custom_params2, fa_glyph_run_analysis2,
+    fa_glyph_run_analysis3, fa_custom_params3, fa_face_ref_file, fa_face_ref_path, fa_system_font_set,
+    fa_font_set_builder, fa_collection_from_set, fa_system_collection3, fa_download_queue,
 };
 static Factory g_factory = { fa_vtbl };
 

@@ -54,6 +54,23 @@ typedef struct {
     BYTE  data[NOVA_PAD_REPORT_MAX];
 } NovaPadRaw;
 
+/* The mouse's and the keyboard's raw input come through the same ring as
+ * reports of these two slots (serial 1), each a NovaRawMouse or a
+ * NovaRawKey (gamepad.h's PadRawMouse and PadRawKey) */
+#define NOVA_RAW_MOUSE    NOVA_PAD_SLOTS
+#define NOVA_RAW_KEYBOARD (NOVA_PAD_SLOTS + 1)
+typedef struct {
+    USHORT flags, button_flags;       /* RAWMOUSE's usFlags, usButtonFlags */
+    SHORT  button_data;               /* ... usButtonData */
+    USHORT reserved;
+    ULONG  raw_buttons;               /* ... ulRawButtons */
+    LONG   x, y;                      /* ... lLastX, lLastY */
+} NovaRawMouse;
+typedef struct {
+    USHORT make, flags, vkey, reserved;   /* RAWKEYBOARD's MakeCode, Flags, VKey */
+    ULONG  message;                   /* ... Message */
+} NovaRawKey;
+
 typedef struct {
     DWORD after, known_changes, wait_ms, max;     /* in */
     DWORD newest, changes;                        /* out */

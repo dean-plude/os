@@ -43,7 +43,8 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
        CTL_WORKAREA, CTL_WAKE, CTL_WINDOW_AT, CTL_ACCEPT_DROPS, CTL_DROP, CTL_DROP_FETCH,
        CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
        CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD,
-       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH, CTL_TABLET, CTL_SET_DPI, CTL_SET_SCALE, CTL_GAMEPAD };
+       CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH, CTL_TABLET, CTL_SET_DPI, CTL_SET_SCALE, CTL_GAMEPAD,
+       CTL_SET_CURSOR_POS, CTL_CLIP_CURSOR };
 /* display.c: the monitors (GetSystemMetrics' virtual screen) */
 int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
@@ -192,6 +193,7 @@ LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);  /* DefWindowProc
  * from the pen packet @pen (0: the mouse); 1 if it became WM_POINTER* */
 int   pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen, int hit);
 void  pointer_left(Wnd *top);          /* the desktop's WM_MOUSELEAVE for @top: the pen (or mouse) left it */
+BOOL  raw_nolegacy(BOOL keyboard);      /* rawinput.c: the mouse's (keyboard's) input is raw input only (RIDEV_NOLEGACY) */
 HWND  recently_active(void);         /* win.c: the window that was active a moment ago (none is now) */
 void  pointer_taken(const MSG *m);     /* GetMessage took @m (GetPointerInfo answers for it) */
 

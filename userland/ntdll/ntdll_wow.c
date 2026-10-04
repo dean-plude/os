@@ -312,6 +312,14 @@ NTSTATUS NTAPI NtCancelIoFile(HANDLE h, PIO_STATUS_BLOCK io)
     return s;
 }
 
+/* Device I/O controls: \Device\Afd helpers answer IOCTL_AFD_POLL (the
+ * kernel reads the 32-bit AFD_POLL_INFO layout); nothing else does */
+NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
+                                              PVOID in, ULONG in_len, PVOID out, ULONG out_len)
+{
+    return SC(NtDeviceIoControlFile, H(h), H(ev), P(apc), P(ctx), IO32(io), U(code), P(in), U(in_len), P(out), U(out_len));
+}
+
 NTSTATUS NTAPI NtCancelIoFileEx(HANDLE h, PIO_STATUS_BLOCK req, PIO_STATUS_BLOCK io)
 {
     IOSB64 iob;
@@ -723,6 +731,25 @@ OPEN3(NtOpenMutant)
 OPEN3(NtOpenSemaphore)
 OPEN3(NtOpenKey)
 OPEN3(NtOpenTimer)
+OPEN3(NtOpenKeyedEvent)
+
+NTSTATUS NTAPI NtCreateKeyedEvent(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, ULONG flags)
+{
+    Box hb; OAC oc;
+    NTSTATUS s = SC(NtCreateKeyedEvent, HBOX(hb, h), U(access), oa_in(&oc, oa), U(flags));
+    box_out(&hb);
+    return s;
+}
+
+NTSTATUS NTAPI NtWaitForKeyedEvent(HANDLE h, PVOID key, BOOLEAN alertable, PLARGE_INTEGER timeout)
+{
+    return SC(NtWaitForKeyedEvent, H(h), P(key), U(alertable), P(timeout));
+}
+
+NTSTATUS NTAPI NtReleaseKeyedEvent(HANDLE h, PVOID key, BOOLEAN alertable, PLARGE_INTEGER timeout)
+{
+    return SC(NtReleaseKeyedEvent, H(h), P(key), U(alertable), P(timeout));
+}
 
 NTSTATUS NTAPI NtCreateEvent(PHANDLE h, ULONG access, POBJECT_ATTRIBUTES oa, EVENT_TYPE type, BOOLEAN state)
 {

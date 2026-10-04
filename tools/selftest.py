@@ -56,6 +56,7 @@ order; --list prints them):
             it, then NovaOS installed from a USB stick onto an NVMe disk
             and started from there; "update", an installed NovaOS on a
             network serving update channels (tools/mkupdate.py): it
+            orders a development build of its version after it,
             refuses channels that are unsigned, signed with another key
             or changed after signing, then updates itself from a signed
             one to a newer test build of this kernel, restarts
@@ -460,10 +461,11 @@ def update_boot(work):
     """build/nova.img as an installed NovaOS (its writes kept while QEMU runs,
     across restarts) on QEMU's user-mode network, where 10.0.2.2:18090
     serves update channels made with tools/mkupdate.py from this build:
-    v1/ stamped one version newer, v2/ two, both signed with the self-tests'
-    key, whose public half QEMU hands to NovaOS (fw_cfg); and v1's channel
-    unsigned/, signed with another key (otherkey/) and changed after it was
-    signed (changed/) (tests/selftest/devices/update)"""
+    v1/ stamped one version newer, v2/ two, same/ this version and dev/ a
+    development build of it, all signed with the self-tests' key, whose
+    public half QEMU hands to NovaOS (fw_cfg); and v1's channel unsigned/,
+    signed with another key (otherkey/) and changed after it was signed
+    (changed/) (tests/selftest/devices/update)"""
     sys.path.insert(0, os.path.join(ROOT, 'tools'))
     import ed25519
     upd = os.path.join(ROOT, 'tests', 'selftest', 'devices', 'update')
@@ -476,7 +478,8 @@ def update_boot(work):
         with open(other, 'w') as f:
             f.write(ed25519.new_secret().hex() + '\n')
     for sub, ver, sign in (('v1', ns['V1'], key), ('v2', ns['V2'], key), ('unsigned', ns['V1'], None),
-                           ('otherkey', ns['V1'], other), ('changed', ns['V1'], key)):
+                           ('otherkey', ns['V1'], other), ('changed', ns['V1'], key),
+                           ('same', ns['VER'], key), ('dev', ns['DEV'], key)):
         subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'mkupdate.py'), os.path.join(root, sub),
                         '--version', ver, '--notes', f'Self-test build {ver}'] + (['--sign', sign] if sign else []),
                        check=True, stdout=subprocess.DEVNULL)
