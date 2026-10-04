@@ -840,10 +840,11 @@ static void from_kernel_(Wnd *top, const MSG *kmsg, UINT32 pen)
     case WM_NOVA_DPI: dpi_monitors_changed(top); break;
     case WM_CHAR: case WM_SYSCHAR: break;                  /* TranslateMessage makes these, as on Windows */
     case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-        route_key(top, km);
+        if (!raw_nolegacy(TRUE)) route_key(top, km);         /* (RIDEV_NOLEGACY: raw input only) */
         break;
     default:
-        if ((km->message >= WM_MOUSEFIRST && km->message <= WM_MOUSELAST) || km->message == WM_MOUSEWHEEL) route_mouse(top, km, pen, 0);
+        if (((km->message >= WM_MOUSEFIRST && km->message <= WM_MOUSELAST) || km->message == WM_MOUSEWHEEL) && !raw_nolegacy(FALSE))
+            route_mouse(top, km, pen, 0);
         break;
     }
 }

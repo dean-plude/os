@@ -43,6 +43,7 @@
 #include "../net/net.h"
 #include "../drivers/audio.h"
 #include "../drivers/virtio_input.h"
+#include "../drivers/gamepad.h"
 
 /* -----------------------------------------------------------------------
  * Themes
@@ -1879,6 +1880,48 @@ static void desktop_key(const KeyEvent *k)
  * Polls PS/2, moves the cursor with save-under, routes input, and
  * recomposites whenever something changed (or once per minute for the
  * clock). */
+/* Raw Input (gamepad.h's PAD_RAW_MOUSE and PAD_RAW_KEYBOARD): each mouse
+ * event as Windows' RAWMOUSE, with the buttons that went down or up as
+ * RI_MOUSE_* flags and a wheel's turn; a turn of the horizontal wheel is
+ * a block of its own (the two share usButtonData) */
+static void raw_mouse(const InputEvent *ev)
+{
+    static UINT8 held;
+    PadRawMouse m;
+    memset(&m, 0, sizeof(m));
+    m.flags = ev->absolute ? 1 : 0;                 /* MOUSE_MOVE_ABSOLUTE */
+    m.x = ev->dx;
+    m.y = ev->dy;
+    UINT8 now = ev->buttons & 0x1F, changed = now ^ held;
+    for (int b = 0; b < 5; b++)                     /* left, right, middle, back, forward: down 1, up 2 */
+        if (changed & (1u << b)) m.button_flags |= (UINT16)((now & (1u << b) ? 1u : 2u) << (2 * b));
+    held = now;
+    m.raw_buttons = now;
+    if (ev->dz) { m.button_flags |= 0x0400; m.button_data = (INT16)(ev->dz * 120); }   /* RI_MOUSE_WHEEL */
+    if (m.flags || m.x || m.y || m.button_flags) PadRawInput(PAD_RAW_MOUSE, &m, sizeof(m));
+    if (ev->dw) {
+        memset(&m, 0, sizeof(m));
+        m.button_flags = 0x0800;                    /* RI_MOUSE_HWHEEL */
+        m.button_data = (INT16)(ev->dw * 120);
+        m.raw_buttons = now;
+        PadRawInput(PAD_RAW_MOUSE, &m, sizeof(m));
+    }
+}
+
+/* ... and each key as RAWKEYBOARD, with the message a program's window
+ * gets for it (um_gui.c's gui_key) */
+static void raw_key(const InputEvent *ev, const KeyEvent *k)
+{
+    PadRawKey r;
+    memset(&r, 0, sizeof(r));
+    r.make = ev->scancode;
+    r.flags = (UINT16)((ev->pressed ? 0 : 1) | (ev->extended ? 2 : 0));   /* RI_KEY_BREAK, RI_KEY_E0 */
+    r.vkey = (UINT16)(UmScancodeToVk(ev->scancode, ev->extended) & 0xFF);
+    bool sys = k && !k->altgr && ((k->alt && !k->ctrl) || r.vkey == 0x12 || r.vkey == 0x79);
+    r.message = ev->pressed ? (sys ? 0x0104 : 0x0100) : (sys ? 0x0105 : 0x0101);
+    PadRawInput(PAD_RAW_KEYBOARD, &r, sizeof(r));
+}
+
 /* Watchdog (called from the timer tick): when the desktop loop has not come
  * round for 3 seconds, log where its thread is, once per stall. */
 static Thread *volatile g_desktop_kt;
@@ -1959,6 +2002,7 @@ void DesktopRun(void *arg)
         if (files) FsLock();                    /* (a click may open a file) */
         for (; input; input = InputPoll(&ev)) {
             if (ev.type == INPUT_MOUSE) {
+                raw_mouse(&ev);
                 UmSetInputPen(ev.from_pen ? pen_serial : 0);    /* (programs get WM_POINTER* for a pen's) */
                 if (ev.absolute) {
                     WmCursorMoveAbs(ev.dx, ev.dy);
@@ -2014,7 +2058,9 @@ void DesktopRun(void *arg)
                 pen_near = ev.pressed != 0;
             } else if (ev.type == INPUT_KEY) {
                 KeyEvent k;
-                if (InputTranslateKey(&ev, &k)) desktop_key(&k);
+                bool key = InputTranslateKey(&ev, &k);
+                raw_key(&ev, key ? &k : NULL);
+                if (key) desktop_key(&k);
             }
         }
         if (files) FsUnlock();

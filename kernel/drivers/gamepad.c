@@ -233,6 +233,21 @@ void PadRawReport(int slot, const UINT8 *data, int len, bool ids)
     }
 }
 
+void PadRawInput(int slot, const void *data, int len)
+{
+    if ((slot != PAD_RAW_MOUSE && slot != PAD_RAW_KEYBOARD) || len <= 0 || len > PAD_REPORT_MAX) return;
+    IrqState s = spin_lock_irqsave(&g_pad_lock);
+    PadRaw *e = &g_raw[(g_raw_seq + 1) % PAD_RAW_RING];
+    memset(e, 0, sizeof(*e));
+    e->seq = ++g_raw_seq;
+    e->serial = 1;
+    e->slot = (UINT8)slot;
+    e->len = (UINT8)len;
+    memcpy(e->data, data, (size_t)len);
+    spin_unlock_irqrestore(&g_pad_lock, s);
+    waitq_wake(&g_rawq);
+}
+
 int PadGetDescriptor(int slot, UINT8 *out, int cap, UINT16 *in_len)
 {
     if (slot < 0 || slot >= PAD_SLOTS) return 0;
