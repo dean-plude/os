@@ -41,8 +41,6 @@ typedef struct { float left, top, right, bottom; } DW_OVERHANG_METRICS;
 typedef struct { float width; UINT16 length; UINT16 flags; } DW_CLUSTER_METRICS;
 enum { CM_WRAP_AFTER = 1, CM_WHITESPACE = 2, CM_NEWLINE = 4, CM_SOFT_HYPHEN = 8, CM_RTL = 16 };
 typedef struct { UINT32 textPosition, length; float left, top, width, height; UINT32 bidiLevel; BOOL isText, isTrimmed; } DW_HIT_TEST_METRICS;
-typedef struct { const WCHAR *localeName; const WCHAR *string; UINT32 stringLength; const UINT16 *clusterMap;
-                 UINT32 textPosition; } DW_GLYPH_RUN_DESCRIPTION;
 typedef struct { float width, thickness, offset, runHeight; UINT32 readingDirection, flowDirection;
                  const WCHAR *localeName; UINT32 measuringMode; } DW_UNDERLINE;
 typedef struct { float width, thickness, offset; UINT32 readingDirection, flowDirection;
