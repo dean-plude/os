@@ -199,8 +199,17 @@ PRUNTIME_FUNCTION NTAPI RtlLookupFunctionEntry(DWORD64 pc, PDWORD64 base_out, PU
 {
     (void)hist;
     PLDR_DATA_TABLE_ENTRY e = LdrNovaFindEntry((PVOID)pc);
-    if (!e) return dyn_lookup(pc, base_out);
-    BYTE *base = e->DllBase;
+    BYTE *base = e ? e->DllBase : 0;
+    if (!base) {
+        /* ntdll itself, which the kernel maps without listing it: its own
+         * frames (the dispatcher's, RtlVirtualUnwind's when what it was
+         * given to unwind faults) unwind from its .pdata like any other */
+        extern IMAGE_DOS_HEADER __ImageBase;
+        IMAGE_NT_HEADERS *self = nt_of((BYTE *)&__ImageBase);
+        if (self && pc >= (DWORD64)&__ImageBase && pc < (DWORD64)&__ImageBase + self->OptionalHeader.SizeOfImage)
+            base = (BYTE *)&__ImageBase;
+    }
+    if (!base) return dyn_lookup(pc, base_out);
     if (base_out) *base_out = (DWORD64)base;
     IMAGE_NT_HEADERS *nt = nt_of(base);
     if (!nt || nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXCEPTION) return 0;
@@ -522,6 +531,20 @@ static void resume_at(CONTEXT *c)
     NtContinue(c, FALSE);
 }
 
+/* Is @sp a frame on this thread's stack (TEB DeallocationStack, or
+ * StackLimit, up to StackBase)?  As on Windows, the dispatcher walks only
+ * those: a frame chain that leaves the stack (a frame without unwind data
+ * the leaf rule misreads, the top of the stack passed) ends the walk with
+ * EXCEPTION_STACK_INVALID, where reading on would fault inside the
+ * dispatcher and raise again, and again, until the stack ran out */
+static int on_stack(DWORD64 sp)
+{
+    BYTE *t = NtCurrentTebBytes();
+    DWORD64 base = *(DWORD64 *)(t + 0x08), low = *(DWORD64 *)(t + 0x1478);
+    if (!low) low = *(DWORD64 *)(t + 0x10);
+    return sp >= low && sp < base && !(sp & 7);
+}
+
 BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
 {
     EXCEPTION_POINTERS ep = { rec, ctx };
@@ -530,6 +553,7 @@ BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
     CONTEXT cur = *ctx;                              /* walked; the original stays for resume */
     for (;;) {
         DWORD64 base = 0, frame = 0;
+        if (!on_stack(cur.Rsp)) { rec->ExceptionFlags |= EXCEPTION_STACK_INVALID; break; }
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
         if (!f) {
             /* Leaf function: the return address is on top of the stack. */
@@ -542,6 +566,7 @@ BOOLEAN NTAPI RtlDispatchException(PEXCEPTION_RECORD rec, PCONTEXT ctx)
         CONTEXT before = cur;
         PVOID hdata = 0;
         PEXCEPTION_ROUTINE handler = RtlVirtualUnwind(UNW_FLAG_EHANDLER, base, before.Rip, f, &cur, &hdata, &frame, 0);
+        if (!on_stack(frame)) { rec->ExceptionFlags |= EXCEPTION_STACK_INVALID; break; }
         if (handler) {
             DISPATCHER_CONTEXT dc;
             memset(&dc, 0, sizeof(dc));
@@ -616,9 +641,9 @@ VOID NTAPI RtlUnwindEx(PVOID target_frame, PVOID target_ip, PEXCEPTION_RECORD re
             cur = *to;
             while (outer && (DWORD64)outer < cur.Rsp) outer = outer->prev;
         }
+        if (!on_stack(cur.Rsp)) break;               /* (Windows raises STATUS_BAD_STACK) */
         PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(cur.Rip, &base, 0);
         if (!f) {
-            if (cur.Rsp == 0 || (cur.Rsp & 7)) break;
             cur.Rip = *(DWORD64 *)cur.Rsp;
             cur.Rsp += 8;
             if (!cur.Rip) break;

@@ -429,10 +429,19 @@ static UINT64 sys_get_context_thread(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         r.r12 = f->r12; r.r13 = f->r13; r.r14 = f->r14; r.r15 = f->r15; r.rip = f->rip; r.rflags = f->rflags;
         r.cs = user_selector(f->cs);
     } else {
-        /* in a system call: as if the ntdll stub had just returned to its caller */
+        /* in a system call: as if the ntdll stub had just returned to its
+         * caller, with the nonvolatile registers SYSCALL's entry saved at
+         * the top of the thread's kernel stack (as own_registers reads
+         * them): a sampling profiler (Chromium's) unwinds the thread from
+         * here, through functions whose frame is found from Rbp */
         UINT64 sp = t->kt ? t->kt->user_rsp : 0, ret = 0;
         CopyFromUser(&ret, (const void *)(uintptr_t)sp, 8);
         r.rip = ret; r.rsp = sp + 8; r.rflags = 0x202;
+        if (t->kt && t->kt->kernel_stack) {
+            const UINT64 *top = (const UINT64 *)((uintptr_t)t->kt->kernel_stack + t->kt->stack_size);
+            r.rbp = top[-4]; r.rdi = top[-5]; r.rsi = top[-6]; r.rbx = top[-7];
+            r.r12 = top[-8]; r.r13 = top[-9]; r.r14 = top[-10]; r.r15 = top[-11];
+        }
     }
     um_ob_unref(o);
     static UINT8 c[CONTEXT_SIZE];                                /* build_context: interrupts off */

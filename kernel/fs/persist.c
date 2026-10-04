@@ -40,6 +40,7 @@
 #include "../arch/x86_64/cpu.h"
 #include "../arch/x86_64/apic.h"
 #include "../um/um.h"
+#include "../mm/pmm.h"
 
 #define DATA_ROOT     "\\NOVA\\C"
 #define DELETED_FILE  "DELETED.TXT"          /* in \NOVA */
@@ -79,7 +80,14 @@ static char *g_links_text;
 static volatile UINT32 g_saving;
 static WaitQueue g_saving_q = WAITQ_INIT;
 
-static bool save_trylock(void) { return !__atomic_exchange_n(&g_saving, 1, __ATOMIC_ACQUIRE); }
+static Thread *g_save_owner;                  /* (who holds it: read back on its own thread without waiting) */
+
+static bool save_trylock(void)
+{
+    if (__atomic_exchange_n(&g_saving, 1, __ATOMIC_ACQUIRE)) return false;
+    g_save_owner = sched_current();
+    return true;
+}
 
 static void save_lock(void)
 {
@@ -92,6 +100,7 @@ static void save_lock(void)
 
 static void save_unlock(void)
 {
+    g_save_owner = NULL;
     __atomic_store_n(&g_saving, 0, __ATOMIC_RELEASE);
     waitq_wake(&g_saving_q);
 }
@@ -385,12 +394,20 @@ static void drop_vol(void)
     g_links_text = NULL;
 }
 
+static UINT32 bring_back(RamNode *d, int depth);
+
 void PersistDetach(void)
 {
+    FsLock();
     save_lock();                                                  /* (after a save in progress) */
-    if (have_vol()) kprintf("[PERSIST] Stopped saving to %s\n", g_dev->name);
+    if (have_vol()) {
+        UINT32 lost = bring_back(RamfsRoot(), 0);
+        kprintf("[PERSIST] Stopped saving to %s\n", g_dev->name);
+        if (lost) kprintf("[PERSIST] %u file(s) of drive C: could not be read back from it and are lost\n", lost);
+    }
     drop_vol();
     save_unlock();
+    FsUnlock();
 }
 
 /* Everything not from the OS image is to be saved */
@@ -412,6 +429,13 @@ bool PersistAdopt(BlockDev *d, UINT64 lba)
     if (!mount_at(d, lba, &c)) return false;
     FsLock();
     save_lock();
+    if (have_vol() && bring_back(RamfsRoot(), 0)) {               /* (the old volume holds contents memory does not) */
+        kprintf("[PERSIST] Drive C: stays on %s: files whose contents are only there could not be read back\n", g_dev->name);
+        cand_free(&c);
+        save_unlock();
+        FsUnlock();
+        return false;
+    }
     drop_vol();
     g_lba = lba;
     if (c.vol) g_vol = c.vol;
@@ -738,9 +762,40 @@ static bool vol_write_meta(UINT64 dir, const char *name, const void *data, UINT3
 static bool vol_sync(void) { return g_vol ? FatSync(g_vol) : NtfsSync(g_ntfs); }
 
 /* ---------------------------------------------------------------------------
+ * Contents let go of (see ramfs.h, RamfsLetGo): read back from where the
+ * file is on the volume, @bref (FAT: its first cluster, NTFS: its record).
+ * That place stays the file's until it is written again, and a file is
+ * only written once its contents are back in memory (read_changed), so
+ * the place is looked up when the contents are let go of and kept with
+ * the node.  Under the save lock, which keeps the volume's own buffers.
+ * ------------------------------------------------------------------------- */
+static bool read_back(RamNode *f, char *buf)
+{
+    if (g_vol) {
+        FatEntry e;
+        memset(&e, 0, sizeof(e));
+        e.cluster = (UINT32)f->bref;
+        e.size = f->size;
+        return FatRead(g_vol, &e, buf);
+    }
+    return g_ntfs && NtfsRead(g_ntfs, f->bref, 0, buf, f->size);
+}
+
+/* RamfsLoad's reader: waits for a save that is writing */
+static bool backing_read(RamNode *f, char *buf)
+{
+    if (g_save_owner == sched_current()) return read_back(f, buf);
+    save_lock();
+    bool ok = read_back(f, buf);
+    save_unlock();
+    return ok;
+}
+
+/* ---------------------------------------------------------------------------
  * Restoring
  * ------------------------------------------------------------------------- */
 static int g_restored;
+static UINT64 g_restored_out;                 /* bytes restored without being read (RamfsSetSaved) */
 
 /* File times: RAM nodes keep FILETIMEs (100 ns since 1601), FAT keeps DOS
  * date and time (2-second steps, from 1980) */
@@ -855,6 +910,18 @@ static void load_dir(UINT64 vdir, RamNode *rdir, int depth)
             if (!have) RamfsLink(llinks_find(e->ref), rdir, e->name);
             continue;
         }
+        if (!have && !linked && size >= RAMFS_OUT_MIN) {             /* read when first wanted (RamfsLoad) */
+            RamNode *f = RamfsCreate(rdir, e->name, false);
+            if (!f) continue;
+            RamfsSetSaved(f, (UINT32)size, e->ref);
+            g_restored++;
+            g_restored_out += size;
+            if (e->mtime) f->mtime = e->mtime;
+            f->ctime = e->ctime ? e->ctime : f->mtime;
+            f->attrs = e->attrs;
+            if (g_ntfs) load_sd(f, e->ref);
+            continue;
+        }
         PEnt real = *e;
         real.size = size;
         char *buf = size ? kmalloc(size) : NULL;
@@ -912,6 +979,7 @@ static void load_removed(void)
 
 void PersistLoad(void)
 {
+    RamfsSetBacking(backing_read);
     if (g_vol) {
         RamfsSetMode(RAMFS_LOADING);
         FatEntry nova, root;
@@ -925,7 +993,8 @@ void PersistLoad(void)
             load_removed();
             load_links();
         }
-        kprintf("[PERSIST] Restored %d file(s) to drive C:\n", g_restored);
+        kprintf("[PERSIST] Restored %d file(s) to drive C:; %llu MB of them are read when wanted\n", g_restored,
+                (unsigned long long)(g_restored_out >> 20));
         if (g_nova_dir) panic_slot(true);
     } else if (g_ntfs) {
         RamfsSetMode(RAMFS_LOADING);
@@ -947,7 +1016,8 @@ void PersistLoad(void)
         g_llinks = NULL;
         g_nllinks = g_llinks_cap = 0;
         if (g_root_known) load_removed();
-        kprintf("[PERSIST] Restored %d file(s) to drive C: (NTFS)\n", g_restored);
+        kprintf("[PERSIST] Restored %d file(s) to drive C: (NTFS); %llu MB of them are read when wanted\n", g_restored,
+                (unsigned long long)(g_restored_out >> 20));
     }
     g_loaded = true;
     RamfsSetMode(RAMFS_TRACK);
@@ -1110,6 +1180,182 @@ static void save_error(const char *what, const SNode *n, UINT8 again, bool tree)
     if (again) unsaved_add(path, again, tree);
 }
 
+/* ---------------------------------------------------------------------------
+ * Letting go of saved contents when memory runs short (RamfsLetGo)
+ *
+ * When free memory falls below an eighth of the machine's, the contents of
+ * saved files of C: that nothing holds are let go of, those unused longest
+ * first (passes over the tree for files unused ten minutes, then two, half
+ * a minute, five seconds, then any), until a fifth of memory is free again;
+ * RamfsLoad reads them back when they are wanted.  This runs on the
+ * "persist" thread, under the file-system lock (nothing opens or changes a
+ * file meanwhile) and the save lock (no save is writing), and only when
+ * the last save wrote everything it took (no g_unsaved): then the volume
+ * holds what memory holds for every file without a change mark.  Each
+ * file's place there is looked up as it is let go of (its directory listed
+ * once per pass) and checked against its size.
+ * ------------------------------------------------------------------------- */
+typedef struct LgDir {
+    struct LgDir *up;
+    RamNode *node;
+    UINT64   ref;
+    int      state;                  /* 0 not looked up, 1 found, -1 not on the volume */
+    bool     listed;
+    EntList  list;
+} LgDir;
+
+static bool lgdir_ref(LgDir *d)
+{
+    if (d->state) return d->state > 0;
+    d->state = -1;
+    if (!d->up) {
+        if (g_root_known) { d->ref = g_root_dir; d->state = 1; }
+    } else if (lgdir_ref(d->up)) {
+        UINT64 ref;
+        bool is_dir;
+        if (vol_lookup(d->up->ref, d->node->name, &ref, &is_dir) && is_dir) { d->ref = ref; d->state = 1; }
+    }
+    return d->state > 0;
+}
+
+/* Where file @f of directory @d is on the volume, if it is there as @f is */
+static bool lg_place(LgDir *d, RamNode *f, UINT64 *bref)
+{
+    if (!lgdir_ref(d)) return false;
+    if (!d->listed) { vol_list(d->ref, &d->list); d->listed = true; }
+    for (int i = 0; i < d->list.n; i++) {
+        const PEnt *e = &d->list.e[i];
+        if (e->dir || !path_eq(e->name, f->name)) continue;
+        UINT64 size = e->size;
+        if (g_ntfs && (!NtfsSize(g_ntfs, e->ref, &size) || NtfsLinks(g_ntfs, e->ref) > 1)) return false;
+        if (size != f->size) return false;
+        *bref = e->ref;
+        return true;
+    }
+    return false;
+}
+
+static UINT64 lg_target(void) { return pmm_ram_pages() / 5; }
+static UINT64 lg_low(void)    { return pmm_ram_pages() / 8; }
+
+typedef struct { UINT64 want, files, bytes; UINT32 now, age; } LgPass;
+
+static bool lg_done(const LgPass *p) { return pmm_free_now() >= p->want; }
+
+static void lg_dir(LgDir *d, LgPass *p, int depth)
+{
+    if (depth > 24) return;
+    for (RamNode *c = d->node->child; c && !lg_done(p); c = c->next) {
+        if (c->dir) {
+            if (c->pflags & RAMFS_F_SEALED) continue;
+            LgDir sub = { d, c, 0, 0, false, { 0 } };
+            lg_dir(&sub, p, depth + 1);
+            kfree(sub.list.e);
+            continue;
+        }
+        if (!RamfsCanLetGo(c) || p->now - c->used < p->age) continue;
+        UINT64 bref;
+        if (!lg_place(d, c, &bref)) continue;
+        UINT32 size = c->size;
+        if (RamfsLetGo(c, bref)) { p->files++; p->bytes += size; }
+    }
+}
+
+/* (The file-system lock and the save lock held, nothing unsaved.)  Let go
+ * until @want pages are free; the files and bytes let go of. */
+static void let_go(UINT64 want, UINT64 *files, UINT64 *bytes)
+{
+    static const UINT32 ages[] = { 600, 120, 30, 5, 0 };
+    LgPass p = { want, 0, 0, RamfsSeconds(), 0 };
+    for (unsigned i = 0; i < sizeof(ages) / sizeof(ages[0]) && !lg_done(&p); i++) {
+        p.age = ages[i];
+        LgDir root = { NULL, RamfsRoot(), 0, 0, false, { 0 } };
+        lg_dir(&root, &p, 0);
+        kfree(root.list.e);
+    }
+    *files = p.files;
+    *bytes = p.bytes;
+}
+
+static volatile UINT32 g_trim_asked;
+static UINT64 g_trim_tick;
+static UINT64 g_let_go_files, g_let_go_bytes;           /* (all told, for PersistLetGo) */
+
+/* On the "persist" thread: memory is short */
+static void trim(void)
+{
+    if (!have_vol() || !g_loaded) return;
+    FsLock();
+    if (!save_trylock()) { FsUnlock(); return; }                /* (a save is writing: next time) */
+    UINT64 files = 0, bytes = 0;
+    if (have_vol() && !g_unsaved) let_go(lg_target(), &files, &bytes);
+    save_unlock();
+    FsUnlock();
+    if (files) {
+        g_let_go_files += files;
+        g_let_go_bytes += bytes;
+        kprintf("[PERSIST] Memory is short: let go of %llu saved file(s) of drive C:, %llu MB (read back when wanted); %llu MB free\n",
+                (unsigned long long)files, (unsigned long long)(bytes >> 20), (unsigned long long)(pmm_free_now() >> 8));
+    }
+}
+
+void PersistLetGoAll(void)
+{
+    if (!have_vol() || !g_loaded) return;
+    FsLock();
+    save_lock();
+    UINT64 files = 0, bytes = 0;
+    if (have_vol() && !g_unsaved) let_go(~0ull, &files, &bytes);
+    save_unlock();
+    FsUnlock();
+    g_let_go_files += files;
+    g_let_go_bytes += bytes;
+    kprintf("[PERSIST] Let go of %llu saved file(s) of drive C:, %llu MB, as asked; %llu MB free\n",
+            (unsigned long long)files, (unsigned long long)(bytes >> 20), (unsigned long long)(pmm_free_now() >> 8));
+}
+
+void PersistLetGoStats(UINT64 *files, UINT64 *bytes)
+{
+    *files = g_let_go_files;
+    *bytes = g_let_go_bytes;
+}
+
+/* Before a save writes them, the changed files whose contents were let go
+ * of (moved, renamed, their details changed) are read back: written, they
+ * get a new place.  False if one could not be (the save waits). */
+static bool read_changed(RamNode *r, int depth)
+{
+    if (depth > 24) return true;
+    for (RamNode *c = r->child; c; c = c->next) {
+        if (!(c->pflags & (RAMFS_F_DIRTY | RAMFS_F_DIRTYDIR | RAMFS_F_SUB))) continue;
+        if (c->dir) { if (!read_changed(c, depth + 1)) return false; continue; }
+        if (!c->out || !(c->pflags & RAMFS_F_DIRTY) || (c->pflags & RAMFS_F_SEALED)) continue;
+        if (RamfsLoadWith(c, read_back)) continue;
+        UINT64 files, bytes;                                     /* out of memory: make room */
+        let_go(pmm_free_now() + c->size / 4096 + lg_low(), &files, &bytes);
+        if (!RamfsLoadWith(c, read_back)) {
+            char path[RAMFS_PATH_MAX];
+            RamfsPath(c, path, sizeof(path));
+            kprintf("[PERSIST] %s could not be read back to save it again; the save waits\n", path);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Before C: stops being saved to the volume: every file's contents back in
+ * memory (both locks held); how many could not be */
+static UINT32 bring_back(RamNode *d, int depth)
+{
+    UINT32 failed = 0;
+    if (depth > 24) return 0;
+    for (RamNode *c = d->child; c; c = c->next) {
+        if (c->dir) failed += bring_back(c, depth + 1);
+        else if (c->out && !RamfsLoadWith(c, read_back)) failed++;
+    }
+    return failed;
+}
+
 /* ---- the snapshot (under the file-system lock and the save lock) ---- */
 typedef struct {
     SNode  *root;                 /* the changed part of C: (NULL: nothing) */
@@ -1243,6 +1489,7 @@ static void take_snapshot(Snapshot *s)
         s->root_sd = dup_bytes(root->sd, root->sdlen);
         s->root_sdlen = root->sdlen;
     }
+    if ((root->pflags & CLEAR) && !read_changed(root, 0)) { s->partial = true; return; }
     if (root->pflags & CLEAR) s->root = snap(root, NULL, s, 0);
     s->partial = (root->pflags & CLEAR) != 0;
 
@@ -1407,6 +1654,7 @@ static void saver_thread(void *arg)
     bkl_drop();                                  /* (kernel threads start with the big lock) */
     for (;;) {
         UINT32 gen = waitq_gen(&g_saver_q);
+        if (__atomic_exchange_n(&g_trim_asked, 0, __ATOMIC_ACQ_REL)) { trim(); continue; }
         if (__atomic_exchange_n(&g_save_asked, 0, __ATOMIC_ACQ_REL)) {
             bool ok = save();
             if (!ok) g_retry_tick = sched_ticks() + 3000;        /* try again in 30 s */
@@ -1417,22 +1665,37 @@ static void saver_thread(void *arg)
     }
 }
 
+static void wake_saver(void);
+
 void PersistPoll(void)
 {
     if (!have_vol() || !g_loaded) return;
     UINT32 now = RamfsChanges();
     UINT64 t = sched_ticks();
+    if (t >= g_trim_tick && pmm_free_now() < lg_low()) {         /* memory is short: at most once a second */
+        g_trim_tick = t + 100;
+        __atomic_store_n(&g_trim_asked, 1, __ATOMIC_RELEASE);
+        wake_saver();
+    }
     if (now != g_seen_changes) { g_seen_changes = now; g_seen_tick = t; }
     if (now == g_saved_changes && !g_removed_dirty && !g_unsaved) return;
     if (t - g_seen_tick < 100) return;                    /* wait for a quiet second */
     if (g_failed && t < g_retry_tick) return;
     if (g_save_asked || g_saving) return;                 /* (asked already, or saving) */
+    __atomic_store_n(&g_save_asked, 1, __ATOMIC_RELEASE);
+    wake_saver();
+}
+
+static void wake_saver(void)
+{
     if (!g_saver) g_saver = sched_create_thread("persist", saver_thread, NULL, PRIO_SERVICE);   /* (writeback: above programs, below the rest) */
-    if (!g_saver) {                                       /* (no thread: save here) */
-        g_failed = !save();
-        if (g_failed) g_retry_tick = t + 3000;
+    if (!g_saver) {                                       /* (no thread: here) */
+        if (__atomic_exchange_n(&g_trim_asked, 0, __ATOMIC_ACQ_REL)) trim();
+        if (__atomic_exchange_n(&g_save_asked, 0, __ATOMIC_ACQ_REL)) {
+            g_failed = !save();
+            if (g_failed) g_retry_tick = sched_ticks() + 3000;
+        }
         return;
     }
-    __atomic_store_n(&g_save_asked, 1, __ATOMIC_RELEASE);
     waitq_wake(&g_saver_q);
 }

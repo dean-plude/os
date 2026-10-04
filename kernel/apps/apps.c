@@ -267,7 +267,7 @@ static const UINT8 *lnk_string(const UINT8 *p, const UINT8 *end, bool wide, char
 bool AppLinkRead(const RamNode *lnk, AppLink *out)
 {
     memset(out, 0, sizeof(*out));
-    if (!lnk || lnk->dir || !lnk->data || lnk->size < 0x4C) return false;
+    if (!lnk || lnk->dir || !RamfsLoad((RamNode *)lnk) || !lnk->data || lnk->size < 0x4C) return false;
     const UINT8 *p = (const UINT8 *)lnk->data, *end = p + lnk->size;
     static const UINT8 clsid[16] = { 0x01, 0x14, 0x02, 0, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46 };
     if (rd32le(p) != 0x4C || memcmp(p + 4, clsid, 16)) return false;
@@ -365,7 +365,7 @@ void AppOpenFile(RamNode *file)
 #define ICON_CACHE 48
 static struct {
     const RamNode *node;          /* compared, never dereferenced */
-    const char    *data;          /* the file's contents when decoded */
+    UINT64         mtime;         /* the file's write time and size when decoded */
     UINT32         size;
     GdiIcon       *icon;          /* NULL: the file has no usable icon */
     UINT32         used;
@@ -381,20 +381,20 @@ GdiIcon *AppFileIcon(RamNode *f)
         if (g_icache[i].node == f) { slot = i; break; }
         if (g_icache[i].used < g_icache[lru].used) lru = i;
     }
-    if (slot >= 0 && g_icache[slot].data == f->data && g_icache[slot].size == f->size) {
+    if (slot >= 0 && g_icache[slot].mtime == f->mtime && g_icache[slot].size == f->size) {   /* (its contents may be on the data disk) */
         g_icache[slot].used = ++g_icache_clock;
         return g_icache[slot].icon;
     }
     if (slot < 0) slot = lru;                 /* evict the least recently used */
     IconFree(g_icache[slot].icon);
     GdiIcon *ic = NULL;
-    if (f->data && f->size) {
+    if (f->size && RamfsLoad(f) && f->data) {
         if (t == FT_PNG)                   ic = IconFromPng(f->data, f->size);
         else if (t == FT_EXE || t == FT_DLL) ic = IconFromPe(f->data, f->size);
         else                               ic = IconLoad(f->data, f->size);
     }
     g_icache[slot].node = f;
-    g_icache[slot].data = f->data;
+    g_icache[slot].mtime = f->mtime;
     g_icache[slot].size = f->size;
     g_icache[slot].icon = ic;
     g_icache[slot].used = ++g_icache_clock;

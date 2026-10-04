@@ -750,7 +750,11 @@ os/
   volume a second after each change and restored at boot.  A file takes
   the memory its contents need (one written by appending gives back the
   rest of the buffer it grew into when it is closed; `mem` in the Terminal
-  shows what C: takes).  System files
+  shows what C: takes).  When memory runs short, the contents of saved
+  files nothing holds are let go of, those unused longest first, and read
+  back from the volume when wanted, as Windows drops cached file pages;
+  at boot the large files are restored without being read until then
+  (`cachetest`).  System files
   come from the kernel image, so a new build always brings its own.  The
   save runs on its own thread and holds no lock while the disk is written
   (`savetest`), and a crash during a FAT save leaves each file old or new.

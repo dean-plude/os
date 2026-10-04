@@ -14,9 +14,14 @@ climbs).  When the serial log has been silent for HANG_SECONDS (default 360;
 the tests' own limit is 900) it also writes OUT_DIR/host-hang-N.txt (up to
 three, five minutes apart): the last serial lines, every host thread's state
 and wait channel, its CPU time over five seconds, and gdb's backtrace of
-QEMU and of each render process (sudo gdb, when gdb is there).
+QEMU and of each render process (sudo gdb, when gdb is there).  It also
+copies the whole serial log to OUT_DIR/serial-hang-N.log (a job that its
+time limit cancels never reaches the end of the self-tests, where the log is
+kept) and asks QEMU's monitor what the guest's CPUs are doing: each one's
+registers (with the kernel function their RIP is in, from build/kernel.elf
+when it is there), its local APIC, and the kernel's big lock.
 """
-import glob, os, subprocess, sys, time
+import glob, os, re, shutil, socket, subprocess, sys, time
 
 EVERY = 15
 
@@ -93,6 +98,94 @@ def gdb(pid):
         return f'(gdb: {e})\n'
 
 
+def monitor_path(qemu):
+    """The path of QEMU's monitor socket (-monitor unix:PATH,...), from its command line"""
+    try:
+        a = open(f'/proc/{qemu}/cmdline').read().split('\0')
+        for i, x in enumerate(a):
+            if x == '-monitor' and i + 1 < len(a) and a[i + 1].startswith('unix:'):
+                return a[i + 1][5:].split(',')[0]
+    except OSError:
+        pass
+    return None
+
+
+def hmp(path, commands, timeout=20):
+    """Run monitor @commands (HMP) on the socket at @path; their output, command by command"""
+    out = []
+    s = socket.socket(socket.AF_UNIX)
+    s.settimeout(timeout)
+
+    def until_prompt():
+        got = b''
+        while not got.endswith(b'(qemu) '):
+            more = s.recv(65536)
+            if not more:
+                break
+            got += more
+        return re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', got.decode('latin-1')).replace('\r', '')
+
+    try:
+        s.connect(path)
+        until_prompt()
+        for c in commands:
+            s.sendall(c.encode() + b'\n')
+            got = until_prompt()
+            out.append(f'(qemu) {c}\n' + (got.split('\n', 1)[1] if '\n' in got else got))   # (minus the line editor's echo)
+    except (OSError, socket.timeout) as e:
+        out.append(f'(monitor: {e})\n')
+    finally:
+        s.close()
+    return ''.join(out)
+
+
+def symbols(elf):
+    """[(address, name)] of the functions and data in @elf, sorted (nm), or []"""
+    try:
+        r = subprocess.run(['nm', '-n', elf], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    syms = []
+    for line in r.stdout.splitlines():
+        f = line.split()
+        if len(f) == 3 and f[1] in 'tTdDbBrR':
+            syms.append((int(f[0], 16), f[2]))
+    return syms
+
+
+def where(syms, addr):
+    """'name+0xoff' for the symbol @addr is in"""
+    lo, hi = 0, len(syms)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if syms[mid][0] <= addr:
+            lo = mid + 1
+        else:
+            hi = mid
+    return f'{syms[lo - 1][1]}+0x{addr - syms[lo - 1][0]:x}' if lo and addr - syms[lo - 1][0] < 0x100000 else '?'
+
+
+def guest_state(qemu, elf):
+    """What QEMU's monitor says about the guest's CPUs: registers (RIP named from @elf), the local
+    APIC, and the kernel's big lock (smp.c's g_bkl: locked, waiters, contenders, next_wake, holder,
+    since, holder_cpu)"""
+    path = monitor_path(qemu)
+    if not path:
+        return '(no monitor socket)\n'
+    syms = symbols(elf)
+    ncpu = max(1, len(re.findall(r'^\s*\*?\s*CPU #\d+', hmp(path, ['info cpus']), re.M)))
+    cmds = ['info cpus', 'info registers -a']
+    for c in range(ncpu):
+        cmds += [f'cpu {c}', 'info lapic']
+    bkl = [a for a, n in syms if n == 'g_bkl']
+    if bkl:
+        cmds += [f'x/12wx 0x{bkl[0]:x}']
+    text = hmp(path, cmds)
+    for m in sorted(set(re.findall(r'RIP=([0-9a-f]{16})', text))):
+        text += f'RIP {m} = {where(syms, int(m, 16)) if syms else "(no build/kernel.elf)"}\n'
+    return text
+
+
 def dump(out, n, qemu, serial):
     procs = [qemu] + pids('virgl_render')
     lines = [f'host snapshot {n} at {time.strftime("%H:%M:%S")}: the guest has been silent a while\n',
@@ -110,6 +203,13 @@ def dump(out, n, qemu, serial):
     for p in procs[:8]:
         lines.append(f'--- gdb, pid {p}\n')
         lines.append(gdb(p))
+    lines.append('--- the guest, from QEMU\'s monitor\n')
+    lines.append(guest_state(qemu, os.environ.get('NOVA_KERNEL_ELF', 'build/kernel.elf')))
+    if serial:
+        try:
+            shutil.copyfile(serial, os.path.join(out, f'serial-hang-{n}.log'))
+        except OSError:
+            pass
     open(os.path.join(out, f'host-hang-{n}.txt'), 'w').write(''.join(lines))
 
 

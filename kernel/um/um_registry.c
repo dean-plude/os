@@ -847,7 +847,7 @@ void um_registry_init(void)
     g_root->nlen = 8;
     g_root->refs = 1;
     RamNode *f = RamfsResolve(NULL, HIVE_PATH);
-    bool loaded = f && !f->dir && load_hive((const UINT8 *)f->data, f->size);
+    bool loaded = f && !f->dir && RamfsLoad(f) && load_hive((const UINT8 *)f->data, f->size);
     if (f && !loaded) kprintf("[REG] %s is damaged; starting from the defaults\n", HIVE_PATH);
     defaults();
     g_dirty = !loaded;
