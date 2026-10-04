@@ -15,4 +15,4 @@ runs three times so the race shows up on every run.
 
 `prioritytest` also read its thread's priority the instant it started, so
 a start-up wake boost that had not decayed yet (9, not 8) failed the
-whole run on one CI run; it now waits 200 ms for the boost to decay first.
+whole run on one CI run; it now spins (a wait would wake the thread and boost it again) up to 500 ms until the boost has decayed.
