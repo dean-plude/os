@@ -178,7 +178,8 @@ same bytes, as Windows shares image sections), I/O,
   microphones through Sound Open Firmware on Intel's audio DSP) with a kernel mixer;
   PS/2 keyboards and mice; I2C-HID touchpads on Intel's LPSS I2C
   controllers (found through ACPI; tap to click, two-finger tap for the
-  right button and two-finger scrolling as mouse-wheel input); USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  right button and two-finger scrolling as mouse-wheel input; read when
+  their interrupt pin on Intel's GPIO controller fires); USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
   (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for
@@ -191,8 +192,8 @@ same bytes, as Windows shares image sections), I/O,
   from as soon as they are plugged in, or chosen in Settings' Sound page,
   each with its own volume; the choice and the levels are kept across
   restarts), and game controllers (wired Xbox 360 and Xbox One
-  controllers, with their motors, and HID game pads, for XInput and
-  DirectInput 8); virtio multi-touch screens,
+  controllers, with their motors, and HID game pads, for XInput,
+  DirectInput 8, Raw Input and `hid.dll`); virtio multi-touch screens,
   pens (pressure, tilt, rotation) and tablets; CMOS clock; a VBE display
   driver for QEMU's standard VGA, QXL, virtio-vga and VMware adapters,
   bochs-display and VirtualBox (resolutions switched at run time, page
@@ -221,7 +222,9 @@ same bytes, as Windows shares image sections), I/O,
   `SO_LINGER`, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_BROADCAST`, `IP_TTL`,
   `SO_RCVBUF`/`SO_SNDBUF`) and read back; a program keeps hundreds of
   sockets open at once, as a browser does, and `select`, `WSAPoll` and
-  `WSAEventSelect` wait on any number of them;
+  `WSAEventSelect` wait on any number of them; a UDP socket can be
+  connected to a peer, and `WSADuplicateSocket` hands a socket to another
+  process (Chromium's DNS client and its network process use both);
   overlapped requests that have to wait (an `AcceptEx`, a `ConnectEx`, a
   `WSARecv` with nothing to read yet) stay pending and complete on an I/O
   completion port, which proactor event loops such as Python's asyncio need;
@@ -241,7 +244,7 @@ same bytes, as Windows shares image sections), I/O,
   Boost.Math under `msvcp140_2`'s special math functions),
   `user32`/`gdi32` (a real window system, controls, menus, dialogs, MDI,
   hooks, per-monitor and per-thread DPI awareness with `WM_DPICHANGED`, controls and fonts at each window's DPI and rescaled when it changes, window coordinates converted between awareness contexts,
-  touch, pens and the mouse as `WM_POINTER` messages with `GetPointerPenInfo`, title bars included, and the pen signature in `GetMessageExtraInfo`), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
+  touch, pens and the mouse as `WM_POINTER` messages with `GetPointerPenInfo`, title bars included, and the pen signature in `GetMessageExtraInfo`; `SetCursorPos` and `ClipCursor` for the window in front, as games recentre and confine the pointer), `gdiplus` (GDI+ on the MIT-licensed plutovg rasteriser),
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
   as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
@@ -287,7 +290,10 @@ same bytes, as Windows shares image sections), I/O,
   Arabic and Devanagari draw with Noto Sans; GDI falls back to them by
   script.  DirectWrite (`dwrite`) lays text out on the same core, with
   font fallback: `tools/dwtest` draws Latin, Arabic and Devanagari in one
-  line from a Latin-only font.
+  line from a Latin-only font.  Its factory is an `IDWriteFactory3`, with
+  Windows 10's font sets, font face references and `IDWriteFontFallback`,
+  which Chromium's browsers (Steam's, WebView2) ask for
+  (`tools/dw3test`).
 - **2D drawing**: Direct2D (`d2d1.dll`) draws in software: geometries
   (rectangles, ellipses, paths with Béziers and arcs, groups, transforms,
   combining, widening, tessellation), strokes with caps, joins and dashes,
@@ -323,8 +329,10 @@ same bytes, as Windows shares image sections), I/O,
   session); scheduled tasks (Task Scheduler 2.0, kept in
   `C:\Windows\System32\Tasks`); the Data Protection API.
 - **Updates**: the App Store's Updates page downloads a newer NovaOS from
-  an update channel, and the next restart starts it, going back to the
-  old one if it does not start ([docs/updates.md](docs/updates.md)).
+  an update channel signed with the release key (Ed25519), and the next
+  restart starts it, going back to the old one if it does not start
+  ([docs/updates.md](docs/updates.md)).
+  Every green build of `main` is also an update, on its own channel.
 
 <!-- END generated:inside -->
 
@@ -428,20 +436,22 @@ To make the ISO yourself from a fresh build, run
   32-bit code in a 64-bit program through a far jump to 0x23,
   GetThreadContext on the calling thread and `__fastfail`, as anti-cheat
   code expects), `filetest`, `linktest`, `pipetest`, `proctest`,
-  `sectest`, `acltest` (64- and 32-bit), `guitest auto`, `inputtest`
-  (side buttons, horizontal wheel, volume keys), `usbcheck` (media keys,
-  AC Pan, pen pressure, tilt and twist, virtio pens and tablets),
-  `anitest` (animated cursors and program pointers), `cursortest`
-  (system pointers, SetSystemCursor, cursors at the display scale),
-  `bmpcurtest` (1-, 4-, 8- and 16-bit DIB sections, cursors from bitmaps
-  with alpha or monochrome masks), `pentest` (a pen as WM_POINTER*
-  messages: enter, down, update, up, leave; GetPointerPenInfo pressure,
-  tilt, rotation, barrel and eraser; DefWindowProc promotion to mouse
-  with the pen signature in GetMessageExtraInfo; WM_NCPOINTER* over a
-  title bar and WM_POINTERACTIVATE; the mouse as a pointer, entering and
-  leaving windows; 64- and 32-bit), `wintabtest` (wintab32 with no pen
-  and with a synthetic one: contexts, packets, pressure, tilt and
-  rotation), `dpitest` (per-monitor DPI: the manifest's `dpiAwareness`,
+  `dlltest` (DllMain, static TLS, and a DllMain returning FALSE stopping
+  the program with 0xC0000142, 64- and 32-bit), `sectest`, `acltest`
+  (64- and 32-bit), `guitest auto`, `inputtest` (side buttons,
+  horizontal wheel, volume keys), `usbcheck` (media keys, AC Pan, pen
+  pressure, tilt and twist, virtio pens and tablets), `anitest`
+  (animated cursors and program pointers), `cursortest` (system
+  pointers, SetSystemCursor, cursors at the display scale), `bmpcurtest`
+  (1-, 4-, 8- and 16-bit DIB sections, cursors from bitmaps with alpha
+  or monochrome masks), `pentest` (a pen as WM_POINTER* messages: enter,
+  down, update, up, leave; GetPointerPenInfo pressure, tilt, rotation,
+  barrel and eraser; DefWindowProc promotion to mouse with the pen
+  signature in GetMessageExtraInfo; WM_NCPOINTER* over a title bar and
+  WM_POINTERACTIVATE; the mouse as a pointer, entering and leaving
+  windows; 64- and 32-bit), `wintabtest` (wintab32 with no pen and with
+  a synthetic one: contexts, packets, pressure, tilt and rotation),
+  `dpitest` (per-monitor DPI: the manifest's `dpiAwareness`,
   `GetDpiForMonitor`, `GetDpiForWindow`, `WM_DPICHANGED` and its
   suggested rectangle when the monitor goes to 192 DPI and back, and the
   window and monitor coordinates an aware, an unaware and a system-aware
@@ -560,22 +570,45 @@ To make the ISO yourself from a fresh build, run
   changed by several threads and processes at once; 64- and 32-bit),
   `msiqtest` (Windows Installer: 32-bit packages into SysWOW64, product
   information by context, source lists, patch applicability; 64- and
-  32-bit), `svctest` (a real service: start with arguments, status
-  handshake, controls, stop and delete; CopyFile keeps file times; 64-
-  and 32-bit), `comoop` (cross-process COM: LocalServer32 activation,
-  the standard marshaler and RPC channel, the IDispatch proxy/stub,
-  BSTR/VARIANT marshalling; 64- and 32-bit clients and servers),
-  `etwtest` (event-tracing controllers with no sessions: StartTrace,
-  StopTrace, ControlTrace, EnableTrace, QueryAllTraces, OpenTrace,
-  ProcessTrace, CloseTrace; 64- and 32-bit), `qtwebtest` (the calls Qt
-  WebEngine imports: Bluetooth and SDP records, Direct3D 12, WinUSB,
-  AppContainer profiles, proxy resolver, security zones and more; 64-
-  and 32-bit), `qtthemetest` (Windows.UI.ViewManagement UISettings and
-  UIViewSettings as Qt reads them, ColorValuesChanged, Schannel's cipher
-  suites; 64- and 32-bit), `crash kernel`, a deliberate kernel fault
-  whose serial log must show a backtrace with function names, and last
-  the kernel crash report: after `crash kernel` and a reset, `crashes
-  last` shows the fault's backtrace.<!-- END generated:core-tests -->
+  32-bit), `chrometest` (Chromium start-up: read-only shared memory,
+  handle lists, ordinal exports; 64- and 32-bit), `svctest` (a real
+  service: start with arguments, status handshake, controls, stop and
+  delete; CopyFile keeps file times; 64- and 32-bit), `comoop`
+  (cross-process COM: LocalServer32 activation, the standard marshaler
+  and RPC channel, the IDispatch proxy/stub, BSTR/VARIANT marshalling;
+  64- and 32-bit clients and servers), `etwtest` (event-tracing
+  controllers with no sessions: StartTrace, StopTrace, ControlTrace,
+  EnableTrace, QueryAllTraces, OpenTrace, ProcessTrace, CloseTrace; 64-
+  and 32-bit), `qtwebtest` (the calls Qt WebEngine imports: Bluetooth
+  and SDP records, Direct3D 12, WinUSB, AppContainer profiles, proxy
+  resolver, security zones and more; 64- and 32-bit), `cachetest` (saved
+  files of drive C: let go of and read back from the data disk: memory,
+  ReadFile, a mapped view, renamed, hard-linked and emptied files,
+  `shutdown /r`, `cachetest after`), `qtthemetest`
+  (Windows.UI.ViewManagement UISettings and UIViewSettings as Qt reads
+  them, ColorValuesChanged, Schannel's cipher suites; 64- and 32-bit),
+  `samplertest` (a sampling profiler: GetThreadContext of a waiting
+  thread, unwound with RtlVirtualUnwind), `hwcheck` touchpad interrupt:
+  a modelled Intel GPIO controller from the ACPI tables, its interrupt
+  routed, the touchpad's GpioInt pin set up and its reports read on the
+  interrupt instead of polling, `proclisttest` (another program's image
+  name, user and command line, as Edge Update looks for its install
+  worker; 64- and 32-bit), `rawtest` (the mouse and the keyboard through
+  Raw Input: device list, names and info; WM_INPUT with relative motion,
+  button flags and the wheel; keys through GetRawInputBuffer with
+  RIDEV_NOLEGACY; 64- and 32-bit), `libmtest` (the 32-bit C runtime's
+  `_libm_sse2_*` and `_CI*` math, which MSVC-built SDL2 imports),
+  `warptest` (SetCursorPos and ClipCursor: the pointer moved and
+  confined by the window in front, WM_MOUSEMOVE but no WM_INPUT for a
+  warp, the mouse kept in the rectangle, a background process refused;
+  64- and 32-bit), `wvsetuptest` (a 300 MB file mapped whole, wer.dll's
+  report API and FlsGetValue2, as the WebView2 runtime's setup needs;
+  64- and 32-bit), `wvstarttest` (COM's apartment in the TEB,
+  TerminateProcess on itself, FLS slots and the functions the WebView2
+  runtime's browser process calls), `crash kernel`, a deliberate kernel
+  fault whose serial log must show a backtrace with function names, and
+  last the kernel crash report: after `crash kernel` and a reset,
+  `crashes last` shows the fault's backtrace.<!-- END generated:core-tests -->
 - **Network** (in the boot-test job): two boots with a virtio-net card.
   On QEMU's user network, `ipconfig`, `ping`, Winsock over IPv4 and
   `httptest suite` (winhttp with HTTP/2 by ALPN) against
@@ -614,7 +647,7 @@ after a build.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
-<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), Roblox (installs; the client stops in its anti-cheat), Steam (installs and updates itself; its browser does not open the login window yet), Microsoft Edge WebView2 runtime (its updater installs itself, runs the install and accepts the runtime's signature; its background pass then uninstalls it mid-install), SumatraPDF, WinMerge, KeePassXC, VLC (plays an H.264 and AAC MP4 with sound), Audacity (records 10 s from the microphone and saves the project), Inkscape, Krita, Firefox, Notepad++, OpenTTD (free on GOG; installs with its installer and reaches its main menu), Beneath a Steel Sky on ScummVM (free on GOG; installs with its installer, skips the intro and walks), Teeworlds (full screen, through its first-start questions to its start menu, with music) and PuTTY<!-- END generated:corpus -->.  The
+<!-- BEGIN generated:corpus -->ripgrep, fd, jq, 7-Zip, MinGit (cloning a repository), Python, Node.js, .NET (German and Japanese formatting through ICU), ffmpeg (an MP4 converted to WebM), Roblox (installs; the client stops in its anti-cheat), Steam (installs and updates itself; its browser does not open the login window yet), Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime's signature and starts the runtime's setup, which installs the runtime; a host program starts the runtime's browser process), SumatraPDF, WinMerge, KeePassXC, VLC (plays an H.264 and AAC MP4 with sound), Audacity (records 10 s from the microphone and saves the project), Inkscape, Krita, Firefox, Notepad++, OpenTTD (free on GOG; installs with its installer and reaches its main menu), Beneath a Steel Sky on ScummVM (free on GOG; installs with its installer, skips the intro and walks), Teeworlds (full screen, through its first-start questions to its start menu, with music; Settings opened with the mouse, SDL recentring the pointer with SetCursorPos), OpenTyrian (Tyrian 2.1 on Direct3D 9 through DXVK, its demo, menus and full screen, with music), Blobby Volley 2 (its full screen switches the display to 800x600 on Direct3D 9 through DXVK, and back), LBreakout2 (an SDL 1.2 game drawn with GDI; its full screen switches the display to 640x480, and back) and PuTTY<!-- END generated:corpus -->.  The
 windowed programs run last, one at a time: SumatraPDF opens a PDF,
 WinMerge compares two files, Firefox installs from the App Store and
 loads a page from an HTTPS server on the host, Notepad++ opens a file and PuTTY makes a raw
@@ -626,7 +659,7 @@ It posts a pass/fail table per program to the "Nightly app corpus" issue.
 
 - **Self-test programs** in `userland/programs/`, installed in
   `C:\Programs` (and 32-bit builds in `C:\Programs\x86`).  Run them from the
-  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `aligntest`, `anitest`, `apitest`, `authtest`, `bmpcurtest`, `boosttest`, `cabtest`, `cliptest`, `cmdlinetest`, `comoop`, `comtest`, `cppeh`, `crashtest`, `crttest`, `crtthreads`, `cursortest`, `d3d9test`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dltest`, `dpitest`, `edgeupdtest`, `errnotest`, `etwtest`, `filetest`, `fpstate`, `gatetest`, `glgeneric`, `httptest`, `icutest`, `inputtest`, `kbdtest`, `linktest`, `loadtest`, `looptest`, `mmcsstest`, `montest`, `msiqtest`, `msitest`, `msxmltest`, `ndrtest`, `nlstest`, `nstest`, `overlaptest`, `padtest`, `pentest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proctest`, `qttest`, `qtthemetest`, `qtwebtest`, `ramdisktest`, `regtest`, `rttest`, `savetest`, `sectest`, `setuptest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `svctest`, `syscalltest`, `threads`, `tlsslots`, `touchtest`, `tztest`, `unwindtest`, `usptest`, `wintabtest`, `wndthreads`<!-- END generated:selftest-programs -->.  `soundtest`
+  Terminal; each prints "N passed, 0 failed": <!-- BEGIN generated:selftest-programs -->`abitest`, `acltest`, `afdtest`, `aligntest`, `anitest`, `apitest`, `authtest`, `bmpcurtest`, `boosttest`, `cabtest`, `cachetest`, `chrometest`, `cliptest`, `cmdlinetest`, `comoop`, `comtest`, `cppeh`, `crashtest`, `crttest`, `crtthreads`, `cursortest`, `d3d9test`, `delaytest`, `disptest`, `dlgtest`, `dlltest`, `dltest`, `dpitest`, `edgeupdtest`, `errnotest`, `etwtest`, `filetest`, `fpstate`, `gatetest`, `glgeneric`, `httptest`, `icutest`, `inputtest`, `kbdtest`, `libmtest`, `linktest`, `loadtest`, `looptest`, `mmcsstest`, `montest`, `msiqtest`, `msitest`, `msxmltest`, `ndrtest`, `nlstest`, `nstest`, `overlaptest`, `padtest`, `pentest`, `pipetest`, `posixtest`, `powertest`, `prioritytest`, `proclisttest`, `proctest`, `qttest`, `qtthemetest`, `qtwebtest`, `ramdisktest`, `rawpadtest`, `rawtest`, `regtest`, `rttest`, `samplertest`, `savetest`, `sectest`, `setuptest`, `shmtest`, `smftest`, `smpstress`, `stltest`, `svctest`, `syscalltest`, `tcptabletest`, `threads`, `tlsslots`, `touchtest`, `tztest`, `unwindtest`, `usptest`, `warptest`, `wintabtest`, `wndthreads`, `wvsetuptest`, `wvstarttest`<!-- END generated:selftest-programs -->.  `soundtest`
   plays tones through `waveOut`, WASAPI, `PlaySound` and `Beep`, records
   through `waveIn` and WASAPI capture, and lists the sound devices,
   chooses the default and sets each device's own volume;
@@ -803,7 +836,7 @@ os/
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
 DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
-code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; nghttp2: MIT; libxml2: MIT; mujs: ISC; uACPI: MIT; Intel's e1000 shared code (FreeBSD's, for the I219 bring-up in `kernel/drivers/e1000.c`): BSD 3-clause; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; the time zone table (`kernel/ke/tzdata.inc`): zone names from Unicode CLDR's windowsZones, Unicode License v3; rules from the IANA tz database, public domain; HarfBuzz: MIT; the keyboard layouts (`userland/include/kbdlayouts.h`): xkeyboard-config, MIT/X11 licence, compiled by libxkbcommon (MIT); FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Boost.Math (the C++17 special math functions in `msvcp140_2.dll`): Boost Software License 1.0; Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Mesa's Venus and virgl (`third_party/mesa-venus`, the App Store's Venus): MIT; Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT; Sound Open Firmware (Intel's signed audio DSP firmware, built in only when tools/fetch_sof_firmware.py fetched it): BSD 3-clause with Intel's firmware licence<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
+code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; Monocypher: BSD-2-Clause (or CC0); nghttp2: MIT; libxml2: MIT; mujs: ISC; uACPI: MIT; Intel's e1000 shared code (FreeBSD's, for the I219 bring-up in `kernel/drivers/e1000.c`): BSD 3-clause; OpenBSD's `pchgpio(4)` (Intel GPIO controllers' register layout and pad groups, in `kernel/hal/gpio.c`): ISC; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; the time zone table (`kernel/ke/tzdata.inc`): zone names from Unicode CLDR's windowsZones, Unicode License v3; rules from the IANA tz database, public domain; HarfBuzz: MIT; the keyboard layouts (`userland/include/kbdlayouts.h`): xkeyboard-config, MIT/X11 licence, compiled by libxkbcommon (MIT); FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Boost.Math (the C++17 special math functions in `msvcp140_2.dll`): Boost Software License 1.0; Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Mesa's Venus and virgl (`third_party/mesa-venus`, the App Store's Venus): MIT; Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT; Sound Open Firmware (Intel's signed audio DSP firmware, built in only when tools/fetch_sof_firmware.py fetched it): BSD 3-clause with Intel's firmware licence<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
 

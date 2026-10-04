@@ -16,7 +16,9 @@
  * asking DuplicateHandle for FILE_MAP_WRITE: more than the handle was
  * granted is an open of the section, checked against its descriptor, so
  * the read-only handle must fail and the writable one succeed.  A section
- * made without a descriptor lets anything through.
+ * made without a descriptor lets anything through.  NtQueryObject reports
+ * each handle's own GrantedAccess, of sections and files (the browser
+ * CHECKs that a file handle it is handed read-only has no write right).
  * Exports by ordinal: Chromium imports some functions by number only
  * (shlwapi IsOS is 437; uxtheme 47 is DrawThemeBackgroundEx), and
  * delay-loads CallNtPowerInformation from api-ms-win-power-base.
@@ -91,6 +93,15 @@ static void shared_memory(void)
     check(DuplicateHandle(GetCurrentProcess(), ro, GetCurrentProcess(), &same, 0, FALSE, DUPLICATE_SAME_ACCESS) &&
           !dup_for_write(same), "DUPLICATE_SAME_ACCESS keeps it read-only");
     if (same) CloseHandle(same);
+    /* NtQueryObject (ObjectBasicInformation) reports each handle's own
+     * GrantedAccess: the read-only section handle has no SECTION_MAP_WRITE */
+    typedef LONG (WINAPI *NtQueryObjectFn)(HANDLE, int, PVOID, ULONG, PULONG);
+    NtQueryObjectFn qo = (NtQueryObjectFn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryObject");
+    ULONG bro[14] = { 0 }, brw[14] = { 0 };
+    check(qo && qo(ro, 0, bro, sizeof(bro), 0) >= 0 && bro[1] == (FILE_MAP_READ | SECTION_QUERY),
+          "NtQueryObject: the read-only handle's GrantedAccess is FILE_MAP_READ | SECTION_QUERY");
+    check(qo && qo(rw, 0, brw, sizeof(brw), 0) >= 0 && (brw[1] & FILE_MAP_WRITE),
+          "NtQueryObject: the writable handle's has FILE_MAP_WRITE");
     HANDLE r2 = 0;
     check(DuplicateHandle(GetCurrentProcess(), ro, GetCurrentProcess(), &r2, FILE_MAP_READ, FALSE, 0),
           "it duplicates for FILE_MAP_READ (no more than it has)");
@@ -285,11 +296,35 @@ static void imports(void)
     if (sync) closeh(sync);
 }
 
+/* Chromium's browser CHECKs a file handle it is handed read-only: its
+ * GrantedAccess (NtQueryObject) must have none of FILE_WRITE_DATA,
+ * FILE_APPEND_DATA, FILE_WRITE_EA, FILE_WRITE_ATTRIBUTES, DELETE,
+ * WRITE_DAC and WRITE_OWNER (0xD0116) */
+static void file_access(void)
+{
+    typedef LONG (WINAPI *NtQueryObjectFn)(HANDLE, int, PVOID, ULONG, PULONG);
+    NtQueryObjectFn qo = (NtQueryObjectFn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryObject");
+    char path[MAX_PATH];
+    GetTempPathA(sizeof(path), path);
+    strcat(path, "chrometest-access.txt");
+    HANDLE w = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, CREATE_ALWAYS, 0, 0);
+    HANDLE r = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+    ULONG bw[14] = { 0 }, br[14] = { 0 };
+    check(qo && w != INVALID_HANDLE_VALUE && qo(w, 0, bw, sizeof(bw), 0) >= 0 && (bw[1] & 0x2 /* FILE_WRITE_DATA */) && (bw[1] & 0x1 /* FILE_READ_DATA */),
+          "NtQueryObject: a file opened for writing has FILE_WRITE_DATA");
+    check(qo && r != INVALID_HANDLE_VALUE && qo(r, 0, br, sizeof(br), 0) >= 0 && !(br[1] & 0xD0116) && br[1] == 0x120089 /* FILE_GENERIC_READ */,
+          "NtQueryObject: one opened GENERIC_READ has FILE_GENERIC_READ and no write right");
+    if (w != INVALID_HANDLE_VALUE) CloseHandle(w);
+    if (r != INVALID_HANDLE_VALUE) CloseHandle(r);
+    DeleteFileA(path);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 5 && !strcmp(argv[1], "child"))
         return child((HANDLE)(ULONG_PTR)strtoull(argv[2], 0, 10), (HANDLE)(ULONG_PTR)strtoull(argv[3], 0, 10), argv[4]);
     shared_memory();
+    file_access();
     ordinals();
     imports();
     printf("chrometest: %d passed, %d failed\n", g_pass, g_fail);

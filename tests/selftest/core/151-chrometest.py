@@ -2,7 +2,8 @@
 # its GPU, network and renderer processes.  A section duplicated with more
 # rights than its handle holds is checked against the section's security
 # descriptor, so a read-only handle cannot be widened to FILE_MAP_WRITE
-# (base::ReadOnlySharedMemoryRegion); NtQuerySection without SEC_IMAGE;
+# (base::ReadOnlySharedMemoryRegion); NtQueryObject reports each handle's
+# own GrantedAccess (a read-only file handle has no write right); NtQuerySection without SEC_IMAGE;
 # STARTUPINFOEX with PROC_THREAD_ATTRIBUTE_HANDLE_LIST passes only the
 # listed handles to the child; the ordinal exports Chromium imports by
 # number (shlwapi IsOS, QISearch, oleaut32, uxtheme), SHChangeNotifyRegister

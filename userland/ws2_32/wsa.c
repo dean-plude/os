@@ -22,6 +22,10 @@ WINBASEAPI HANDLE WINAPI GetProcessHeap(void);
 WINBASEAPI BOOL WINAPI HeapFree(HANDLE, DWORD, LPVOID);
 WINBASEAPI BOOL WINAPI SetEvent(HANDLE);
 WINBASEAPI BOOL WINAPI ResetEvent(HANDLE);
+WINBASEAPI HANDLE WINAPI OpenProcess(DWORD, BOOL, DWORD);
+WINBASEAPI BOOL WINAPI DuplicateHandle(HANDLE, HANDLE, HANDLE, LPHANDLE, DWORD, BOOL, DWORD);
+WINBASEAPI HANDLE WINAPI GetCurrentProcess(void);
+WINBASEAPI BOOL WINAPI CloseHandle(HANDLE);
 __declspec(dllimport) void WINAPI NovaIoComplete(HANDLE h, OVERLAPPED *o, LONG status, DWORD bytes);
 int ws_pend_io(SOCKET s, int send_, LPWSABUF bufs, DWORD n, DWORD flags, struct sockaddr *from, int *fromlen,
                LPWSAOVERLAPPED ov, LPWSAOVERLAPPED_COMPLETION_ROUTINE cr);      /* overlapped.c */
@@ -35,16 +39,35 @@ int __WSAFDIsSet(SOCKET fd, fd_set *set)
     return 0;
 }
 
+/* WSASocket with protocol info: one WSADuplicateSocket filled in for this
+ * process carries the duplicated socket (dwProviderReserved, as Windows'
+ * own provider does), which this returns; otherwise FROM_PROTOCOL_INFO (-1)
+ * takes the family, type and protocol from @info.  (The A form's fields
+ * up to dwProviderReserved lie where the W form's do.) */
+static SOCKET socket_from_info(int af, int type, int protocol, const BYTE *info)
+{
+    if (info) {
+        const int *f = (const int *)(info + 72);
+        SOCKET dup = (SOCKET)(ULONG_PTR)*(const DWORD *)(info + 112);
+        BYTE st[3];
+        if (dup && NtNovaSockCtl((INT_PTR)dup, 4, 0, st) == 0) return dup;
+        if (af == -1) af = f[1];
+        if (type == -1) type = f[4];
+        if (protocol == -1) protocol = f[5];
+    }
+    return socket(af, type, protocol);
+}
+
 SOCKET WSASocketW(int af, int type, int protocol, LPWSAPROTOCOL_INFOW info, GROUP g, DWORD flags)
 {
-    (void)info; (void)g; (void)flags;
-    return socket(af, type, protocol);
+    (void)g; (void)flags;
+    return socket_from_info(af, type, protocol, (const BYTE *)info);
 }
 
 SOCKET WSASocketA(int af, int type, int protocol, LPWSAPROTOCOL_INFOA info, GROUP g, DWORD flags)
 {
-    (void)info; (void)g; (void)flags;
-    return socket(af, type, protocol);
+    (void)g; (void)flags;
+    return socket_from_info(af, type, protocol, (const BYTE *)info);
 }
 
 /* finish an operation that completed at once */
@@ -607,6 +630,7 @@ int GetHostNameW(PWSTR name, int len)
 }
 
 /* ---- protocols: TCP and UDP over IPv4 (WSAPROTOCOL_INFOW is 628 bytes, the A form 372) ---- */
+_Static_assert(sizeof(WSAPROTOCOL_INFOW) == 628 && sizeof(WSAPROTOCOL_INFOA) == 372, "WSAPROTOCOL_INFO layout");
 static int enum_protocols(const int *which, BYTE *buf, LPDWORD len, BOOL wide)
 {
     static const struct { int type, proto, maxmsg; DWORD flags; const char *name; } all[] = {
@@ -909,14 +933,35 @@ int GetNameInfoW(const struct sockaddr *sa, socklen_t salen, WCHAR *host, DWORD 
     return 0;
 }
 
-/* Sharing a socket with another process is not supported */
-int WSADuplicateSocketW(SOCKET s, DWORD pid, void *info)
+/* WSADuplicateSocket: the socket's handle is duplicated into process @pid
+ * and its value travels in the protocol info's dwProviderReserved, as
+ * Windows' own provider does; WSASocket there (FROM_PROTOCOL_INFO) takes
+ * it.  Chromium's browser hands its network process sockets this way. */
+static int duplicate_socket(SOCKET s, DWORD pid, BYTE *info, BOOL wide)
 {
-    (void)s; (void)pid; (void)info;
-    set_err(WSAEINVAL);
-    return SOCKET_ERROR;
+    if (!info) { set_err(WSAEFAULT); return SOCKET_ERROR; }
+    if (!is_socket(s)) { set_err(WSAENOTSOCK); return SOCKET_ERROR; }
+    int type = SOCK_STREAM, tlen = sizeof(type);
+    getsockopt(s, SOL_SOCKET, SO_TYPE, (char *)&type, &tlen);
+    struct sockaddr_in6 sa;
+    int salen = sizeof(sa);
+    int af = getsockname(s, (struct sockaddr *)&sa, &salen) == 0 ? sa.sin6_family : AF_INET;
+    HANDLE proc = OpenProcess(0x40 /* PROCESS_DUP_HANDLE */, FALSE, pid), h = 0;
+    if (!proc) { set_err(WSAEINVAL); return SOCKET_ERROR; }
+    BOOL ok = DuplicateHandle(GetCurrentProcess(), (HANDLE)s, proc, &h, 0, FALSE, 2 /* DUPLICATE_SAME_ACCESS */);
+    CloseHandle(proc);
+    if (!ok) { set_err(WSAENOBUFS); return SOCKET_ERROR; }
+    int which[2] = { type == SOCK_DGRAM ? IPPROTO_UDP : IPPROTO_TCP, 0 };
+    DWORD len = wide ? 628 : 372;
+    enum_protocols(which, info, &len, wide);
+    int *f = (int *)(info + 72);
+    f[1] = af;                                               /* iAddressFamily */
+    if (af == AF_INET6) f[2] = f[3] = 28;                    /* iMaxSockAddr, iMinSockAddr */
+    *(DWORD *)(info + 112) = (DWORD)(ULONG_PTR)h;            /* dwProviderReserved: the handle there */
+    return 0;
 }
-int WSADuplicateSocketA(SOCKET s, DWORD pid, void *info) { return WSADuplicateSocketW(s, pid, info); }
+int WSADuplicateSocketW(SOCKET s, DWORD pid, LPWSAPROTOCOL_INFOW info) { return duplicate_socket(s, pid, (BYTE *)info, TRUE); }
+int WSADuplicateSocketA(SOCKET s, DWORD pid, LPWSAPROTOCOL_INFOA info) { return duplicate_socket(s, pid, (BYTE *)info, FALSE); }
 
 /* WSAConnect: caller and callee data and QoS are not supported (ignored) */
 int WSAConnect(SOCKET s, const struct sockaddr *to, int len, void *caller, void *callee, void *sqos, void *gqos)

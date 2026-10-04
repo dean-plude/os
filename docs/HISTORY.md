@@ -1439,7 +1439,9 @@ build machine, and DXVK is the faster, more complete path anyway.
   clone`, `log` and `status`, `python -c`, `node -e`.  Notepad++ opens a
   file and its screenshot is compared with `tests/reference/notepad++.png`
   (scaled down; at most 3% of pixels may differ).
-- **`.github/workflows/nightly.yml`** runs it every night on main (and on
+- **`.github/workflows/nightly.yml`** runs it every night on main (03:17 UTC, with fallback
+  entries at 06:47 and 10:23 because GitHub may drop a scheduled run; only
+  the first that fires runs the corpus; and on
   pull requests that change the corpus) and posts the pass/fail table to
   the run's summary and as a comment on the "Nightly app corpus" issue.
 - Not yet: Notepad++'s tab bar and status bar still draw black; the
@@ -5703,6 +5705,25 @@ and most system calls waiting for 1.1 s, and a 64 MiB one for 300-600 ms
   lock from 10 ms to 2-4 ms.  The save itself still takes 360-380 ms, but
   nobody waits for it.
 
+## Self-tests log where a hung program sat
+
+The graphics job's `d3dtest x86` once hung for its whole 900 s (run
+37148175085 on PR #145, a change that touches no graphics code; 2 of about
+200 graphics runs since the Venus job began have hung that way, the other
+on the virgl branch before its fix; both in the 32-bit program, and in
+this one no DXVK thread had started after the queue-family lines, so it
+sat in or just before Venus's `vkCreateDevice`).  The log said only "did
+not finish": the harness's Ctrl+C ended the program with exit code 3 and
+the kernel logged no thread dump, so where the main thread sat is unknown.
+
+- **The harness** (`tools/novarun.py`, `Nova.run`): a program that has not
+  finished in its time now first gets Ctrl+Alt+F12, which makes the kernel
+  log every program's threads (system call, user stack, what each waits
+  on), and then Ctrl+C as before.  The dump lands in the failure's output,
+  so the next hang names its own cause.  Nothing else about the wait
+  changed: the time limit is the same and a program that finishes in time
+  is never touched.
+
 ## Shared DLL pages, and the app corpus under KVM
 
 The first App corpus runs on KVM (PR #98) failed three programs: Firefox
@@ -7054,6 +7075,44 @@ gantry of the first scene ([compatibility.md](../compatibility.md)).
   separate `WOW6432Node` registry view yet; the game's sound is not
   checked (the corpus runs without a sound card).
 
+## Blobby Volley 2: a game that switches the display mode
+
+The fifth free game is the first that changes the screen resolution when
+it goes full screen: Blobby Volley 2 (GPL, 32-bit, SDL2), from the App
+Store (its official zip).  Its Fullscreen option makes an
+`SDL_WINDOW_FULLSCREEN` window, not SDL's desktop-sized kind, so SDL
+switches the display to 800x600 with `ChangeDisplaySettingsEx`
+(`CDS_FULLSCREEN`) and draws with Direct3D 9 in exclusive full screen
+(`Windowed = FALSE`), which NovaOS's `d3d9.dll` hands to DXVK on Mesa 3D's
+Vulkan.  When the game ends, the display goes back to its own mode
+([compatibility.md](../compatibility.md)).
+
+Two NovaOS gaps stopped it:
+
+- **SDL2 would not start**: MSVC's x86 compiler calls the C runtime's math
+  through entry points of its own, `_libm_sse2_sin_precise` and the
+  others (argument and result in SSE registers, for `/arch:SSE2` code)
+  and the older `_CIfmod`, `_CIatan2` and the rest (on the x87 stack).
+  The 32-bit `ucrtbase.dll` had none of them, so SDL2's start-up code
+  (UPX-packed: its unpacker resolves the imports itself) gave up before
+  relocating the DLL, and the game crashed in it.  `ucrtbase.dll` and
+  `msvcrt.dll` now export all of them, thin wrappers over the C functions
+  (`libmtest` checks each against them).
+- **A window's DC kept from before the switch drew into freed memory**:
+  SDL takes its window's DC once, when it makes the window, and blits
+  every frame through it.  The window's bitmap is made again when the
+  window is first shown at another display size (the switch comes in
+  between) or changes scale, and the DC still pointed at the old one.
+  The DCs a program keeps on a window now follow its bitmap whenever it
+  is made again or resized (`disptest`'s full-screen child does what SDL
+  does).
+
+The corpus test (`tests/appcorpus/935-blobby-volley.py`) installs Mesa 3D,
+DXVK and the game, goes Options, Graphic Options, Fullscreen Mode, OK
+with the keyboard, checks the display is 800x600 and the main menu's
+screenshot, ends the game with Alt+F4 and checks the display is back at
+2560x1600.
+
 ## cabinet.dll: installers extract their cabinets
 
 The Visual C++ Redistributable's installer (a WiX Burn bundle, which GOG
@@ -7138,6 +7197,43 @@ carries on.
 `d3dtest angle` (graphics suite, `215-d3dtest-angle`, 64- and 32-bit)
 brings Direct3D 11 up in that order, on Venus in CI.
 
+## A sampling profiler's view of a waiting thread, and an exception dispatcher that stays on the stack
+
+With Direct3D 11 working, Steam's browser started its GPU process on
+DXVK, and some of those starts ended with "stack overflow" in ntdll.
+Nothing in Vulkan ran out of stack: Chromium starts its GPU process with
+`--start-stack-profiler`, a sampler that every so often suspends the main
+thread, reads its registers with `GetThreadContext` and unwinds its stack
+with `RtlLookupFunctionEntry` and `RtlVirtualUnwind`.  Three NovaOS gaps
+turned one bad sample into the crash.
+
+- **`GetThreadContext` of a thread in a system call.**  A thread is
+  suspended most often while it waits, and NovaOS gave such a thread's
+  context as if ntdll's stub had just returned (right) with every other
+  register zero (wrong).  The Vulkan loader's functions find their frame
+  from Rbp, so unwinding them from Rbp 0 read memory at address -0x10 and
+  faulted.  The context now carries the nonvolatile registers (Rbp, Rbx,
+  Rsi, Rdi, R12-R15) the thread entered the kernel with, which the
+  system-call entry saves at the top of its kernel stack.
+- **ntdll's own frames.**  The fault was raised from inside
+  `RtlVirtualUnwind`, and the dispatcher could not unwind ntdll's frames:
+  `RtlLookupFunctionEntry` did not look in ntdll itself (the kernel maps
+  it without listing it), and the compiler left unwind data off ntdll
+  functions that call nothing.  Each try treated a frame as a leaf, read a
+  wrong return address and faulted again, deeper each time.  ntdll's own
+  `.pdata` is now looked up, and every 64-bit NovaOS DLL is built with
+  `-fasynchronous-unwind-tables`, so every function that saves registers
+  or takes stack has unwind data, as the Windows ABI requires.
+- **Frames off the stack.**  As on Windows, `RtlDispatchException` only
+  walks frames that lie within the thread's stack (`DeallocationStack` or
+  `StackLimit` up to `StackBase`) and sets `EXCEPTION_STACK_INVALID` on
+  the record when one does not, and `RtlUnwindEx` stops there too.
+
+`samplertest` (core suite, x64) waits in a system call with known values
+in R12-R15 from a function with an Rbp frame, and suspends, reads and
+unwinds it the way the profiler does.  Without the kernel change it ends
+with the same stack overflow in ntdll that Steam's GPU process did.
+
 ## Main's boot-test no longer fails on a runner without KVM
 
 The CI run on main after the merge of #200 (2026-10-04 09:07) went red in one
@@ -7148,6 +7244,23 @@ nobody can re-run a job, so a runner lottery left main red and skipped the
 "latest" release.  Boot-test now falls back to TCG with a warning on every
 event, as it already did on pull requests; the app corpus job keeps its strict
 KVM requirement.  No timeouts or tests changed.
+
+## Two test races fixed: qtthemetest and prioritytest net
+
+Pull request #206 went red on two self-tests its changes do not touch.
+
+- **qtthemetest** (from #203): the UISettings watcher thread holds its own
+  reference on the colour-change handler while it calls it, and the handler
+  sets its event before that call returns.  The test removed the handler as
+  soon as it saw the event, so on a slow run it counted the watcher's
+  reference and `h.refs == 1` failed.  The test now waits until the watcher
+  has let go (`h.refs == 2`) before removing the handler.
+- **prioritytest net**: the slowest loopback round trip was 250.084 ms
+  against a 250 ms limit on a hosted runner without KVM (the boot test falls
+  back to QEMU's TCG there, #202).  The test now reads the hypervisor CPUID
+  leaf: under TCG ("TCGTCGTCGTCG") the limit is 500 ms, under KVM and on
+  real hardware it stays 250 ms.  A starved network thread (3 s before the
+  kernel bands) still fails either way.
 
 ## CI says which accelerator it used and stops without KVM
 
@@ -7223,6 +7336,63 @@ What changed:
   pages and more than 1 GB, its free memory is drive C:'s free space and
   falls by the 105 MiB its two files take, its memory load matches, and a
   wrong `dwLength` fails.  Its 72 MiB and 33 MiB files are mapped blocks.
+
+## Drive C: lets go of saved files when memory runs short
+
+App corpus round six.  Drive C: lives in memory and is saved to the data
+disk, and until now every file on it stayed in memory for good: the 2.3 GB
+of programs the app corpus copies to `C:\Apps` were all read in at boot,
+and every program installed afterwards added its files on top.  In the
+newest full corpus run on a 6 GB machine (nightly run 71, under KVM),
+drive C: held 3.7 GB by the time Steam had updated itself, 91 MB were
+left, and the twelve programs after it failed: 7-Zip could not set the
+length of Firefox's files, Krita and Notepad++ could not be loaded, and
+PuTTY was out of memory.  Round five had raised the corpus machine to
+10 GB to make room.
+
+- **Saved contents are let go of.**  When free memory falls below an
+  eighth of the machine's, the "persist" thread lets go of the contents of
+  saved files of C: (64 KiB or larger) that no handle, window or mapped
+  view holds, those unused longest first, until a fifth of memory is free
+  again, as Windows drops a file's cached pages.  The file keeps its name,
+  size, times and security descriptor; only its bytes leave memory.  It
+  happens only while no save is writing and when the last save wrote
+  everything it took, so the data disk holds exactly what memory held.
+  Each file's place on the disk (its first FAT cluster or NTFS record) is
+  looked up then and checked against its size.
+- **Read back when wanted.**  Opening the file to read, write, map or run
+  it, a hard link to it, and the program loader read the contents back
+  from that place (`RamfsLoad`, as for files on mounted drives).  Opening
+  it only for its details (`FILE_READ_ATTRIBUTES`) reads nothing, and
+  emptying it (`TRUNCATE_EXISTING`) needs nothing read.  A file renamed,
+  moved or given new details while only on the disk is read back before
+  the save that writes it under its new name.
+- **Restored without reading.**  At boot, files of 64 KiB or more are
+  restored to C: with their contents left on the data disk until wanted
+  (`[PERSIST] Restored N file(s) to drive C:; M MB of them are read when
+  wanted`).
+- **Changing the save disk.**  Before Setup moves C: to another disk, or
+  saving stops, every file's contents are read back first.
+- **Asking for it.**  `NtSetSystemInformation(SystemMemoryListInformation)`,
+  as RAMMap and EmptyStandbyList call it, with
+  `SeProfileSingleProcessPrivilege`: `MemoryFlushModifiedList` saves C:,
+  `MemoryPurgeStandbyList` lets go of every saved file nothing holds.
+- **Seeing it.**  The Terminal's `mem` prints how much of C: is in memory
+  and how many files have been let go of so far.
+- **Commit limit.**  A program could commit up to 7/8 of the physical
+  page range, holes below the highest address included (6144 pages' worth
+  more than RAM on a 4 GB machine), so a page promised past the RAM became
+  an access violation when first touched (Krita's in run 60).  The limit is
+  now 7/8 of the RAM, and a commit past it fails up front, as on Windows.
+- **The corpus machine** is back to 6 GB (data disk 12 GB).
+
+- **Test.**  New core self-test `cachetest` (runs as administrator for the
+  privilege): files saved and let go of give their memory back and read
+  back as they were through `ReadFile` and a mapped view, opening one for
+  its details reads nothing back, files renamed, hard-linked and emptied
+  while only on the disk read back right once saved and let go of again,
+  and after `shutdown /r` C: is restored without reading them and
+  `cachetest after` reads them back.
 
 ## COM between processes
 
@@ -7300,6 +7470,54 @@ imports (`bthprops.cpl`, `d3d12.dll`, `winusb.dll`)
 - **Tests**: `d3d9test` (graphics suite) checks it 64- and 32-bit, before
   and after the App Store's DXVK is installed.
 
+## DirectWrite: IDWriteFactory2 and IDWriteFactory3
+
+Steam's browser (Chromium, CEF 126) started its first page and then the
+browser process crashed: Chromium asks its DirectWrite factory for
+`IDWriteFactory2` and `IDWriteFactory3`, the interfaces Windows 8.1 and
+Windows 10 added, uses the answer without checking it, and NovaOS's
+factory only knew the first two versions.  Chromium's font lookup table
+then called `GetSystemFontCollection` through a null `IDWriteFactory3`,
+and Steam started the browser again, over and over.  NovaOS's DirectWrite
+now has Windows 10's font model; it is NovaOS's own code (Wine's
+DirectWrite is LGPL), written from the interfaces in the Windows SDK
+headers.
+
+- **`IDWriteFactory2`**: the system font fallback (`GetSystemFontFallback`)
+  and fallback builders, `TranslateColorGlyphRun`, rendering params with a
+  grid-fit mode, and glyph run analysis with an anti-aliasing mode
+  (grayscale coverage comes in the 1x1 texture, the way Skia reads it).
+- **`IDWriteFactory3`**: font face references (from a font file or a
+  path), the system font set, font set builders, collections made from
+  font sets, `GetSystemFontCollection` as an `IDWriteFontCollection1`,
+  rendering mode 1 (`NATURAL_SYMMETRIC_DOWNSAMPLED`) and the font download
+  queue, which is always empty because every font is a local file.
+- **Font sets** (`fontset.c`) carry each font's properties (weight/stretch/
+  style and typographic family and face names, full, Win32 and PostScript
+  names, weight, stretch, style), list their values and filter on them,
+  which is how Chromium matches `local()` fonts by unique name.  Matching
+  a family in the system set knows the default names ("Segoe UI",
+  "Consolas"...) that Inter and DejaVu Sans Mono stand for.
+- **Font fallback**: `MapCharacters` keeps the base font for the
+  characters it has and picks a system font that has the rest (Noto Sans
+  Arabic, Devanagari...), with spaces and marks staying with their
+  neighbours; text no font has comes back with no font.  Built fallbacks
+  try their own mappings (ranges, families, an optional base family)
+  first, then the system's if it was added.
+- **Fonts and faces**: collections are `IDWriteFontCollection1`, families
+  `IDWriteFontFamily1`, lists `IDWriteFontList1`, fonts `IDWriteFont3` and
+  faces `IDWriteFontFace3` (family and face names, informational strings,
+  face references, locality).  Color fonts (`COLR` version 0 with `CPAL`)
+  report their palettes, and `TranslateColorGlyphRun` splits a run into
+  its color layers; fonts without them answer `DWRITE_E_NOCOLOR`.
+- **Test**: the new `tools/dw3test`, in the graphics suite, goes through
+  all of this the way Chromium and Skia do (60 checks, 64- and 32-bit).
+- **Steam**: the browser no longer crashes and is no longer restarted.
+  Under emulation it starts its GPU, network and storage processes,
+  creates Steam's first browser and launches its page process, which is
+  as far as the corpus test's time reaches
+  ([compatibility.md](../compatibility.md#steam)).
+
 ## Event tracing: controllers and consumers with no sessions
 
 Steam's service stopped with `0xC0000139` as soon as it ran: its
@@ -7326,6 +7544,25 @@ process starts, and when that fails watches processes another way.
 Steam's service now updates itself once, starts under the control
 manager, installs its helper files and keeps running.  Steam itself still
 stops where its browser does ([compatibility](../compatibility.md#steam)).
+
+## A finished program's files are closed before its parent wakes
+
+Main's CI went red on `tlsslots x86`: its parent deleted the log file a
+child had just written and started the next child, whose create failed
+with `STATUS_DELETE_PENDING` (exit code 2).  Since delete pending
+(WebView2 process list), deleting a file another handle still holds waits
+for that handle to close.  The kernel signaled a process as ended when its
+last thread exited, but closed its handles only later, on a scheduler
+tick, so the parent could win the race.
+
+Windows closes a process's handle table before it signals the process, so
+the last thread to exit now closes the process's file and directory
+handles first (`um_close_file_handles`).  `tlsslots` repeats its two child
+runs three times so the race shows up on every run.
+
+`prioritytest` also read its thread's priority the instant it started, so
+a start-up wake boost that had not decayed yet (9, not 8) failed the
+whole run on one CI run; it now spins (a wait would wake the thread and boost it again) up to 500 ms until the boost has decayed.
 
 ## The rest of GOG GALAXY's load-time imports
 
@@ -7375,6 +7612,136 @@ Windows Runtime class NovaOS does not have yet
   missing.
 - **Tests**: `qtwebtest` (core suite) checks every one of them, 64- and
   32-bit.
+
+## GOG GALAXY: its client service starts and serves the client
+
+`GalaxyClientService.exe` ended at start-up with "abnormal program
+termination", so starting it gave error 1053 and the client then faulted.
+Its socket server is Poco's `SocketReactor`, whose `PollSet` on Windows is
+wepoll: an epoll built on the `\Device\Afd` driver and keyed events.
+NovaOS had neither, so the poll set's constructor threw and nothing caught
+it.  Four gaps stood between the service and the client; each is now what
+Windows does, and nothing in GOG GALAXY is skipped or changed.
+
+- **AFD polling** (`kernel/um/um_afd.c`): `NtCreateFile` opens
+  `\Device\Afd\...` helper handles, and `IOCTL_AFD_POLL` through
+  `NtDeviceIoControlFile` polls sockets for accept, receive, send, the peer
+  closing or resetting, a failed connect and the socket closed here.  A
+  poll that is not ready yet stays pending until a socket is or its
+  time-out (relative, absolute, none or zero) passes, then writes the
+  ready handles back, finishes its status block and sets its event or
+  posts its `ApcContext` to the helper's completion port (kernel32 pumps a
+  bound helper's results onto the port).  `NtCancelIoFileEx` ends one or
+  all, and closing the helper cancels the rest.  ws2_32's `WSAIoctl` gives
+  the socket itself for `SIO_BASE_HANDLE` and the other `SIO_BSP_HANDLE*`
+  codes; x86 programs reach the same through WoW64.
+- **Keyed events**: `NtCreateKeyedEvent`, `NtOpenKeyedEvent`,
+  `NtWaitForKeyedEvent` and `NtReleaseKeyedEvent`.  A release waits for a
+  waiter on the same key (and the other way round), each with an optional
+  time-out; an odd key is refused and a NULL handle is the process's own.
+- **The TCP connection tables** (iphlpapi): `GetExtendedTcpTable` (the
+  basic, owner-PID and owner-module classes, listeners, connections or
+  both, IPv4 and IPv6, sorted on request), `GetTcpTable` and
+  `GetTcp6Table` list the kernel's TCP sockets with their states and the
+  process that made or accepted each.  They were empty, so the service
+  could not tell which process had connected and dropped every connection.
+- **A UDP socket bound to 127.0.0.1 or ::1 sending**: lwIP refused a
+  source address that is not the interface's own, so Poco's
+  `PollSet::wakeUp`, which sends a byte to its own loopback socket, threw
+  every time a handler was added and when the service stopped.
+- **Unhandled C++ exceptions** are named in the log when they end a
+  program (`unhandled C++ exception TYPE: what`).
+- **Tests**: `afdtest` (34 checks: polls finishing on a completion port or
+  an event, time-outs, cancelling, closing, a loopback UDP socket waking
+  its own poll, keyed events) and `tcptabletest` (19), each 64- and 32-bit.
+  The service also checks that the caller is `GalaxyClient.exe` in its
+  own folder with `QueryFullProcessImageNameW`, which #217 made work for
+  other processes.
+- **Where GOG GALAXY stops now**: the service starts, recognises the
+  client, deletes its stale lock files, clears its compatibility flags and
+  stops itself after 30 idle seconds, as on Windows.  The client shows its
+  NTFS warning; past it, it finishes initialising and then faults inside
+  `RtlVirtualUnwind` while a C++ exception is dispatched
+  ([compatibility.md](../compatibility.md)).
+
+## GOG GALAXY: exceptions thrown inside an MSVC catch block
+
+GOG GALAXY carries Microsoft's own C++ runtime (its setup installs the
+Visual C++ redistributable, so `vcruntime140.dll` and `msvcp140.dll` in
+System32 are Microsoft's).  That runtime runs a catch block from
+`RtlUnwindEx`'s consolidation callback (`STATUS_UNWIND_CONSOLIDATE`),
+deep in the stack.  A throw from inside the catch block (a rethrow, or a
+new exception) was dispatched by walking up from there: through the
+callback, `RtlUnwindEx`, the frame handler, `RtlDispatchException` and
+`KiUserExceptionDispatcher`, whose frames have no unwind data.  The walk
+never reached the frames above the catching one, so the exception went
+unhandled (the client service died setting up its folders on a fresh
+install), or it read on past the dispatcher into stack garbage and
+faulted inside `RtlVirtualUnwind` (the client, after its NTFS warning).
+
+- **Dispatch** (`userland/ntdll/ntdll_exc.c`): `RtlDispatchException`
+  now does what `RtlUnwindEx` already did, and what the unwind data of
+  Windows' consolidation frame and of `KiUserExceptionDispatcher` lead
+  to: past the frames running a catch block it carries on in the
+  catching frame (its handler sees the new exception first), and past
+  the frames dispatching an outer exception it carries on where that
+  exception happened.
+- **Stale entries**: the per-thread record of what the dispatcher and
+  unwinder are in the middle of now checks each entry (a frame reused
+  since ends the chain), and `RtlRestoreContext` forgets what ran below
+  the resumed frame.  NovaOS's own `vcruntime140` resumes after a catch
+  through `RtlRestoreContext` (it used `NtContinue`, which left the
+  dispatch it came from on the record).
+- **Tests**: `unwindtest` (14 checks, 5 new): a catch block run by a
+  consolidating unwind continues where its callback says with the frame's
+  registers, and an exception raised inside it reaches the catching
+  frame's handler and then the caller's `__except`.  `cppeh` and
+  `stltest` pass as before.
+- **Where GOG GALAXY stops now**: the service sets up its folders and
+  serves the client; the client gets past its NTFS warning, opens its
+  sign-in window and starts its first Chromium renderer, then Qt ends it
+  with "Could not get handle for shared context" (Qt WebEngine needs a
+  shared OpenGL context; NovaOS's `CreateDXGIFactory2` also says
+  `E_NOINTERFACE`).  The service still fails the client's "write Vulkan
+  registry keys" request ([compatibility.md](../compatibility.md)).
+
+## GOG GALAXY: Qt finds the system's OpenGL (a Direct3D 9 adapter for the display card)
+
+GOG GALAXY's client opened its sign-in window and started its first
+Chromium renderer, then Qt WebEngine ended it with "Could not get handle
+for shared context", even with the App Store's Mesa 3D installed.  Qt 6
+decides between the system's OpenGL and its own software one
+(`opengl32sw.dll`, which GOG GALAXY does not ship) by reading the display
+card's IDs from Direct3D 9 and looking them up in its GPU blocklist.
+NovaOS's `d3d9.dll` without DXVK returned NULL from `Direct3DCreate9`, so
+Qt saw vendor 0, device 0, which its blocklist calls "Standard VGA" and
+turns OpenGL off for.  With no `opengl32sw.dll` Qt had no OpenGL at all,
+and Qt WebEngine's shared context had no WGL context behind it.
+
+- **`d3d9.dll`** (`userland/d3d9/adapter.c`, x64 and x86): without DXVK,
+  `Direct3DCreate9` and `Direct3DCreate9Ex` now give NovaOS's own
+  `IDirect3D9`/`IDirect3D9Ex`, as Windows' basic display adapter does: an
+  adapter per monitor, named by its display card's PCI vendor, device,
+  subsystem and revision (QEMU's standard VGA is 1234:1111), with
+  `\\.\DISPLAYn`, the monitor, the current mode, the 32-bit modes and an
+  adapter LUID.  There is still no Direct3D 9 driver behind it:
+  `CheckDeviceType`, `GetDeviceCaps` and `CreateDevice` answer
+  `D3DERR_NOTAVAILABLE`, so programs take their software paths as before.
+  With DXVK installed every call still goes to DXVK.
+- **Kernel** (`kernel/um/um_gui.c`): `NtNovaGuiCtl` `CTL_ADAPTER` gives
+  the n-th PCI display controller's IDs.
+- **Tests**: `d3d9test none` (graphics suite, 64- and 32-bit) checks the
+  object: one adapter per monitor, a nonzero vendor and device, the
+  display's mode and modes, the monitor, the LUID, and no device.
+- **Where GOG GALAXY stops now**: with Mesa 3D installed, Qt uses Mesa's
+  OpenGL (llvmpipe) and the shared-context abort is gone.  Chromium's GPU
+  thread then needs Direct3D 11 for ANGLE: without DXVK it finds no EGL
+  display and Qt WebEngine faults on a null object; with DXVK it draws on
+  DXVK, but its compositor shares D3D11 textures between devices, which
+  DXVK on lavapipe cannot (`VK_KHR_external_memory_win32`), so its
+  context is lost and Chromium stops on a check
+  ([compatibility.md](../compatibility.md)).  Without Mesa 3D, Qt still
+  finds only OpenGL 1.1, as on a PC with no OpenGL driver.
 
 ## The Windows Runtime's UISettings, for Qt's Windows platform plugin
 
@@ -7487,6 +7854,86 @@ SDL's game controller API finds the Xbox 360 controller through XInput
 turns the player (on Mesa's OpenGL from the App Store; NovaOS has no
 `d3d9.dll` of its own).
 
+## The graphics job's second hang: the whole guest stopped, and said nothing
+
+After the Venus ring fix (HPET calibration, ring re-wake), the graphics job
+still hung once on PR #205's merge of main (job 111414850206): `d3dtest x64`
+printed its D3D11 frame count and then nothing for 15 minutes, and `d3dtest
+x86`, `d3d9 through DXVK` x64 and x86 each ran into their limits too, until
+the job's hour ended.  This was not the Venus wait: the host was idle (QEMU's
+main loop in `ppoll`, the render server in `poll`, no fence pending), both
+guest CPUs sat in HLT using about 5 % of a host core each (a 100 Hz timer),
+the serial log did not grow by a byte after the last D3D11 line, and neither
+the harness's Ctrl+Alt+F12 (answered by the desktop thread) nor its Ctrl+C
+did anything; the desktop's clock stood still for the whole time.  The
+desktop watchdog (3 s without a pass, logged from the timer tick) did not log
+either, which only happens when no CPU runs a full timer tick: a CPU halted in
+`raw_lock` waiting for the big kernel lock only acknowledges its ticks.  Both
+CPUs waiting for a lock that no running thread holds fits every one of these
+signs.  The log did not say which thread had taken it (the serial log was not
+kept: the job was cancelled before the self-tests' final copy), so the leak
+itself is not found yet.
+
+- **The kernel** (`kernel/ke/smp.c`): the big lock records who took it and
+  when.  A halted waiter's timer tick (and the desktop watchdog) now calls
+  `bkl_stall_check`: a lock held for 3 s is logged once (`[WATCHDOG] the kernel
+  lock has been held for N ms by CPU c, thread ...; waiters, contenders`, then
+  each CPU's current thread and whether it waits for the lock).  When the
+  holder is no CPU's current thread, a thread left or was switched out
+  without handing the lock back (the scheduler does that for every switch),
+  so the lock is let go (`[SMP] Bug: the kernel lock was never handed back`)
+  and the machine goes on, with the log naming the bug, instead of ending in a
+  timeout.  A lock held by a thread that does run (a real deadlock, or the
+  holder waiting for its own lock) is only reported.
+- **The host watcher** (`tools/ci/host_watch.py`, `tools/novarun.py`): QEMU now
+  has a second, private monitor socket; on a hang the watcher asks it for each
+  CPU's registers (RIP named from `build/kernel.elf`), the local APIC timer
+  state and `g_bkl`, and copies the whole serial log to `serial-hang-N.log`.
+- **The self-tests** (`tools/selftest.py`): the output of a failed test is
+  printed at once (it used to wait in a buffer for the next test's line, which
+  made one test's output look like another's), the serial log so far is kept
+  after every failure, and a run whose machine answers neither Ctrl+Alt+F12
+  nor Ctrl+C after a timeout stops there: the later tests are reported "not
+  run (NovaOS stopped answering ...)" instead of each waiting out its own
+  limit.  A test that does not finish is still a failure; no limit changed.
+
+If the graphics job hangs again with a silent guest, read `host-hang-N.txt`
+(the monitor part) and `serial-hang-N.log`: a `[WATCHDOG] the kernel lock`
+line names the holder; otherwise the two RIPs and the APIC timer say where each
+CPU is and whether timers still run.
+
+## The Direct3D hang: a stuck GPU wait can be stopped, and the next one says who did not answer
+
+The graphics job hung once more (run 37209922948, cancelled at its one-hour
+limit): `d3dtest` on Venus printed `D3D9 863 frames in 6000 ms`, then every
+thread of the program waited and neither Ctrl+C nor a kill ended it.  The
+diagnostics added earlier showed what this is not: no kernel lock was held
+(both CPUs idle, no `[WATCHDOG]` line), and what it is: one thread sat in
+the GPU wait of `NtNovaGpuCtl` (timeline wait), and the others waited on
+it.  The host never answered a fenced request; the render server had one
+process and one thread, so the program's Venus worker was gone.
+
+- **The wait can be stopped.**  `NtNovaGpuCtl` op 10 waits in 50 ms
+  slices and returns when the program is being stopped (Ctrl+C, a kill),
+  as the other kernel waits do.  Before, a host that never answered held
+  the program and the self-test machine until the job's time ran out, with
+  every later test lost; now the test fails at its own limit and the job
+  goes on.
+- **The guest says what it sent.**  Ctrl+Alt+F12 also logs the virtio-gpu
+  control queue (`[VGPU]` lines): requests the card took and answered, and
+  each fenced request still out with the timeline value it would set.
+- **The host says who is alive.**  `tools/ci/host_watch.py` logs every
+  change of the render server's processes, lists the server and its
+  workers and the host kernel's messages about crashed or killed processes
+  in `host-hang-N.txt`, and asks QEMU for the virtio-gpu queue state
+  (`info virtio-queue-status`): did QEMU take the request, did it answer?
+
+Next hang: a `[VGPU]` request out with QEMU's used index behind its
+last-available index means virglrenderer took it and never finished it (look
+for a missing worker and a `segfault` line); a request out that QEMU never
+took means the notification was lost; no request out means the guest never
+sent the one the program waits for.
+
 ## Installer ACLs: the VC++ Redistributable installs its first package
 
 The Visual C++ Redistributable's installer (WiX Burn, which GOG GALAXY
@@ -7555,6 +8002,44 @@ writes the queued reports first (`UmCrashNewest` does it under the
 file-system lock the Terminal already holds).  Found by the MSXML 6 thread
 on PR #170, which proposed calling `UmCrashPoll`; that takes the lock the
 Terminal holds, so the write is split out instead.
+
+## LBreakout2: an SDL 1.2 game, and a DllMain that says no
+
+The sixth free game is the first on SDL 1.2, whose Windows code is older
+and plainer than SDL2's: LBreakout2 (GPL, 64-bit), from the App Store (its
+official zip).  SDL 1.2 draws with GDI (its `windib` driver blits a 16-bit
+DIB section into the window), and its full screen ('f' anywhere in the
+game) switches the display to 640x480 with `ChangeDisplaySettings`,
+changes the window's style to `WS_POPUP` with `SetWindowLong` and places
+it over the display with `SetWindowPos` ([compatibility.md](../compatibility.md)).
+
+Two NovaOS gaps stopped it:
+
+- **SDL 1.2 would not load**: it imports `joyGetDevCapsA` from
+  `winmm.dll`, which had only the wide version.  Both now answer "no
+  joystick", as the rest of winmm's joystick functions do.
+- **The full-screen picture sat a title bar's height too high**: the
+  desktop drew its title bar and border for a window from its creation on,
+  whatever the program did to its style later, so the window that lost
+  its caption kept the desktop's frame (off the top of the 640x480
+  display) while the program drew as if it had none.  A top-level window's
+  frame now follows its style at the next `SetWindowPos` that moves or
+  sizes it (or has `SWP_FRAMECHANGED`), as on Windows: the title bar and
+  border go with `WS_CAPTION` and come back with it (`CTL_SET_FRAME`).
+
+And the leftover from Blobby Volley 2: a DLL a program imports whose
+`DllMain` returns FALSE while the process starts now stops the process,
+as Windows does, with `STATUS_DLL_INIT_FAILED` (0xC0000142, "The
+application was unable to start correctly") before its entry point runs.
+Before, NovaOS went on without attaching the DLLs after it; a UPX-packed
+DLL that refuses to load has not even relocated itself, so the program
+crashed in it later.  `dlltest` (now in the core self-tests, 64- and
+32-bit) starts a copy of itself whose `testdll.dll` refuses to load.
+
+The corpus test (`tests/appcorpus/940-lbreakout2.py`) installs the game,
+presses 'f', checks the display is 640x480 and the main menu's
+screenshot, ends the game with Alt+F4 and checks the display is back at
+2560x1600.
 
 ## Windows Installer: the queries bootstrappers make, 32-bit packages in SysWOW64
 
@@ -7687,6 +8172,18 @@ stopped there (`CO_E_CLASSSTRING` from `CLSIDFromProgID`).  Now
 The Visual C++ Redistributable's installer now reads its manifest and
 stops next at `cabinet.dll`, which it loads to unpack its payload.
 
+## The nightly corpus gets fallback schedules
+
+The nightly app corpus (`.github/workflows/nightly.yml`) had one cron entry,
+`17 3 * * *`, and in two days GitHub started a scheduled run once, six hours
+late (2026-10-03 09:15 UTC); the 2026-10-04 slot never came.  Nothing in the
+workflow cancels or skips scheduled runs and the cron line never changed:
+GitHub documents that scheduled runs are delayed or dropped under load.  The
+workflow now has two more entries (`47 6` and `23 10`) and a small "Gate" job
+that lets the corpus run only when no other scheduled run started in the last
+20 hours, so a day gets one full run if any of the three fires.  Manual runs
+and pull requests are unaffected.
+
 ## A Windows-numbered system-call table, for code that calls the kernel itself
 
 Most programs reach the kernel through ntdll's stubs, so the number each
@@ -7753,6 +8250,41 @@ DIB whose `BITMAPV5HEADER` carries `BI_BITFIELDS` masks (`0x0F00`, `0x00F0`,
 Chocolate Doom now shows Freedoom in its own colours, in the 4 bits per
 channel SDL2 asked for (as on Windows with Mesa).
 
+## Tyrian on Direct3D 9
+
+The fourth free game is the first that draws with Direct3D 9: Tyrian 2.1,
+Epic MegaGames' 1995 shoot 'em up (freeware since 2004), on OpenTyrian,
+its free and open-source engine.  It installs from the App Store (the
+official 64-bit zip, which carries the freeware game data) and draws
+through SDL2's Direct3D 9 renderer, SDL's first choice on Windows, which
+NovaOS's `d3d9.dll` hands to DXVK on Mesa 3D's Vulkan (llvmpipe)
+([compatibility.md](../compatibility.md)).
+
+It needed no NovaOS changes.  What the corpus test now checks, in one run:
+
+- **Direct3D 9 through DXVK in a real game**: OpenTyrian's attract-mode
+  demo plays its first level in a window, every frame a Direct3D 9
+  texture drawn by DXVK and presented through Vulkan's Win32 surface.
+- **Going to full screen and back**: Alt+Enter switches the game to full
+  screen; SDL resets the Direct3D 9 device with a back buffer the size of
+  the display, and DXVK makes a new swap chain for it.
+- **Menus from the keyboard** into a new game (one player, episode 1,
+  normal), to the game's own menu between levels.  OpenTyrian fades
+  between its menus, slowly without KVM, and takes no keys while it
+  fades, so the test presses Enter only once the screen stands still,
+  until the game menu shows.  Started by hand from there, level 1 plays
+  in full screen with the keyboard (the README's screenshot).
+- **Its music** (AdLib music, synthesized by OpenTyrian's own OPL emulator) plays
+  through the sound card for the whole run.
+
+Found and left for later:
+
+- **The display mode never changes**: OpenTyrian's full screen is SDL's
+  desktop full screen (a window covering the display), as most SDL games
+  use, so NovaOS's display-mode switch for a Direct3D 9 exclusive full
+  screen (`Windowed = FALSE`) is still to be tried with a game that asks
+  for one.
+
 ## Drive C: files take the memory their contents need
 
 App corpus round four.  In the first corpus run on a tree with round
@@ -7803,6 +8335,97 @@ In the corpus with Roblox, Krita and Firefox alone (TCG), the three left
 1,924 MB taken before and 1,263 MB after; drive C: then held 2,021 MB of
 files in 2,029 MB of memory.
 
+## Game controllers: Raw Input and hid.dll
+
+After XInput and DirectInput 8, the other two ways Windows programs read
+a game pad: Raw Input, which SDL uses for Xbox controllers, and `hid.dll`,
+which reads a controller's HID reports (Chromium's `libcef` delay-loads
+its `HidP_*` calls for WebHID and the Gamepad API).
+
+- **Reports** (`kernel/drivers/gamepad.c`): every controller now keeps
+  its HID report descriptor and the input reports it sends, in a ring
+  programs read through `CTL_GAMEPAD` (ops 5 to 10).  A HID game pad's
+  are its own; an Xbox controller gets the descriptor Windows' Xbox
+  driver gives its HID side (X, Y, Rx, Ry and the triggers as one Z
+  axis, 16 bits each, ten buttons and a hat) and a report built from
+  each state it sends.
+- **HID paths** (`kernel/um/um_hid.c`): `CreateFile` on a controller's
+  path (`\\?\HID#VID_045E&PID_02EA&IG_00#8&...#{4d1e55b2-...}`, `IG_`
+  for Xbox controllers as on Windows) opens a message pipe the kernel
+  writes each report into, so `ReadFile` returns one report at a time,
+  overlapped or not, and fails once the controller is unplugged.
+  setupapi lists these paths for `GUID_DEVINTERFACE_HID` (with the
+  device's class, hardware IDs and instance ID), and so does
+  `CM_Get_Device_Interface_List`; DirectInput's `DIPROP_GUIDANDPATH`
+  gives a path of the same form.
+- **Raw Input** (`user32/rawinput.c`): `RegisterRawInputDevices` (with
+  `RIDEV_INPUTSINK`, `DEVNOTIFY`, `REMOVE`), `GetRawInputDeviceList`,
+  `GetRawInputDeviceInfo` (`RIDI_DEVICENAME`, `DEVICEINFO`,
+  `PREPARSEDDATA`), `WM_INPUT` with `GetRawInputData`,
+  `GetRawInputBuffer`, `WM_INPUT_DEVICE_CHANGE` and
+  `GetRegisteredRawInputDevices`.  The keyboard and mouse are not raw
+  input devices yet.
+- **hid.dll**: the `HidD_*` calls on a HID path (attributes, preparsed
+  data, product string, input reports, the queue) and the `HidP_*`
+  calls on preparsed data: caps, button and value caps, link
+  collections, usages, values (raw, scaled and arrays), `GetData` and
+  `SetData`, building reports, usage list differences, with Windows'
+  `HIDP_STATUS_*` results.  The descriptor parser
+  (`userland/include/novahidp.h`) is shared with user32.
+
+New test `rawpadtest` in the devices suite's "gamepad" boot drives an
+Xbox One controller and a HID game pad through all of it, unplugging
+the Xbox One controller at the end; the 32-bit `rawpadtest still` reads
+the HID game pad left.
+
+Checked by hand with SDL 2.30.9 (64-bit): SDL finds the Xbox One
+controller through its RAWINPUT driver (its joystick GUID ends in `r`),
+and its game controller API reads A, B and Start, both sticks and the
+right trigger as the test moves them.
+
+## Raw Input for the mouse and the keyboard
+
+Games read the mouse through Raw Input: SDL's relative mouse mode (menus
+and aiming in SDL games such as Teeworlds) takes `WM_INPUT` and ignores
+`WM_MOUSEMOVE`, so until now the pointer stood still in them.  Raw Input
+had game pads only (PR #204); the mouse and the keyboard are raw input
+devices now too.
+
+- **Kernel** (`kernel/wm/desktop.c`, `kernel/drivers/gamepad.c`): as the
+  desktop takes each mouse and key event from the input queue (PS/2,
+  USB, virtio and I2C touchpads alike), it also puts it in the ring Raw
+  Input already reads for game pads, as two more slots: a mouse event as
+  Windows' `RAWMOUSE` (relative motion, or a position with
+  `MOUSE_MOVE_ABSOLUTE` from a tablet; the buttons that went down or up
+  as `RI_MOUSE_*` flags; a wheel's turn, 120 a notch, the horizontal
+  wheel as a block of its own) and a key as `RAWKEYBOARD` (scan code,
+  `RI_KEY_BREAK`, `RI_KEY_E0`, the virtual key and the message the key
+  makes, `WM_SYSKEYDOWN` with Alt).  The ring grew to 256 entries.
+- **user32** (`rawinput.c`): `GetRawInputDeviceList` lists a mouse and
+  a keyboard (`RIM_TYPEMOUSE`, `RIM_TYPEKEYBOARD`) before the game pads,
+  named like a PS/2 mouse and keyboard on Windows (the mouse and
+  keyboard device interface classes), with their `RID_DEVICE_INFO`.
+  Registering for Generic Desktop usage 2 or 6 brings `WM_INPUT` for
+  them, read with `GetRawInputData` or `GetRawInputBuffer`;
+  `RIDEV_DEVNOTIFY` announces them at once.  `RIDEV_NOLEGACY` stops
+  the process's legacy mouse or key messages; its value (0x30) shares
+  bits with `RIDEV_EXCLUDE` and `RIDEV_PAGEONLY`, which are now read as
+  the one mode they are, so a mouse registered with `RIDEV_NOLEGACY` no
+  longer takes every Generic Desktop device as if it were `PAGEONLY`.
+
+New core self-test `rawtest` (64- and 32-bit) moves, clicks and turns
+the wheel of the PS/2 mouse and presses keys, and checks what
+`WM_INPUT` and `GetRawInputBuffer` carry.  `rawpadtest` counts only the
+HID devices in the list now.
+
+Teeworlds' menus now follow the mouse: with its `inp_grab 1` setting SDL
+2.0.8 reads Raw Input in relative mouse mode, and the app corpus's
+Teeworlds run opens Settings with a click
+([compatibility.md](../compatibility.md)).  Its default, `inp_grab 0`,
+has SDL recentre the pointer with `SetCursorPos` after each move instead,
+which NovaOS does not do yet, so there the menu cursor still sticks at
+the screen's edge.
+
 ## Registry keys under many threads and processes
 
 While Steam's service restarted itself hundreds of times (its service
@@ -7846,6 +8469,29 @@ one key's values from every process at once (as the service control
 manager's state values are), change notifications left pending on closed
 keys and children ending with keys and watches open, and a thread waiting
 synchronously for changes meanwhile.
+
+## An update channel on the rolling build of main
+
+The CI's `latest` pre-release (every green run on `main`) had an ISO but
+no update channel, and had it carried one, its version would have been
+`0.1.0`, which an installed 0.1.0 reads as up to date.  It now carries
+`kernel.elf`, `bootx64.efi` and `novaos-update.txt`, made by
+`tools/mkupdate.py` from the kernel and boot loader the run tested, the
+kernel stamped `0.1.0+dev.` and the commit's UTC time
+(`0.1.0+dev.20261004125600`).  NovaOS's version comparison already reads
+the stamp as a fourth number, so every installed 0.1.0 sees a newer build
+of `main` as an update, and the next release as newer again; the comment
+in `kernel/ke/version.c` now says so.  `tools/mkupdate.py --version`
+accepts the `+` part.
+
+A system follows `main` with `update channel
+https://github.com/dean-plude/os/releases/download/latest/novaos-update.txt`;
+the default channel still follows GitHub's "Latest" mark, which only
+tagged releases carry ([updates.md](../updates.md#the-rolling-builds-channel)).
+
+The devices suite's `update` boot checks the order first: a channel of the
+build's own version is up to date, a `+dev.` build of it is offered, and
+after the update to `0.1.1-test` the `+dev.` build is older.
 
 ## rpcrt4's NDR engine
 
@@ -7903,6 +8549,38 @@ thread had written its answer; `ControlService` then read nothing.
   returns, and the control thread holds that lock while it writes its
   answer, so the process stays until `ControlService` has its reply.
 
+## SetCursorPos and ClipCursor
+
+Games recentre the pointer: SDL's relative mouse mode, unless a game asks
+for Raw Input, reads `WM_MOUSEMOVE` and puts the pointer back in the middle
+of the window with `SetCursorPos` after every move, and many games keep the
+pointer inside their window with `ClipCursor`.  NovaOS refused
+`SetCursorPos` ("the pointer is the user's") and ignored `ClipCursor`, so
+in Teeworlds, with its default settings, the menu cursor ran to the
+screen's edge and stuck there.
+
+- **Kernel** (`kernel/um/um_gui.c`, `kernel/wm/wm.c`): two new window
+  system calls.  `SET_CURSOR_POS` moves the pointer (kept on the monitors)
+  and gives the window under it the mouse move, as the mouse would, even
+  when the pointer was already there (SDL takes that move as the end of
+  its warp); it is not Raw Input, which stays the mouse's own motion.
+  `CLIP_CURSOR` keeps the pointer in a rectangle: it moves inside at once,
+  and the mouse, `SetCursorPos` and tablets stop at its edges.  Both are
+  for the foreground process only (the one whose window is active, or a
+  console program while its Terminal is): the pointer is still the
+  user's, and a program in the background cannot take it.  The
+  confinement ends when another process comes to the foreground or the
+  display mode changes, as on Windows.
+- **user32** (`misc.c`): `SetCursorPos`, `SetPhysicalCursorPos`,
+  `ClipCursor` and `GetClipCursor` use them, converting coordinates for
+  the thread's DPI awareness; a refusal sets `ERROR_ACCESS_DENIED`.
+  `GetClipCursor` without a confinement returns the whole desktop (every
+  monitor), not only the primary one.
+
+The Teeworlds corpus test now starts the game with its own defaults
+(without `inp_grab 1`) and opens Settings with the mouse.  New self-test
+`warptest` (64- and 32-bit).
+
 ## setupapi: the build works again after two changes added the same functions
 
 Two changes merged within minutes of each other each added
@@ -7911,6 +8589,42 @@ Two changes merged within minutes of each other each added
 `cfgmgr32.dll`.  Together they defined each function twice, so the userland
 no longer built.  The stubs are gone; the forwarders, which return what
 `cfgmgr32.dll` reports, stay.
+
+## Signed update channel
+
+The update channel file (`novaos-update.txt`, Phase 22.2) now carries an
+Ed25519 signature, and a NovaOS with the release key built in installs
+only from a channel signed with that key.  Before, an update was trusted
+because it came over HTTPS and matched the SHA-256 its channel file
+named, so whoever could change the release page could change the update.
+
+- **The format**: a last line `signature ed25519 PUBLIC-KEY SIGNATURE`
+  signs every byte before it.  NovaOS 0.1.0 skips lines it does not know,
+  so it still reads signed channels.
+- **The kernel** (`kernel/fs/update.c`) checks the signature with
+  Monocypher's `crypto_ed25519_check` (`third_party/monocypher`, 4.0.2,
+  BSD-2-Clause or CC0, unchanged) before it reads anything else of the
+  file.  An unsigned channel, one signed with another key, and one
+  changed after signing are refused, and the log and the Updates page say
+  which.  The key is `UPDATE_SIGNING_KEY` in `kernel/fs/update_key.h`;
+  while it is empty, channels are used unchecked, as before, with a log
+  line saying so.
+- **Signing**: `tools/mkupdate.py --sign KEYFILE` (or `--sign-env NAME`)
+  signs the channel, `--new-key` makes a key pair and `--public-key`
+  prints a key's public half, with a pure-Python Ed25519
+  (`tools/ed25519.py`, after RFC 8032's reference code).  The release
+  workflow signs with the Actions secret `NOVAOS_UPDATE_SIGNING_KEY`;
+  without it the channel is published unsigned with a warning, and a
+  secret that does not match the built-in key stops the release
+  ([releasing.md](../releasing.md#the-update-signing-key)).
+- **Test**: the devices suite's update boot signs its channels with a key
+  pair kept only for the tests
+  (`tests/selftest/devices/update/TEST-ONLY-signing-key.txt`), whose
+  public half QEMU hands to NovaOS through its firmware configuration
+  device (`-fw_cfg name=opt/novaos/update-key`), which only a virtual
+  machine's host can set and which a PC does not have.  Three refused
+  channels come first (`005-signature.py`), then the signed update of
+  `010-update.py`.
 
 ## Networking: sockets under a browser's load
 
@@ -7953,6 +8667,101 @@ first one to run out refused the next socket:
   sockets and runs 24 parallel downloads.  Before the change it failed
   with `WSAENOBUFS` after 8 connections and 7 UDP sockets.
 
+## Steam: connected UDP sockets, WSADuplicateSocket and read-only file handles
+
+Steam's browser (`steamwebhelper.exe`, Chromium 126) restarted every few
+minutes, and its network process logged Winsock error 10038
+(`WSAENOTSOCK`).  Three NovaOS gaps were behind it:
+
+- **Connected UDP sockets.**  Chromium's DNS client and its IPv6 probe
+  `connect` a UDP socket to a peer and then use `send`, `recv` and
+  `getsockname` on it.  NovaOS's kernel only connected TCP sockets and
+  answered "not a socket" for UDP, which `ws2_32` reported as 10038.  A
+  UDP socket can now be connected: it sends to its peer, receives only
+  from it, and `getsockname` reports the source address the route picks.
+- **`WSADuplicateSocket`** was missing.  It now duplicates the socket's
+  handle into the target process and fills in `WSAPROTOCOL_INFO` the way
+  Windows does (the handle in `dwProviderReserved`), and
+  `WSASocket(FROM_PROTOCOL_INFO)` in the child takes it.
+- **Handle access rights.**  Chromium's browser checks, with
+  `NtQueryObject(ObjectBasicInformation)`, that a file handle it hands to
+  a child holds no write, delete or ownership rights, and stops with a
+  breakpoint otherwise.  NovaOS reported every handle as holding all
+  rights.  File handles now remember the access they were opened with
+  (generic rights mapped as Windows maps them), handles duplicated with
+  narrower access remember it too, and `NtQueryObject` reports it.
+
+With the three fixed, the browser no longer stops, and about half an hour
+in Steam opens its first window of its own (an "Unexpected Transport
+Error" dialog whose text is not drawn yet); the browser's network process
+still restarts every minute or two
+([compatibility.md](../compatibility.md#steam)).
+
+The "Thread creation failed" messages seen once in `steam.exe`'s log did
+not come back in about three hours of runs, and NovaOS never logged a
+refused thread in them.
+
+- **Tests**: `looptest` connects a UDP socket (its local name, its peer,
+  dropping a stranger's datagram) and hands a socket to a child process
+  with `WSADuplicateSocket`; `chrometest` checks the access
+  `NtQueryObject` reports for read-only and read-write sections and files.
+
+## Steam's browser starts its child processes
+
+Steam's browser, `steamwebhelper.exe` (Chromium 126 through CEF), started
+on NovaOS but never started its GPU and page processes, so Steam's login
+window never came up.  Chromium now starts its GPU process, its network
+service and its storage service the way it does on Windows.  What it
+needed, each a NovaOS gap:
+
+- **Exports by number.**  Chromium imports some functions by ordinal.
+  shlwapi's `IsOS` (437) was missing, so a delay-load failed and Chromium's
+  delay-load hook stopped the browser at a breakpoint.  Now exported under
+  Windows' numbers: shlwapi `IsOS` and `QISearch`, oleaut32
+  `VarUI4FromStr`, `VarBstrCat` and `VarBstrCmp`, and uxtheme
+  `DrawThemeBackgroundEx` (47, which NovaOS had given to another
+  function).  shell32's `SHChangeNotifyRegister` and
+  `SHChangeNotifyDeregister` had ordinals but no code.
+  `tools/pe_imports.py` now checks imports by ordinal too, and
+  `GetProcAddress` logs a missing ordinal as `#N`.
+- **The power API set.**  `api-ms-win-power-*` names `powrprof.dll` for
+  programs that load it at run time, as it already did for the loader.
+- **Read-only shared memory.**  Chromium hands its children read-only
+  shared memory and checks first that the handle cannot be widened:
+  duplicating it for `FILE_MAP_WRITE` must fail.  NovaOS now records the
+  rights each handle was opened with, and a duplicate that asks for more
+  is checked against the object's security descriptor, as on Windows.
+  `CreateFileMapping` keeps the descriptor the caller passes (Chromium's
+  sections are unnamed, with an empty DACL), `OpenFileMapping` opens with
+  the rights asked for, and `NtQuerySection` answers for sections that
+  are not images.
+- **Handle lists.**  `CreateProcess` with `STARTUPINFOEX` and
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` passes only the listed inheritable
+  handles to the child, the way Chromium hands each child its pipe and
+  shared memory.  The attribute list functions keep real attribute lists.
+- **The rest of `libcef.dll`'s imports.**  With GOG GALAXY's imports
+  (already on main), these were left: kernel32 `GetFirmwareType` (UEFI),
+  `GetConsoleDisplayMode` and `Wow64GetThreadContext`, userenv's Group
+  Policy notifications, and wintrust `CryptCATCatalogInfoFromContext`.
+- **Windows' version, read from files.**  Chromium reads the version of
+  `kernelbase.dll` (or `kernel32.dll`) with `GetFileVersionInfo` and stops
+  when neither has one.  Both now carry a version resource (Windows 10
+  build 18362, as `ntdll.dll` does), and `GetFileVersionInfo` finds a bare
+  DLL name along the search path, as Windows does.
+- **The event log.**  New `wevtapi.dll`: `EvtQuery`, `EvtNext`,
+  `EvtCreateRenderContext`, `EvtRender` and `EvtClose`.  NovaOS keeps no
+  event channels, so a query finds no events, as for an empty log;
+  Chromium asks the System log how the last shutdown went.
+- **A machine-wide freeze.**  Chromium's stack sampler suspends threads.
+  A suspended thread waited for its resume with interrupts off, so its
+  CPU never answered another CPU's TLB shootdown for the same process,
+  and that CPU waited forever holding the process lock; the whole machine
+  stopped.  A suspended thread now waits with interrupts on.
+
+The new self-test `chrometest` checks each of these on 64- and 32-bit.
+How far Steam's browser gets now is in
+[compatibility.md](../compatibility.md#steam).
+
 ## Services: Steam's service starts under the control manager
 
 Steam's client started its service, `SteamService.exe /RunAsService`,
@@ -7986,6 +8795,30 @@ service updated itself forever.
 Steam's service now stops on its next missing piece: `SteamService.dll`
 calls `StopTraceA`, and NovaOS has no event-tracing controller functions
 yet ([compatibility](../compatibility.md#steam)).
+
+## Steam: the client no longer stops on wsock32's AcceptEx
+
+Steam's browser window closed a few minutes after it started, every time,
+just after a WMI request (`WbemLocator`) that NovaOS does not answer.  The
+WMI request was not the reason: Steam reads the hardware through it and
+goes on without it.  What happened next was that `steam.exe` itself
+stopped with `STATUS_ENTRYPOINT_NOT_FOUND` (0xC0000139): its UI imports
+`AcceptEx` from `wsock32.dll`, Winsock 1.1's library, by ordinal 1141, and
+NovaOS's `wsock32` did not export it, so the loader had bound the import
+to a stub that ends the program when called.  The browser noticed its
+client was gone and shut down cleanly ("Webhelper closed"), and the next
+`steam.exe` started it again.
+
+- **`wsock32`** exports Microsoft's Winsock extensions under their
+  Winsock 1.1 names and ordinals: `TransmitFile` (1140), `AcceptEx`
+  (1141) and `GetAcceptExSockaddrs` (1142), which call `mswsock`'s, as
+  Windows' `wsock32` forwards them there.
+- **Steam** now keeps running: the browser starts its first page and
+  then stops in DirectWrite, which is the next step
+  ([compatibility.md](../compatibility.md#steam)).
+- **Test**: `overlaptest` looks the three up in `wsock32` by ordinal and
+  by name and runs its pending `AcceptEx` and `GetAcceptExSockaddrs`
+  through `wsock32`'s, in 64 and 32 bits.
 
 ## Steam: installs, updates itself and starts its client
 
@@ -8088,6 +8921,51 @@ Found and left for later:
   `IPV6_V6ONLY` is on by default and the two binds coexist.  The
   Teeworlds server carries on over IPv4 only.
 
+## The touchpad's interrupt: Intel GPIO controllers
+
+Phase 21.4's touchpad driver polled the touchpad every 10 ms, because the
+line a laptop touchpad pulls low when it has a report is a pin of the
+chipset's GPIO controller and NovaOS had no driver for it.  It has one
+now, and the touchpad is read when its pin fires.
+
+- **The GPIO controller** (`kernel/hal/gpio.c`).  Intel's chipsets from
+  Tiger Lake to Meteor Lake (`INT34C5`, `INT34C6`, `INTC1055`, `INTC1056`,
+  `INTC1057`, `INTC1085`, `INTC1083`, `INTC105E`; the ThinkPad T14 Gen 4's
+  Raptor Lake is `INTC1055`) describe their pin controller in ACPI as a
+  few memory-mapped "communities" and one shared interrupt (IRQ 14).  The
+  driver maps the communities, masks every pin's interrupt, routes the
+  controller's interrupt through the I/O APIC and translates a GpioInt
+  pin (ACPI numbers pins per 32-pin group) to its pad.  A connected pad is
+  set up as a GPIO input interrupting on the level or edge the resource
+  asks for (inverted for an active-low line), with its SCI, SMI, NMI and
+  I/O APIC routes off; a pad the firmware gave a native function is
+  refused.  A level-triggered pin stays masked from its interrupt until
+  its driver has read the device, and the pads come back after sleep.
+  The register layout and each chipset's pad groups are ported from
+  OpenBSD's `pchgpio(4)` (ISC licence).
+- **The touchpad** (`i2chid.c`).  The touchpad's GpioInt (or, on firmware
+  that gives it one, its own Interrupt resource through the I/O APIC)
+  wakes the `i2chid` thread, which reads reports while the line stays
+  asserted and then unmasks the pin.  Once a second it also looks without
+  an interrupt; a touchpad whose reports keep turning up that way (an
+  interrupt that never arrives) is polled from then on, and one whose pin
+  can't be had (an unknown controller, no interrupt routed) is polled as
+  before, so the touchpad works either way.  The boot log's `[GPIO]` and
+  `[I2C]` lines say which.
+- **Tests.**  QEMU has no Intel GPIO controller, so the core suite's ACPI
+  table (`tests/acpi/i2c-touchpad.asl`) now describes one as a Raptor Lake
+  DSDT does, under `_HID NOVA1055`, which NovaOS serves with a model of
+  the registers (the way the laptop table's embedded controller is
+  modelled), and puts the touchpad's GpioInt on its pin 277 (GPP_C21).
+  `hwcheck` connects its modelled touchpad to that pin: nothing interrupts
+  while the touchpad is quiet, and a tap and a two-finger scroll are read
+  on the interrupt, the controller's vector raised as its line would
+  raise it, with no empty reads.  The core test `touchpad interrupt`
+  checks this and the refusals.
+
+None of this has run on a T14 yet; the hand check is step 5 in
+[hardware.md](../hardware.md#checking-audio-and-the-touchpad-on-the-t14-step-214).
+
 ## WebView2: Microsoft Edge Update runs its install step
 
 Roblox's login page needs the Microsoft Edge WebView2 runtime, whose
@@ -8127,6 +9005,177 @@ the offline installer (`tests/appcorpus/095-webview2.py`).
   mark, as Edge Update's log does) as text, as Windows' does.
 - The `edgeupdtest` self-test checks them, 64- and 32-bit.
 
+## WebView2: the runtime installs (drive C:'s root permissions)
+
+The WebView2 runtime's own setup (Chromium's `setup.exe`) copied the
+runtime into `C:\AppData\Local\Microsoft\EdgeWebView\Application`, then
+failed to create `SetupMetrics` there with "Access is denied" and rolled
+the install back.  Before that, it gives the runtime's sandboxed
+processes read access to the folder: it reads the folder's DACL, adds one
+entry with `SetEntriesInAcl` and sets it back with `SetNamedSecurityInfo`.
+Unless drive C: was on NTFS, nothing on it had a DACL (as on FAT, where
+everyone may do anything), so the one added entry became the folder's
+whole DACL and left the user out.  Nothing in the runtime is changed:
+NovaOS now answers as Windows does.
+
+- **Drive C:'s root permissions**: a root without a descriptor of its own
+  (C: on FAT or in memory) has the DACL Windows gives `C:\`, the one a new
+  NTFS volume's root already got: SYSTEM and Administrators full control,
+  CREATOR OWNER (the user) full control of what is below, Authenticated
+  Users change, Users read and execute, all inherited.  Every folder and
+  file without a descriptor of its own inherits it, so an entry an
+  installer adds joins those rather than replacing them.
+- **Where the WebView2 install stops now**: it does not.  The setup
+  finishes, Edge Update records the runtime as installed
+  (`InstallApp returned 0x0`), and the corpus test runs it under TCG in
+  about five minutes.  Next is running the runtime itself
+  (`msedgewebview2.exe`, Chromium with its sandbox).
+- `acltest` checks the root's DACL, its inheritance, and the setup's
+  sequence on a new folder (122 checks, 64- and 32-bit).
+
+## WebView2: Edge Update sees its install running; delete on close
+
+Microsoft Edge Update's install of the WebView2 runtime failed with
+`0x80070003` because Edge Update uninstalled itself in the middle of it.
+Its background update pass (`/ua`) runs alongside the install and
+uninstalls Edge Update unless it finds an install worker running: it lists
+processes (`EnumProcesses`), opens each one, asks for its image path with
+`GetProcessImageFileName` and turns that device path into a drive path with
+`QueryDosDevice`, checks the process's user and reads its command line
+from its PEB (`/handoff`, `/install`).  NovaOS answered
+`GetProcessImageFileName` for the calling process only, so no worker was
+ever found.  Nothing in Edge Update is changed: NovaOS now answers as
+Windows does.
+
+- **Another process's image and command line**: `NtQueryInformationProcess`
+  answers `ProcessImageFileName` (`\Device\HarddiskVolume1\...`),
+  `ProcessImageFileNameWin32`, `ProcessWow64Information` and
+  `ProcessCommandLineInformation` for any process the caller has opened,
+  also for 32-bit callers.  kernel32's `GetProcessImageFileName`,
+  `GetModuleFileNameEx` and `GetModuleBaseName` (of another process's
+  program), `QueryFullProcessImageName` (with `PROCESS_NAME_NATIVE`, and
+  `ERROR_INSUFFICIENT_BUFFER` for a short buffer) and `IsWow64Process(2)`
+  are built on them.
+- **Delete on close**: a file marked for deletion
+  (`FILE_FLAG_DELETE_ON_CLOSE`, `FileDispositionInfo`, or `DeleteFile` of
+  a file someone still has open) is now deleted when its last handle
+  closes, as on Windows; until then opening it again fails with
+  `ERROR_ACCESS_DENIED` (`STATUS_DELETE_PENDING`).  NovaOS used to try the
+  delete at the marking handle's close and silently gave up when another
+  handle or mapping still held the file, so the file stayed: the runtime
+  setup's cleanup loop (open, mark, close, until the file is gone) then
+  never ended.  A running program's or loaded DLL's file cannot be marked
+  (`STATUS_CANNOT_DELETE`), as on Windows.
+- **Tests**: the new `proclisttest` finds a running copy of itself (and,
+  from the 64-bit build, the 32-bit one) by name, user and command line;
+  `filetest` checks delete on close.  The WebView2 corpus test passes
+  again, now in about two and a half minutes under emulation.
+- **Where the install stops now**: Edge Update starts the runtime's setup
+  (Chromium's `mini_installer` and `setup.exe`), which cannot map its
+  archive into memory ("Can't map file to memory: Incorrect function") and
+  then stops on the missing `wer.dll`
+  ([compatibility.md](../compatibility.md#webview2)).
+
+## WebView2: the runtime's setup unpacks its archive; wer.dll
+
+The WebView2 runtime's own setup (Chromium's `setup.exe`, which Microsoft
+Edge Update starts) stopped with "Can't map file to memory: Incorrect
+function" while unpacking its archive, then crashed on the missing
+`wer.dll`.  The archive, `MSEDGE.7z`, is 728 MB, and NovaOS refused any
+section (file mapping) over 256 MB with `STATUS_SECTION_TOO_BIG`, which
+ntdll had no Win32 error for, so it came back as `ERROR_INVALID_FUNCTION`.
+Nothing in the runtime is changed: NovaOS now maps the archive as Windows
+does.
+
+- **Large file mappings**: a section may now be as large as free memory
+  allows (less a sixteenth of the machine's, kept for the kernel); when
+  memory is short, the saved files of drive C: that nothing holds are let
+  go of first.  A file mapping is filled from the file, and written back
+  to it, a megabyte at a time, so a large one no longer holds the desktop
+  up.  A read-only mapping larger than its file fails with
+  `STATUS_SECTION_TOO_BIG` (only a writable one extends the file), and
+  ntdll turns that, `STATUS_MAPPED_FILE_SIZE_ZERO` and
+  `STATUS_COMMITMENT_LIMIT` into Windows' errors instead of
+  `ERROR_INVALID_FUNCTION`.
+- **`wer.dll`**: Windows Error Reporting's report API (`WerReportCreate`,
+  `WerReportSetParameter`, `WerReportAddFile`, `WerReportAddDump`,
+  `WerReportSetUIOption`, `WerReportSubmit`, `WerReportCloseHandle`,
+  `WerAddExcludedApplication`).  NovaOS has no reporting service, so it
+  answers as a Windows machine with reporting turned off: reports are made
+  and closed, and submitting one gives `WerDisabled`.  Written from the
+  documented API; no reporting code exists under a licence NovaOS reuses.
+- **Device family**: ntdll's `RtlGetDeviceFamilyInfoEnum` (a desktop
+  running Windows 10.0.19045; `setup.exe` stops unless it is told
+  "desktop"), kernel32's `OOBEComplete` and `FlsGetValue2`.
+- **Tests**: the new `wvsetuptest` maps a 300 MB file whole through a
+  duplicate of its handle, as `setup.exe` does, and checks `wer.dll`'s
+  report API, the device family, `OOBEComplete` and `FlsGetValue2`.
+- **Where the install stops now**: `setup.exe` unpacks all of
+  `MSEDGE.7z` and copies the runtime into
+  `C:\AppData\Local\Microsoft\EdgeWebView\Application`, then cannot make
+  the `SetupMetrics` folder there ("Access is denied") and rolls the
+  install back (exit code 521)
+  ([compatibility.md](../compatibility.md#webview2)).
+
+## WebView2: the runtime's browser process starts
+
+With the WebView2 runtime installed, nothing had yet run it.  A host
+program needs Microsoft's `WebView2Loader.dll` (from the WebView2 SDK,
+BSD-licensed), which finds the runtime and starts its browser process,
+`msedgewebview2.exe` (Chromium).  NovaOS now builds such a host,
+`wv2host`, which makes an environment, a controller and a page through
+the loader and says how far it got.  Each stop on the way was something
+NovaOS lacked; nothing in the runtime is changed.
+
+- **DLL search order**: the loader sits next to the host in its folder,
+  which NovaOS never searched.  After the system folders, NovaOS now
+  searches the process's current folder (unless `SetDllDirectory` set a
+  folder), Windows' safe DLL search order.
+- **COM's apartment in the TEB**: Chromium reads the thread's apartment
+  from the TEB's `ReservedForOle` block (the flags of COM's per-thread
+  data) instead of asking COM, and failed with `CO_E_NOTINITIALIZED`.
+  ole32 now publishes the block: the single-threaded or multithreaded
+  flag on the first `CoInitializeEx`, cleared by the last
+  `CoUninitialize`.
+- **Functions the browser calls**: ws2_32's `GetAddrInfoExW` (also
+  asynchronous, with an `OVERLAPPED`, an event or a completion routine,
+  and its cancel and result functions); ntdll's
+  `RtlIpv4StringToAddress(Ex)` and `RtlIpv6StringToAddress(Ex)`, A and W,
+  and `LdrLockLoaderLock`/`LdrUnlockLoaderLock`; crypt32's
+  `CryptFindOIDInfo`; advapi32's performance counter provider API (a
+  provider, its counter sets and instances, nothing reading them; the
+  browser's delay-load hook turned the missing function into a
+  breakpoint); powrprof's power setting notifications; kernel32's
+  `GetDllDirectory`, `GetPhysicallyInstalledSystemMemory`, the packaged-app
+  queries (no packages) and `AppPolicyGetThreadInitializationType`.
+- **Fiber-local storage**: up to 4080 slots per process, as on Windows
+  (each statically linked C runtime takes some), in blocks made as they
+  are needed.
+- **TerminateProcess on itself**: it ran DLL detach, as `ExitProcess`
+  does; on Windows it does not, and Chromium's DllMain deliberately
+  crashes on a detach it does not expect (its GPU process ended that
+  way).  It now ends the process at once.
+- **A `__finally` run twice**: unwinding to an `__except` whose
+  `__try` sits inside a `__try`/`__finally` of the same frame ran that
+  `__finally` too, though the frame goes on inside it: the unwind never
+  told the frame's handler where it continues
+  (`DISPATCHER_CONTEXT.TargetIp`), and NovaOS's own
+  `__C_specific_handler` did not stop at the target.  Microsoft's C++
+  runtime catches a rethrow in such an `__except` and raises it again
+  from there; its `__finally` then unlinked the catch block's frame
+  twice and `oneauth.dll` aborted the browser.
+- **Tests**: `wvstarttest` checks the apartment flags, `TerminateProcess`
+  on itself (a child whose FLS callback would leave a file), 300 FLS
+  slots and the new functions; `unwindtest` checks the `__finally` runs
+  once.  The WebView2 corpus test now also runs `wv2host` with the SDK's
+  loader and expects the environment.
+- **Where it stops now**: the environment is made and the browser starts
+  its GPU, network and storage processes.  The GPU process finds no
+  Direct3D 11 adapter for ANGLE and exits, the first browser process
+  ends and the loader starts another, and `CreateCoreWebView2Controller`
+  fails with `RPC_E_DISCONNECTED`
+  ([compatibility.md](../compatibility.md#webview2)).
+
 ## WebView2: Edge Update accepts Microsoft's signature on the runtime
 
 Microsoft Edge Update unpacked the WebView2 runtime's package and then
@@ -8161,6 +9210,28 @@ changed: the check now gets Windows' answer.
   pass, running at the same time, does not see the install worker and
   uninstalls Edge Update under it
   ([compatibility.md](../compatibility.md#webview2)).
+
+## Built-in windows open in the same place every time
+
+The nightly app corpus failed one program on every run: File Explorer's
+This PC screenshot differed from its reference in 3.4% of its pixels.
+NovaOS drew This PC correctly; the window had opened one cascade step
+(32 pixels right, 28 down) further than in the reference, because an
+earlier program in the run had opened and closed one of NovaOS's own
+windows.
+
+- **Cascade steps are given back**: a built-in app's window (File
+  Explorer, Notepad, Settings, the Terminal, ...) used to take the next of
+  eight cascade steps from a counter that only ever went up, so where a
+  window opened depended on every window opened before it since boot.  It
+  now takes the first step whose top edge no open window has
+  (`AppCreateWindow` in `kernel/apps/apps.c`), so a closed window's step
+  is used again and the same windows open in the same places, as
+  Windows' own default positions do once the windows before them are
+  closed.  With all eight steps taken it goes round as before.
+- **The corpus's This PC check** (`tests/appcorpus/800-novaos-screens.py`)
+  now passes on the nightly's full run; its reference
+  (`tests/reference/this-pc.png`) was right and is unchanged.
 
 ## Windows' segment layout, 32-bit code in 64-bit programs, and a thread's own context
 
