@@ -24,6 +24,7 @@
 #include "../drivers/hda.h"
 #include "../drivers/sof.h"
 #include "../drivers/i2chid.h"
+#include "../hal/gpio.h"
 #include "../um/um.h"
 #include "../fs/persist.h"
 #include "../hal/serial.h"
@@ -703,6 +704,7 @@ static void cmd_hwcheck(Term *t, const char *a1, const char *a2)
     int ifailed = I2cHidSelfCheck(usbcheck_say, t);
     failed = failed < 0 || sfailed < 0 || ifailed < 0 ? -1 : failed + sfailed + ifailed;
     tprintf(t, "     audio DSP on this machine: %s", SofStatus());
+    tprintf(t, "     GPIO controller on this machine: %s", GpioStatus());
     tprintf(t, "hwcheck: %s, %d failed", failed ? "done" : "all passed", failed < 0 ? 1 : failed);
 }
 

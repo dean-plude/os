@@ -5,10 +5,36 @@
  * address 0x2C (PNP0C50), 400 kHz, its interrupt on a GPIO pin and its
  * HID descriptor at register 0x20 (_DSM function 1).  QEMU has no I2C
  * controller there, so the test checks that NovaOS reads all of this and
- * says the controller is missing. */
+ * says the controller is missing.
+ *
+ * The interrupt pin, 277 (GPP_C21), belongs to \_SB.GPI0, the chipset's
+ * GPIO controller as a Tiger/Alder/Raptor Lake laptop's DSDT describes it
+ * (INTC1055): its four communities' registers and its shared interrupt,
+ * IRQ 14.  QEMU has no such controller either: _HID NOVA1055 makes NovaOS
+ * serve this one with the model in kernel/hal/gpio.c (the addresses below
+ * are never touched), and `hwcheck` drives the modelled touchpad's line
+ * through it. */
 DefinitionBlock ("", "SSDT", 2, "NOVA", "I2CTPAD", 1)
 {
     External (\_SB.PCI0, DeviceObj)
+
+    Scope (\_SB)
+    {
+        Device (GPI0)
+        {
+            Name (_HID, "NOVA1055")
+            Name (_UID, Zero)
+            Method (_STA) { Return (0x0F) }
+            Name (_CRS, ResourceTemplate ()
+            {
+                Memory32Fixed (ReadWrite, 0xFD6E0000, 0x00010000)      /* community 0 */
+                Memory32Fixed (ReadWrite, 0xFD6D0000, 0x00010000)      /* community 1 */
+                Memory32Fixed (ReadWrite, 0xFD6A0000, 0x00010000)      /* community 4 */
+                Memory32Fixed (ReadWrite, 0xFD690000, 0x00010000)      /* community 5 */
+                Interrupt (ResourceConsumer, Level, ActiveLow, Shared, , , ) { 14 }
+            })
+        }
+    }
 
     Scope (\_SB.PCI0)
     {

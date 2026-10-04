@@ -21,6 +21,7 @@
 #include "aml.h"
 #include "acpi.h"
 #include "ec.h"
+#include "gpio.h"
 #include "pci.h"
 #include "ioapic.h"
 #include "../arch/x86_64/idt.h"
@@ -1009,10 +1010,27 @@ static uacpi_iteration_decision i2c_resource(void *user, uacpi_resource *r)
             strncpy(sc->d->bus, c->common.source.string, sizeof(sc->d->bus) - 1);
             uacpi_namespace_node_resolve_from_aml_namepath(sc->dev, c->common.source.string, &sc->bus);
         }
-    } else if (r->type == UACPI_RESOURCE_TYPE_GPIO_CONNECTION && r->gpio_connection.type == 0 &&
+    } else if (r->type == UACPI_RESOURCE_TYPE_GPIO_CONNECTION && r->gpio_connection.type == UACPI_GPIO_CONNECTION_INTERRUPT &&
                r->gpio_connection.pin_table_length && !sc->d->gpio_int) {
-        sc->d->gpio_int = true;                                        /* GpioInt */
-        sc->d->gpio_pin = r->gpio_connection.pin_table[0];
+        uacpi_resource_gpio_connection *g = &r->gpio_connection;   /* GpioInt */
+        sc->d->gpio_int = true;
+        sc->d->gpio_pin = g->pin_table[0];
+        sc->d->gpio_level = g->intr.triggering == UACPI_TRIGGERING_LEVEL;
+        sc->d->gpio_low = g->intr.polarity == UACPI_POLARITY_ACTIVE_LOW;
+        sc->d->gpio_both = g->intr.polarity == UACPI_POLARITY_ACTIVE_BOTH;
+        if (g->source.string) {
+            uacpi_namespace_node *ctrl = NULL;
+            const uacpi_char *path = NULL;
+            uacpi_namespace_node_resolve_from_aml_namepath(sc->dev, g->source.string, &ctrl);
+            if (ctrl) path = uacpi_namespace_node_generate_absolute_path(ctrl);
+            strncpy(sc->d->gpio_ctrl, path ? path : g->source.string, sizeof(sc->d->gpio_ctrl) - 1);
+            if (path) uacpi_free_absolute_path(path);
+        }
+    } else if (r->type == UACPI_RESOURCE_TYPE_EXTENDED_IRQ && r->extended_irq.num_irqs && !sc->d->irq) {
+        sc->d->irq = true;                                             /* Interrupt */
+        sc->d->irq_num = r->extended_irq.irqs[0];
+        sc->d->irq_level = r->extended_irq.triggering == UACPI_TRIGGERING_LEVEL;
+        sc->d->irq_low = r->extended_irq.polarity == UACPI_POLARITY_ACTIVE_LOW;
     }
     return UACPI_ITERATION_DECISION_CONTINUE;
 }
@@ -1093,9 +1111,17 @@ static uacpi_iteration_decision found_i2c_hid(void *user, uacpi_namespace_node *
     uacpi_execute(node, "_PS0", NULL);
     char pci[24] = "not a PCI function";
     if (d->bus_pci) ksnprintf(pci, sizeof(pci), "PCI 00:%02x.%x", d->bus_dev, d->bus_fn);
+    char irq[96] = "";
+    if (d->gpio_int)
+        ksnprintf(irq, sizeof(irq), ", GPIO interrupt: pin %u of %s, %s%s", d->gpio_pin, d->gpio_ctrl[0] ? d->gpio_ctrl : "?",
+                  d->gpio_both ? "both edges" : d->gpio_level ? "level" : "edge",
+                  d->gpio_both ? "" : d->gpio_low ? ", active low" : ", active high");
+    else if (d->irq)
+        ksnprintf(irq, sizeof(irq), ", interrupt: GSI %u, %s, active %s", d->irq_num, d->irq_level ? "level" : "edge",
+                  d->irq_low ? "low" : "high");
     kprintf("[ACPI] I2C-HID device %s (%s): address 0x%02x at %u kHz on %s (%s), HID descriptor %s0x%04x%s\n",
             d->path, d->hid, d->addr, d->speed / 1000, d->bus[0] ? d->bus : "?", pci,
-            d->has_desc ? "at " : "register unknown, ", d->desc_reg, d->gpio_int ? ", GPIO interrupt" : "");
+            d->has_desc ? "at " : "register unknown, ", d->desc_reg, irq);
     g_ni2c++;
     return UACPI_ITERATION_DECISION_CONTINUE;
 }
@@ -1164,6 +1190,7 @@ static bool load(void)
         static const uacpi_char *lps0[] = { "INT33A1", "PNP0D80", NULL };
         uacpi_find_devices_at(uacpi_namespace_root(), lps0, found_lps0, NULL);
     }
+    GpioProbe();                         /* (before the devices whose interrupts are its pins) */
     uacpi_find_devices("PNP0C50", found_i2c_hid, NULL);
     uacpi_find_devices("ACPI0C50", found_i2c_hid, NULL);
     uacpi_namespace_for_each_child(uacpi_namespace_root(), found_zone, NULL,
