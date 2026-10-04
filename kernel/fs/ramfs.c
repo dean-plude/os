@@ -662,8 +662,10 @@ bool RamfsWriteOwned(RamNode *f, char *buf, UINT32 len)
 }
 
 /* Grow capacity to at least @need: where the contents are when the memory
- * after them is free, else into a new buffer, twice as big when @exact is
- * false (so appends are cheap; RamfsTrim gives the rest back) */
+ * after them is free, else into a new buffer, bigger than asked when @exact
+ * is false (so appends are cheap): doubling while small, then by a quarter,
+ * so a file of hundreds of MiB written in pieces doesn't hold twice its
+ * size; trim() gives the rest back once the file is closed */
 static bool reserve(RamNode *f, UINT32 need, bool exact)
 {
     if (need <= f->cap) return true;
@@ -673,7 +675,10 @@ static bool reserve(RamNode *f, UINT32 need, bool exact)
         return true;
     }
     UINT32 cap = f->cap ? f->cap : 256;
-    while (cap < need) cap = cap > RAMFS_FILE_MAX / 2 ? RAMFS_FILE_MAX : cap * 2;
+    while (cap < need) {
+        UINT32 more = cap < (64u << 20) ? cap : cap / 4;
+        cap = cap > RAMFS_FILE_MAX - more ? RAMFS_FILE_MAX : cap + more;
+    }
     if (exact) cap = need;
     char *nb = kmalloc(cap);
     if (!nb) return false;

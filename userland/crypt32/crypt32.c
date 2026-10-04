@@ -314,3 +314,17 @@ CRYPT32API BOOL WINAPI CryptAcquireCertificatePrivateKey(const void *cert, DWORD
     SetLastError(0x8009200B);                       /* CRYPT_E_NO_KEY_PROPERTY */
     return FALSE;
 }
+
+/* CryptProtectMemory and CryptUnprotectMemory: advapi32's RtlEncryptMemory
+ * (SystemFunction040/041) on blocks of 16 bytes
+ * (CRYPTPROTECTMEMORY_BLOCK_SIZE); the flags are the same */
+static BOOL protect_memory(void *mem, DWORD n, DWORD flags, const char *fn)
+{
+    typedef LONG(WINAPI * Rtl)(void *, ULONG, ULONG);
+    if (!mem || (n & 15) || flags > 2) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    Rtl f = (Rtl)(void *)GetProcAddress(LoadLibraryW(L"advapi32.dll"), fn);
+    if (!f || f(mem, n, flags) < 0) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return TRUE;
+}
+CRYPT32API BOOL WINAPI CryptProtectMemory(void *mem, DWORD n, DWORD flags) { return protect_memory(mem, n, flags, "SystemFunction040"); }
+CRYPT32API BOOL WINAPI CryptUnprotectMemory(void *mem, DWORD n, DWORD flags) { return protect_memory(mem, n, flags, "SystemFunction041"); }

@@ -1,0 +1,1 @@
+| **Microsoft Edge WebView2 runtime** (the evergreen offline installer) | Partly | Its installer, Microsoft Edge Update, starts and runs its install step, then stops: it needs MSXML 6, which NovaOS does not have yet ([WebView2](#webview2)) | nightly corpus (the installer) |

@@ -601,19 +601,40 @@ WINADVAPI BOOL WINAPI LogonUserW(LPCWSTR user, LPCWSTR domain, LPCWSTR pass, DWO
     return FALSE;
 }
 
+/* Starts the program suspended, gives it @token (NtSetInformationProcess
+ * ProcessAccessToken, as Windows' CreateProcessAsUser does) and lets it
+ * run unless the caller asked for it suspended.  No token: the caller's. */
+static BOOL create_with_token(HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
+                              BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si,
+                              LPPROCESS_INFORMATION pi)
+{
+    if (!token) return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+    if (!CreateProcessW(app, cmd, pa, ta, inherit, flags | CREATE_SUSPENDED, env, dir, si, pi)) return FALSE;
+    struct { HANDLE token, thread; } at = { token, pi->hThread };
+    NTSTATUS st = NtSetInformationProcess(pi->hProcess, 9 /* ProcessAccessToken */, &at, sizeof(at));
+    if (!NT_SUCCESS(st)) {
+        TerminateProcess(pi->hProcess, 1);
+        CloseHandle(pi->hThread);
+        CloseHandle(pi->hProcess);
+        SetLastError(RtlNtStatusToDosError(st));
+        return FALSE;
+    }
+    if (!(flags & CREATE_SUSPENDED)) ResumeThread(pi->hThread);
+    return TRUE;
+}
+
 WINADVAPI BOOL WINAPI CreateProcessAsUserW(HANDLE token, LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRIBUTES pa, LPSECURITY_ATTRIBUTES ta,
                                            BOOL inherit, DWORD flags, LPVOID env, LPCWSTR dir, LPSTARTUPINFOW si,
                                            LPPROCESS_INFORMATION pi)
 {
-    (void)token;
-    return CreateProcessW(app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
+    return create_with_token(token, app, cmd, pa, ta, inherit, flags, env, dir, si, pi);
 }
 
 WINADVAPI BOOL WINAPI CreateProcessWithTokenW(HANDLE token, DWORD logon, LPCWSTR app, LPWSTR cmd, DWORD flags, LPVOID env,
                                               LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
 {
-    (void)token; (void)logon;
-    return CreateProcessW(app, cmd, 0, 0, FALSE, flags, env, dir, si, pi);
+    (void)logon;
+    return create_with_token(token, app, cmd, 0, 0, FALSE, flags, env, dir, si, pi);
 }
 
 /* -----------------------------------------------------------------------
@@ -771,6 +792,39 @@ static BOOL make_self_relative(PSECURITY_DESCRIPTOR sd, BYTE *out, DWORD *n)
 WINADVAPI BOOL WINAPI MakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DESCRIPTOR rel, LPDWORD n)
 {
     return make_self_relative(abs, rel, n);
+}
+
+/* An absolute copy of the self-relative @rel: the header in @abs and each
+ * part in its own buffer; every size is checked (and the needed ones
+ * returned) before anything is written */
+WINADVAPI BOOL WINAPI MakeAbsoluteSD(PSECURITY_DESCRIPTOR rel, PSECURITY_DESCRIPTOR abs, LPDWORD abs_n,
+                                     PACL dacl, LPDWORD dacl_n, PACL sacl, LPDWORD sacl_n,
+                                     PSID owner, LPDWORD owner_n, PSID group, LPDWORD group_n)
+{
+    SECURITY_DESCRIPTOR *r = rel;
+    if (!r || !abs_n || !dacl_n || !sacl_n || !owner_n || !group_n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!(r->Control & SE_SELF_RELATIVE)) { SetLastError(1305 /* ERROR_BAD_DESCRIPTOR_FORMAT */); return FALSE; }
+    PSID o = sd_part(rel, 0), g = sd_part(rel, 1);
+    PACL sa = sd_part(rel, 2), da = sd_part(rel, 3);
+    DWORD need[5] = { sizeof(SECURITY_DESCRIPTOR), acl_len(da), acl_len(sa), o ? GetLengthSid(o) : 0, g ? GetLengthSid(g) : 0 };
+    LPDWORD have[5] = { abs_n, dacl_n, sacl_n, owner_n, group_n };
+    BOOL small = FALSE;
+    for (int i = 0; i < 5; i++) if (*have[i] < need[i]) small = TRUE;
+    if (small || !abs || (need[1] && !dacl) || (need[2] && !sacl) || (need[3] && !owner) || (need[4] && !group)) {
+        for (int i = 0; i < 5; i++) *have[i] = need[i];
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    SECURITY_DESCRIPTOR *a = abs;
+    memset(a, 0, sizeof(*a));
+    a->Revision = r->Revision;
+    a->Control = (WORD)(r->Control & ~SE_SELF_RELATIVE);
+    if (da) { memcpy(dacl, da, need[1]); a->Dacl = dacl; }
+    if (sa) { memcpy(sacl, sa, need[2]); a->Sacl = sacl; }
+    if (o) { memcpy(owner, o, need[3]); a->Owner = owner; }
+    if (g) { memcpy(group, g, need[4]); a->Group = group; }
+    for (int i = 0; i < 5; i++) *have[i] = need[i];
+    return TRUE;
 }
 
 WINADVAPI BOOL WINAPI InitializeAcl(PACL acl, DWORD n, DWORD rev)

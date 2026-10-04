@@ -85,3 +85,27 @@ UEAPI HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(LPCWSTR name, PSI
     SID_IDENTIFIER_AUTHORITY app = { { 0, 0, 0, 0, 0, 15 } };
     return AllocateAndInitializeSid(&app, 8, 2, h[0], h[1], h[2], h[3], h[4], h[5], h[6], sid) ? S_OK : E_OUTOFMEMORY;
 }
+
+/* Group Policy: NovaOS applies none, so nothing ever holds the policy
+ * section for writing; the "section" handed out is a handle that only has
+ * to close */
+UEAPI HANDLE WINAPI EnterCriticalPolicySection(BOOL machine)
+{
+    (void)machine;
+    HANDLE h = CreateEventW(0, TRUE, TRUE, 0);
+    return h ? h : 0;
+}
+UEAPI BOOL WINAPI LeaveCriticalPolicySection(HANDLE section)
+{
+    if (!section) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    return CloseHandle(section);
+}
+
+/* every NovaOS profile is a local one: 0 is a local profile (no PT_TEMPORARY,
+ * PT_ROAMING or PT_MANDATORY bit) */
+UEAPI BOOL WINAPI GetProfileType(DWORD *flags)
+{
+    if (!flags) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    *flags = 0;
+    return TRUE;
+}

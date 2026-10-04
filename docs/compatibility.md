@@ -86,6 +86,25 @@ Windows 10 service, in service-number order, and a kernel that implements
 every service a program may call directly.  NovaOS does not, and will not,
 work around anti-cheat checks or change Roblox itself.
 
+## WebView2
+
+Roblox's login page, and many other programs, show web content with
+Microsoft Edge WebView2, a runtime Windows installs once for every
+program.  Its installer is Microsoft Edge Update, a 32-bit program that
+installs itself, registers its update tasks with the Task Scheduler and
+its COM servers, and then runs the runtime's own setup.  On NovaOS, Edge
+Update now starts and reaches its install step (NovaOS gained the
+functions it calls: Task Scheduler 2.0, the Data Protection API,
+`UrlCombine`, the package-name functions, the MDM enrolment check and
+others).  It stops there: before installing anything it makes an MSXML 6
+`DOMDocument`, which NovaOS does not have yet, and then reports that
+Windows needs an update.  What comes after MSXML, in order: Edge Update
+hands the install to its own COM server in another process (NovaOS's COM
+is in-process only so far), the 32-bit updater's registry keys need
+Windows' `WOW6432Node` view for the 64-bit programs that look for the
+runtime there, and then the runtime itself (a Chromium browser process
+with its sandbox) has to run.
+
 ## Programs that come with NovaOS
 
 Built in: the Terminal, File Explorer, Notepad, Settings, Calendar,

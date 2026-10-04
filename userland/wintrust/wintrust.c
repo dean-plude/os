@@ -21,3 +21,6 @@ WTAPI HANDLE WINAPI CryptCATAdminEnumCatalogFromHash(HANDLE h, BYTE *hash, DWORD
 { (void)h; (void)hash; (void)n; (void)flags; (void)prev; SetLastError(ERROR_NOT_FOUND); return 0; }
 WTAPI BOOL WINAPI CryptCATAdminReleaseCatalogContext(HANDLE h, HANDLE c, DWORD flags) { (void)h; (void)c; (void)flags; return TRUE; }
 WTAPI PVOID WINAPI WTHelperProvDataFromStateData(HANDLE h) { (void)h; return 0; }
+/* no provider data ever exists (above), so it has no signers */
+WTAPI PVOID WINAPI WTHelperGetProvSignerFromChain(PVOID prov, DWORD signer, BOOL counter, DWORD counter_index)
+{ (void)prov; (void)signer; (void)counter; (void)counter_index; SetLastError(ERROR_INVALID_PARAMETER); return 0; }

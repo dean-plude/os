@@ -1551,7 +1551,34 @@ static int type_one(const char *path, void *ctx)
     if (h == INVALID_HANDLE_VALUE) return 0;
     char buf[8192];
     DWORD got;
-    while (ReadFile(h, buf, sizeof(buf), &got, 0) && got) wr(io->out, buf, got);
+    if (!ReadFile(h, buf, sizeof(buf), &got, 0)) got = 0;
+    if (got >= 2 && (BYTE)buf[0] == 0xFF && (BYTE)buf[1] == 0xFE) {
+        /* UTF-16 with a byte-order mark (as Windows' type reads it): shown
+         * as text; an odd byte or a lone high surrogate at the end of a
+         * read waits for the next one */
+        WCHAR w[4096 + 2];
+        char out[sizeof(w) / sizeof(WCHAR) * 3];
+        int carry = got - 2, have = 0;
+        memmove(buf, buf + 2, carry);
+        for (;;) {
+            int whole = carry & ~1;
+            memcpy((char *)w + have * 2, buf, whole);
+            int n = have + whole / 2;
+            have = n && w[n - 1] >= 0xD800 && w[n - 1] < 0xDC00 ? 1 : 0;
+            int k = WideCharToMultiByte(CP_UTF8, 0, w, n - have, out, sizeof(out), 0, 0);
+            if (k > 0) wr(io->out, out, k);
+            if (have) w[0] = w[n - 1];
+            memmove(buf, buf + whole, carry - whole);
+            carry -= whole;
+            if (!ReadFile(h, buf + carry, 8192 - carry, &got, 0) || !got) break;
+            carry += got;
+        }
+    } else {
+        while (got) {
+            wr(io->out, buf, got);
+            if (!ReadFile(h, buf, sizeof(buf), &got, 0)) break;
+        }
+    }
     CloseHandle(h);
     return 0;
 }
