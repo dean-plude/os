@@ -186,9 +186,11 @@ none a reason to change Steam:
   manager (`StartService` no longer fails with
   `ERROR_SERVICE_REQUEST_TIMEOUT`, 1053, now that `CopyFile` keeps a
   file's last-write time the way Windows does: the service compares it to
-  tell whether its copy is current), installs its helper files and stops
-  when `SteamService.dll` calls `StopTraceA`: NovaOS has no event-tracing
-  (ETW) controller functions yet.
+  tell whether its copy is current), installs its helper files and keeps
+  running.  It asks for an event-tracing (ETW) session to watch process
+  starts; NovaOS runs no trace sessions, so `StartTrace` fails as it does
+  on Windows when no session can start, and the service watches processes
+  without one.
 - Steam's service pipe ("Failed to create Service pipe") and its
   security descriptors in SDDL form (`advapi32`'s SDDL functions are
   incomplete).
