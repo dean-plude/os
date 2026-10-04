@@ -131,11 +131,13 @@ its threads and then never starts its GPU and page processes, so no window
 appears.  What is known to be missing on the way, each a NovaOS gap and
 none a reason to change Steam:
 
-- `SteamService.exe` reports "Invalid file signature": it checks Steam's
-  files with `WinVerifyTrust`, and NovaOS's `wintrust` does not check
-  Authenticode signatures yet.  The faithful fix is Authenticode in
-  `wintrust` (the signature in the certificate table, checked against the
-  certificate store), not a service that says yes.
+- `SteamService.exe` checks Steam's files with `WinVerifyTrust` and
+  accepts them: NovaOS checks Authenticode signatures (the digest, Valve's
+  chain to DigiCert's root and the timestamp), offline, so a revocation
+  check it is asked for fails rather than passes.  The service then
+  updates itself, but it runs as a plain process, not a service:
+  starting it as one fails with `ERROR_SERVICE_REQUEST_TIMEOUT` (1053),
+  and Steam starts it again and again.
 - Steam's service pipe ("Failed to create Service pipe") and its
   security descriptors in SDDL form (`advapi32`'s SDDL functions are
   incomplete).

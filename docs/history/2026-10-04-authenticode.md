@@ -41,3 +41,6 @@ Mbed TLS's (Apache-2.0), already in NovaOS for TLS.
   the `authtest` self-test checks the files it must accept and the ones it
   must refuse (a changed byte, a damaged signature, an untrusted root, an
   expired signer without a timestamp, the wrong certificate usage).
+- **And**: `RtlFormatCurrentUserKeyPath`, `RtlAcquirePrivilege` and
+  `RtlReleasePrivilege` were only in the 32-bit `ntdll`; the 64-bit one
+  has them too now, so Steam's 64-bit browser process gets past its start.
