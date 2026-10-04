@@ -7,7 +7,8 @@
   microphones through Sound Open Firmware on Intel's audio DSP) with a kernel mixer;
   PS/2 keyboards and mice; I2C-HID touchpads on Intel's LPSS I2C
   controllers (found through ACPI; tap to click, two-finger tap for the
-  right button and two-finger scrolling as mouse-wheel input); USB (xHCI, EHCI, OHCI and UHCI controllers, any
+  right button and two-finger scrolling as mouse-wheel input; read when
+  their interrupt pin on Intel's GPIO controller fires); USB (xHCI, EHCI, OHCI and UHCI controllers, any
   number of each) with hubs and HID keyboards (lock-key LEDs and media
   keys included), mice (five buttons and both wheels), tablets, pens
   (pressure, X/Y tilt, barrel rotation, barrel buttons and eraser, for

@@ -98,8 +98,13 @@ typedef struct {
     UINT8  bus_dev, bus_fn;
     UINT16 fmcn[3], sscn[3];           /* the controller's fast/standard mode timings (FMCN, SSCN): */
     bool   has_fmcn, has_sscn;         /*   SCL high count, SCL low count, SDA hold */
-    bool   gpio_int;                   /* its interrupt is a GPIO pin (read by polling here) */
-    UINT16 gpio_pin;
+    bool   gpio_int;                   /* its interrupt is a GPIO pin (GpioInt): */
+    UINT16 gpio_pin;                   /*   the pin, in its controller's ACPI numbering */
+    char   gpio_ctrl[48];              /*   the controller (\_SB_.GPI0; unresolved: as written) */
+    bool   gpio_level, gpio_low, gpio_both;
+    bool   irq;                        /* or an interrupt of its own (Interrupt): */
+    UINT32 irq_num;                    /*   the GSI */
+    bool   irq_level, irq_low;
 } AmlI2cHid;
 
 #define AML_MAX_I2C_HID 4

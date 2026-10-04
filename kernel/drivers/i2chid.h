@@ -7,7 +7,8 @@
 #include "../include/types.h"
 
 /* Start the "i2chid" thread: once the ACPI namespace is loaded it opens
- * the I2C-HID devices it lists (touchpads) and polls them */
+ * the I2C-HID devices it lists (touchpads) and reads them when their
+ * interrupt fires (a GPIO pin, hal/gpio.c), else polls them */
 void I2cHidInit(void);
 
 /* Around S3: no transfer may be under way while the CPUs stop; after

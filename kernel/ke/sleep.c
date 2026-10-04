@@ -37,6 +37,7 @@
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../hal/ioapic.h"
+#include "../hal/gpio.h"
 #include "../hal/pci.h"
 #include "../hal/ps2.h"
 #include "../hal/rtc.h"
@@ -392,6 +393,7 @@ bool SleepEnter(void)
     /* Devices the platform powered off */
     AcpiResume();
     IoApicResume();                      /* the SCI */
+    GpioResume();                        /* the touchpad's interrupt pin */
     AhciResume();
     NvmeResume();
     NetResume();                         /* the network adapter */
