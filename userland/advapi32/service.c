@@ -21,6 +21,12 @@
 
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
+/* (security.c) */
+WINADVAPI BOOL WINAPI IsValidSecurityDescriptor(PSECURITY_DESCRIPTOR sd);
+WINADVAPI BOOL WINAPI GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR sd, PSID *o, LPBOOL def);
+WINADVAPI BOOL WINAPI GetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR sd, PSID *g, LPBOOL def);
+WINADVAPI BOOL WINAPI MakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DESCRIPTOR rel, LPDWORD n);
+WINADVAPI BOOL WINAPI ConvertStringSidToSidW(LPCWSTR s, PSID *out);
 
 #define ERROR_SERVICE_REQUEST_TIMEOUT    1053
 #define ERROR_INVALID_SERVICE_CONTROL    1052
@@ -392,6 +398,124 @@ WINADVAPI BOOL WINAPI ChangeServiceConfig2A(SC_HANDLE h, DWORD level, LPVOID inf
         return r;
     }
     return ChangeServiceConfig2W(h, level, info);
+}
+
+/* A service's security descriptor: kept where Windows keeps it, in the
+ * service key's Security\\Security value (self-relative).  A service that
+ * has none has Windows' default one: SYSTEM and Administrators may do
+ * anything, interactive and service users may query, start and stop it.
+ * Nothing checks it here (there is no SCM process to); programs that
+ * read it, change their entries and write it back (Steam's service lets
+ * Users start it) see their change. */
+static PSECURITY_DESCRIPTOR service_sd(const WCHAR *name, DWORD *len)
+{
+    HKEY k;
+    PSECURITY_DESCRIPTOR sd = NULL;
+    if (!open_key(name, false, &k)) {
+        DWORD type = 0, n = 0;
+        HKEY sk;
+        if (!RegOpenKeyExW(k, L"Security", 0, KEY_READ, &sk)) {
+            if (!RegQueryValueExW(sk, L"Security", NULL, &type, NULL, &n) && type == REG_BINARY && n >= 20 &&
+                (sd = halloc(n)) && RegQueryValueExW(sk, L"Security", NULL, &type, sd, &n)) { hfree(sd); sd = NULL; }
+            RegCloseKey(sk);
+        }
+        RegCloseKey(k);
+        if (sd && IsValidSecurityDescriptor(sd)) { *len = n; return sd; }
+        hfree(sd);
+        sd = NULL;
+    }
+    static const struct { const WCHAR *sid; DWORD mask; } def[] = {
+        { L"S-1-5-18", 0x201FD },                       /* SYSTEM: all but change, delete, owner, DACL */
+        { L"S-1-5-32-544", 0xF01FF },                   /* Administrators: SERVICE_ALL_ACCESS */
+        { L"S-1-5-4", 0x2018D },                        /* INTERACTIVE: query, start, stop... */
+        { L"S-1-5-6", 0x2018D },                        /* SERVICE */
+    };
+    BYTE acl_buf[256];
+    PACL acl = (PACL)acl_buf;                           /* Windows' default for a new service */
+    PSID sys = NULL;
+    InitializeAcl(acl, sizeof(acl_buf), ACL_REVISION);
+    for (unsigned i = 0; i < sizeof(def) / sizeof(def[0]); i++) {
+        PSID sid;
+        if (!ConvertStringSidToSidW(def[i].sid, &sid)) continue;
+        AddAccessAllowedAce(acl, ACL_REVISION, def[i].mask, sid);
+        if (i) LocalFree(sid);
+        else sys = sid;
+    }
+    SECURITY_DESCRIPTOR abs;
+    InitializeSecurityDescriptor(&abs, 1);
+    SetSecurityDescriptorOwner(&abs, sys, FALSE);
+    SetSecurityDescriptorGroup(&abs, sys, FALSE);
+    SetSecurityDescriptorDacl(&abs, TRUE, acl, FALSE);
+    DWORD n = 0;
+    MakeSelfRelativeSD(&abs, NULL, &n);
+    if (n && (sd = halloc(n)) && !MakeSelfRelativeSD(&abs, sd, &n)) { hfree(sd); sd = NULL; }
+    if (sys) LocalFree(sys);
+    *len = n;
+    return sd;
+}
+
+WINADVAPI BOOL WINAPI QueryServiceObjectSecurity(SC_HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR out, DWORD n, LPDWORD need)
+{
+    SvcH *s = handle(h, K_SVC);
+    if (!s) return FALSE;
+    if (!need) { SetLastError(ERROR_INVALID_ADDRESS); return FALSE; }
+    DWORD len = 0;
+    PSECURITY_DESCRIPTOR sd = service_sd(s->name, &len);
+    if (!sd) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    SECURITY_DESCRIPTOR abs;                            /* the parts asked for */
+    InitializeSecurityDescriptor(&abs, 1);
+    PSID o = NULL, g = NULL;
+    PACL d = NULL;
+    BOOL present = FALSE, def = FALSE;
+    if (si & OWNER_SECURITY_INFORMATION) GetSecurityDescriptorOwner(sd, &o, &def), SetSecurityDescriptorOwner(&abs, o, FALSE);
+    if (si & GROUP_SECURITY_INFORMATION) GetSecurityDescriptorGroup(sd, &g, &def), SetSecurityDescriptorGroup(&abs, g, FALSE);
+    if (si & DACL_SECURITY_INFORMATION) {
+        GetSecurityDescriptorDacl(sd, &present, &d, &def);
+        SetSecurityDescriptorDacl(&abs, present, d, FALSE);
+    }
+    *need = n;
+    BOOL ok = MakeSelfRelativeSD(&abs, out, need);
+    hfree(sd);
+    return ok;
+}
+
+WINADVAPI BOOL WINAPI SetServiceObjectSecurity(SC_HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR in)
+{
+    SvcH *s = handle(h, K_SVC);
+    if (!s) return FALSE;
+    if (!in || !IsValidSecurityDescriptor(in)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    DWORD len = 0;
+    PSECURITY_DESCRIPTOR now = service_sd(s->name, &len);
+    if (!now) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    SECURITY_DESCRIPTOR abs;                            /* the given parts over the ones it had */
+    InitializeSecurityDescriptor(&abs, 1);
+    PSID o, g;
+    PACL d;
+    BOOL present, def;
+    GetSecurityDescriptorOwner(si & OWNER_SECURITY_INFORMATION ? in : now, &o, &def);
+    GetSecurityDescriptorGroup(si & GROUP_SECURITY_INFORMATION ? in : now, &g, &def);
+    GetSecurityDescriptorDacl(si & DACL_SECURITY_INFORMATION ? in : now, &present, &d, &def);
+    SetSecurityDescriptorOwner(&abs, o, FALSE);
+    SetSecurityDescriptorGroup(&abs, g, FALSE);
+    SetSecurityDescriptorDacl(&abs, present, d, FALSE);
+    DWORD n = 0;
+    MakeSelfRelativeSD(&abs, NULL, &n);
+    BYTE *rel = n ? halloc(n) : NULL;
+    BOOL ok = rel && MakeSelfRelativeSD(&abs, rel, &n);
+    HKEY k, sk;
+    if (ok && !open_key(s->name, true, &k)) {
+        ok = !RegCreateKeyExW(k, L"Security", 0, NULL, 0, KEY_ALL_ACCESS, NULL, &sk, NULL) &&
+             !RegSetValueExW(sk, L"Security", 0, REG_BINARY, rel, n);
+        if (ok) RegCloseKey(sk);
+        RegCloseKey(k);
+        if (!ok) SetLastError(ERROR_ACCESS_DENIED);
+    } else if (ok) {
+        ok = FALSE;
+        SetLastError(ERROR_SERVICE_DOES_NOT_EXIST);
+    }
+    hfree(rel);
+    hfree(now);
+    return ok;
 }
 
 WINADVAPI BOOL WINAPI QueryServiceStatusEx(SC_HANDLE h, int level, LPBYTE buf, DWORD n, LPDWORD need)

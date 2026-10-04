@@ -1,90 +1,11 @@
 /*
- * crypt32.dll — certificate stores.  The system stores ("ROOT", "MY",
- * "CA"...) open and are empty: programs that bring their own certificate
- * bundle (Node.js, Python, the JDK) use that, and the ones that look for
- * the system's find nothing to add.
+ * crypt32.dll — encoding helpers, names, messages.  Certificates, stores
+ * and chains are in certs.c.
  */
 #include <windows.h>
 
 #define CRYPT32API __declspec(dllexport)
 #define CRYPT_E_NOT_FOUND_ 0x80092004L
-
-typedef struct { DWORD magic; LONG refs; } Store;
-#define STORE_MAGIC 0x53544F52                      /* "STOR" */
-
-static HANDLE new_store(void)
-{
-    Store *s = HeapAlloc(GetProcessHeap(), 0, sizeof(Store));
-    if (!s) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
-    s->magic = STORE_MAGIC;
-    s->refs = 1;
-    return s;
-}
-static BOOL is_store(HANDLE h) { return h && ((Store *)h)->magic == STORE_MAGIC; }
-
-CRYPT32API HANDLE WINAPI CertOpenStore(LPCSTR provider, DWORD enc, ULONG_PTR prov, DWORD flags, const void *para)
-{
-    (void)provider; (void)enc; (void)prov; (void)flags; (void)para;
-    return new_store();
-}
-CRYPT32API HANDLE WINAPI CertOpenSystemStoreW(ULONG_PTR prov, LPCWSTR name) { (void)prov; (void)name; return new_store(); }
-CRYPT32API HANDLE WINAPI CertOpenSystemStoreA(ULONG_PTR prov, LPCSTR name)  { (void)prov; (void)name; return new_store(); }
-CRYPT32API HANDLE WINAPI CertDuplicateStore(HANDLE h)
-{
-    if (is_store(h)) InterlockedIncrement(&((Store *)h)->refs);
-    return h;
-}
-CRYPT32API BOOL WINAPI CertCloseStore(HANDLE h, DWORD flags)
-{
-    (void)flags;
-    if (!h) return TRUE;
-    if (!is_store(h)) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-    if (!InterlockedDecrement(&((Store *)h)->refs)) { ((Store *)h)->magic = 0; HeapFree(GetProcessHeap(), 0, h); }
-    return TRUE;
-}
-
-/* Certificates: the stores hold none */
-CRYPT32API const void *WINAPI CertEnumCertificatesInStore(HANDLE h, const void *prev)
-{
-    (void)h; (void)prev;
-    SetLastError(CRYPT_E_NOT_FOUND_);
-    return 0;
-}
-CRYPT32API const void *WINAPI CertFindCertificateInStore(HANDLE h, DWORD enc, DWORD flags, DWORD type, const void *para, const void *prev)
-{
-    (void)h; (void)enc; (void)flags; (void)type; (void)para; (void)prev;
-    SetLastError(CRYPT_E_NOT_FOUND_);
-    return 0;
-}
-CRYPT32API const void *WINAPI CertDuplicateCertificateContext(const void *c) { return c; }
-CRYPT32API BOOL WINAPI CertFreeCertificateContext(const void *c) { (void)c; return TRUE; }
-CRYPT32API BOOL WINAPI CertGetCertificateContextProperty(const void *c, DWORD id, void *data, DWORD *n)
-{
-    (void)c; (void)id; (void)data; (void)n;
-    SetLastError(CRYPT_E_NOT_FOUND_);
-    return FALSE;
-}
-CRYPT32API BOOL WINAPI CertGetEnhancedKeyUsage(const void *c, DWORD flags, void *usage, DWORD *n)
-{
-    (void)c; (void)flags; (void)usage; (void)n;
-    SetLastError(CRYPT_E_NOT_FOUND_);
-    return FALSE;
-}
-CRYPT32API BOOL WINAPI CertAddEncodedCertificateToStore(HANDLE h, DWORD enc, const BYTE *data, DWORD n, DWORD disp, const void **out)
-{
-    (void)h; (void)enc; (void)data; (void)n; (void)disp;
-    if (out) *out = 0;
-    SetLastError(ERROR_NOT_SUPPORTED);
-    return FALSE;
-}
-CRYPT32API BOOL WINAPI CertGetCertificateChain(HANDLE engine, const void *c, LPFILETIME t, HANDLE store, const void *para, DWORD flags, PVOID r, const void **chain)
-{
-    (void)engine; (void)c; (void)t; (void)store; (void)para; (void)flags; (void)r;
-    if (chain) *chain = 0;
-    SetLastError(CRYPT_E_NOT_FOUND_);
-    return FALSE;
-}
-CRYPT32API VOID WINAPI CertFreeCertificateChain(const void *chain) { (void)chain; }
 
 /* Base64 and binary encoding helpers */
 CRYPT32API BOOL WINAPI CryptBinaryToStringA(const BYTE *b, DWORD n, DWORD flags, LPSTR out, DWORD *len)
@@ -109,14 +30,9 @@ CRYPT32API BOOL WINAPI CryptBinaryToStringA(const BYTE *b, DWORD n, DWORD flags,
     return TRUE;
 }
 
-/* Revocation lists: none in the stores; collections add nothing */
+/* Revocation lists: none in the stores */
 CRYPT32API const void *WINAPI CertEnumCRLsInStore(HANDLE h, const void *prev) { (void)h; (void)prev; SetLastError(CRYPT_E_NOT_FOUND_); return 0; }
 CRYPT32API BOOL WINAPI CertFreeCRLContext(const void *c) { (void)c; return TRUE; }
-CRYPT32API BOOL WINAPI CertAddStoreToCollection(HANDLE coll, HANDLE sib, DWORD flags, DWORD prio)
-{
-    (void)coll; (void)sib; (void)flags; (void)prio;
-    return TRUE;
-}
 
 /* Base64 and hex text back to bytes (CRYPT_STRING_BASE64HEADER, BASE64,
  * BINARY, HEX, HEXRAW and the ANY forms) */
@@ -251,13 +167,9 @@ CRYPT32API BOOL WINAPI CryptEncodeObjectEx(DWORD enc, LPCSTR type, const void *v
 { (void)enc; (void)type; (void)v; (void)flags; (void)para; (void)out; (void)len; SetLastError(NTE_NOT_SUPPORTED_); return FALSE; }
 CRYPT32API BOOL WINAPI CryptEncodeObject(DWORD enc, LPCSTR type, const void *v, BYTE *out, DWORD *len)
 { (void)enc; (void)type; (void)v; (void)out; (void)len; SetLastError(NTE_NOT_SUPPORTED_); return FALSE; }
-CRYPT32API const void *WINAPI CertCreateCertificateContext(DWORD enc, const BYTE *b, DWORD n)
-{ (void)enc; (void)b; (void)n; SetLastError(CRYPT_E_ASN1_BADTAG_); return 0; }
 CRYPT32API const void *WINAPI CertCreateSelfSignCertificate(HANDLE key, void *subject, DWORD flags, void *kpi, void *alg,
                                                              void *start, void *end, void *ext)
 { (void)key; (void)subject; (void)flags; (void)kpi; (void)alg; (void)start; (void)end; (void)ext; SetLastError(NTE_NOT_SUPPORTED_); return 0; }
-CRYPT32API BOOL WINAPI CertAddCertificateContextToStore(HANDLE h, const void *c, DWORD disp, const void **out)
-{ (void)disp; if (out) *out = c; if (!is_store(h)) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; } return TRUE; }
 CRYPT32API BOOL WINAPI CertSetCertificateContextProperty(const void *c, DWORD id, DWORD flags, const void *data)
 { (void)c; (void)id; (void)flags; (void)data; return TRUE; }
 CRYPT32API BOOL WINAPI CertGetIntendedKeyUsage(DWORD enc, void *info, BYTE *usage, DWORD n)

@@ -137,6 +137,11 @@ static const StoreApp g_catalog[] = {
       "OpenTTD\\openttd.exe", KIND_SETUP, 15,
       "64-bit installer (NSIS); installs and reaches its main menu on NovaOS with the free OpenGFX graphics (nightly corpus)",
       "TT", GDI_C(0x2E, 0x6B, 0x3A) },
+    { "Steam", "Valve", "Valve's game store and launcher",
+      CAT_MEDIA, "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe", "SteamSetup.exe", NULL,
+      "Steam\\Steam.exe", KIND_SETUP, 3,
+      "32-bit installer (NSIS); installs and updates itself on NovaOS, but its browser does not open the login window yet (docs/compatibility.md)",
+      "St", GDI_C(0x17, 0x1A, 0x21) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",

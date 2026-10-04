@@ -137,18 +137,6 @@ WINADVAPI BOOL WINAPI InitiateSystemShutdownA(LPSTR m, LPSTR msg, DWORD t, BOOL 
 WINADVAPI BOOL WINAPI AbortSystemShutdownW(LPWSTR m) { (void)m; SetLastError(ERROR_NO_SHUTDOWN_IN_PROGRESS); return FALSE; }
 WINADVAPI BOOL WINAPI AbortSystemShutdownA(LPSTR m) { (void)m; SetLastError(ERROR_NO_SHUTDOWN_IN_PROGRESS); return FALSE; }
 
-/* SetEntriesInAcl: files carry no ACLs here, so the new ACL is an empty
- * one the caller frees with LocalFree */
-static DWORD entries_in_acl(PACL *out)
-{
-    PACL a = LocalAlloc(LMEM_FIXED, 8);
-    if (!a) return ERROR_NOT_ENOUGH_MEMORY;
-    InitializeAcl(a, 8, 2);
-    *out = a;
-    return ERROR_SUCCESS;
-}
-WINADVAPI DWORD WINAPI SetEntriesInAclA(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }
-WINADVAPI DWORD WINAPI SetEntriesInAclW(ULONG n, void *entries, PACL old, PACL *out) { (void)n; (void)entries; (void)old; return entries_in_acl(out); }
 
 NTSYSAPI NTSTATUS NTAPI NtAllocateLocallyUniqueId(PLUID luid);
 WINADVAPI BOOL WINAPI AllocateLocallyUniqueId(PLUID luid)

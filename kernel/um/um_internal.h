@@ -186,6 +186,7 @@ typedef struct {
     RamNode     *node;          /* H_FILE, H_DIR */
     UmObject    *obj;           /* H_OBJECT */
     UINT64       pos;           /* H_DIR: next entry (H_FILE without fp: its byte offset) */
+    const RamNode *last;        /* H_DIR: the entry listed last (compared, never followed) */
     UmFilePos   *fp;            /* H_FILE: the shared byte offset (referenced) */
     bool         read, write, append, delete_on_close;
     bool         inherit;       /* passed to child processes (bInheritHandles) */

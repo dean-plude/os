@@ -115,6 +115,40 @@ Windows' `WOW6432Node` view for the 64-bit programs that look for the
 runtime there, and then the runtime itself (a Chromium browser process
 with its sandbox) has to run.
 
+## Steam
+
+Steam's installer (`SteamSetup.exe` from steampowered.com, a 32-bit NSIS
+installer) installs the bootstrapper in `C:\Programs\Steam`.  On its first
+start the bootstrapper downloads the client from Valve's servers, first the
+32-bit one and then the 64-bit one it updates itself to, unpacks the
+packages, checks every file and starts the 64-bit client, which starts
+`SteamService.exe` and its browser, `steamwebhelper.exe` (Chromium 126 in
+`bin\cef\cef.win64`).  Steam picks the proxy from the user's Internet
+Settings, as on Windows.
+
+The login window does not come up yet: the browser process starts, opens
+its threads and then never starts its GPU and page processes, so no window
+appears.  What is known to be missing on the way, each a NovaOS gap and
+none a reason to change Steam:
+
+- `SteamService.exe` reports "Invalid file signature": it checks Steam's
+  files with `WinVerifyTrust`, and NovaOS's `wintrust` does not check
+  Authenticode signatures yet.  The faithful fix is Authenticode in
+  `wintrust` (the signature in the certificate table, checked against the
+  certificate store), not a service that says yes.
+- Steam's service pipe ("Failed to create Service pipe") and its
+  security descriptors in SDDL form (`advapi32`'s SDDL functions are
+  incomplete).
+- `GetAdaptersAddresses` reports no adapters, and the browser's UDP and
+  TCP sockets fail with `WSAENOBUFS` under load (NovaOS's network code).
+- DirectWrite's GDI interop (`CreateBitmapRenderTarget`), which Chromium
+  draws text with.
+
+How to check the rest by hand, which needs a Steam account and so is not
+in the corpus: start Steam from the App Store, sign in (or pick "Go
+offline" once signed in), install a small free game and
+start it to its main menu.
+
 ## Programs that come with NovaOS
 
 Built in: the Terminal, File Explorer, Notepad, Settings, Calendar,

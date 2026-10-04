@@ -793,3 +793,25 @@ __declspec(dllexport) int WSAAPI WSARecvEx(SOCKET s, char *buf, int len, int *fl
     if (flags) *flags = 0;
     return r;
 }
+
+/* Name-space providers (NLA, DNS registration): none is installed, so a
+ * lookup finds no service, as on Windows with the provider missing */
+#define WSASERVICE_NOT_FOUND_ 10108
+#define WSA_E_NO_MORE_ 10110
+__declspec(dllexport) int WSAAPI WSAEnumNameSpaceProvidersW(LPDWORD len, void *buf) { (void)buf; if (len) *len = 0; return 0; }
+__declspec(dllexport) int WSAAPI WSAEnumNameSpaceProvidersA(LPDWORD len, void *buf) { (void)buf; if (len) *len = 0; return 0; }
+__declspec(dllexport) int WSAAPI WSALookupServiceBeginW(void *query, DWORD flags, LPHANDLE h)
+{
+    (void)query; (void)flags;
+    if (h) *h = 0;
+    WSASetLastError(WSASERVICE_NOT_FOUND_);
+    return SOCKET_ERROR;
+}
+__declspec(dllexport) int WSAAPI WSALookupServiceBeginA(void *query, DWORD flags, LPHANDLE h) { return WSALookupServiceBeginW(query, flags, h); }
+__declspec(dllexport) int WSAAPI WSALookupServiceNextW(HANDLE h, DWORD flags, LPDWORD len, void *results)
+{ (void)h; (void)flags; (void)len; (void)results; WSASetLastError(WSA_E_NO_MORE_); return SOCKET_ERROR; }
+__declspec(dllexport) int WSAAPI WSALookupServiceNextA(HANDLE h, DWORD flags, LPDWORD len, void *results)
+{ return WSALookupServiceNextW(h, flags, len, results); }
+__declspec(dllexport) int WSAAPI WSALookupServiceEnd(HANDLE h) { (void)h; WSASetLastError(6 /* WSA_INVALID_HANDLE */); return SOCKET_ERROR; }
+__declspec(dllexport) int WSAAPI WSASetServiceW(void *reg, int op, DWORD flags)
+{ (void)reg; (void)op; (void)flags; WSASetLastError(WSASERVICE_NOT_FOUND_); return SOCKET_ERROR; }

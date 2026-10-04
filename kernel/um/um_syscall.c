@@ -1568,7 +1568,7 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
             }
         }
     }
-    if (restart) h->pos = 0;
+    if (restart) { h->pos = 0; h->last = NULL; }
     UINT8 *b = kzalloc(len < 65536 ? len + 8 : 65536 + 8);
     if (!b) return iosb(iosb_ptr, ST_NO_MEMORY, 0);
     UINT32 cap = len < 65536 ? len : 65536, used = 0, last = 0, count = 0;
@@ -1577,6 +1577,16 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
      * every directory but a drive's root */
     UINT64 dots = h->node->parent ? 2 : 0, k = h->pos;
     RamNode *c = h->node->child;
+    if (k > dots && h->last) {
+        /* Resume after the entry listed last, wherever it is now; when it was
+         * deleted or moved away (a program emptying the folder as it lists
+         * it), the next one has taken its place.  NTFS lists by name, so
+         * Windows never skips an entry there either */
+        UINT64 i = dots;
+        RamNode *x = c;
+        while (x && x != h->last) { x = x->next; i++; }
+        k = x ? i + 1 : k - 1;
+    }
     for (UINT64 i = dots; c && i < k; i++) c = c->next;
     for (;; k++) {
         RamNode *n = k < dots ? (k == 0 ? h->node : h->node->parent) : c;
@@ -1618,6 +1628,7 @@ static UINT64 sys_query_directory_locked(UINT64 a1, UINT64 a2, UINT64 a3, UINT64
         last = at;
         used = at + need;
         count++;
+        h->last = k >= dots ? n : NULL;
         if (single) { k++; break; }
     }
     h->pos = k;

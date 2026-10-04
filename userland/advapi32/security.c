@@ -366,16 +366,57 @@ WINADVAPI BOOL WINAPI LookupAccountSidW(LPCWSTR sys, PSID sid, LPWSTR name, LPDW
     return TRUE;
 }
 
+/* An account's SID by name ("Users", "BUILTIN\\Users", "Everyone", "SYSTEM",
+ * the user's own name, ...) into @sid; its domain and kind.  Other names
+ * stay the user's, as they were before the well-known ones were looked
+ * up (a program asking for its own account by some other spelling). */
+static int name_eq(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a, y = *b >= 'A' && *b <= 'Z' ? (char)(*b + 32) : *b;
+        if (x != y) return 0;
+    }
+    return !*a && !*b;
+}
+
+static DWORD account_sid(const char *name, BYTE *sid, const char **dom, SID_NAME_USE *use)
+{
+    const char *leaf = name ? name : "";
+    for (const char *p = leaf; *p; p++) if (*p == '\\') leaf = p + 1;
+    for (unsigned i = 0; i < sizeof(g_accounts) / sizeof(g_accounts[0]); i++) {
+        if (!name_eq(leaf, g_accounts[i].name)) continue;
+        PSID s;
+        if (!string_to_sid(g_accounts[i].sid, &s)) break;
+        DWORD n = GetLengthSid(s);
+        memcpy(sid, s, n);
+        LocalFree(s);
+        *dom = g_accounts[i].domain;
+        *use = g_accounts[i].use;
+        return n;
+    }
+    DWORD n = GetLengthSid((PSID)g_user_sid);
+    memcpy(sid, g_user_sid, n);
+    *dom = "NOVAOS";
+    *use = SidTypeUser;
+    return n;
+}
+
 WINADVAPI BOOL WINAPI LookupAccountNameW(LPCWSTR sys, LPCWSTR name, PSID sid, LPDWORD ns, LPWSTR dom, LPDWORD nd, PSID_NAME_USE use)
 {
-    (void)sys; (void)name;
-    DWORD len = GetLengthSid((PSID)g_user_sid);
-    if (!sid || *ns < len || !dom || *nd < 7) { *ns = len; *nd = 7; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    memcpy(sid, g_user_sid, len);
-    const char *d = "NOVAOS";
-    for (int i = 0; i < 7; i++) dom[i] = (WCHAR)d[i];
-    *ns = len; *nd = 6;
-    if (use) *use = SidTypeUser;
+    (void)sys;
+    char a[256];
+    DWORD i = 0;
+    for (; name && name[i] && i < sizeof(a) - 1; i++) a[i] = (char)name[i];
+    a[i] = 0;
+    BYTE buf[SECURITY_MAX_SID_SIZE];
+    const char *d;
+    SID_NAME_USE u;
+    DWORD len = account_sid(a, buf, &d, &u), ld = (DWORD)strlen_(d);
+    if (!sid || *ns < len || !dom || *nd <= ld) { *ns = len; *nd = ld + 1; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    memcpy(sid, buf, len);
+    for (DWORD k = 0; k <= ld; k++) dom[k] = (WCHAR)(BYTE)d[k];
+    *ns = len; *nd = ld;
+    if (use) *use = u;
     return TRUE;
 }
 
@@ -1290,13 +1331,16 @@ WINADVAPI BOOL WINAPI SetFileSecurityA(LPCSTR name, SECURITY_INFORMATION si, PSE
 }
 WINADVAPI BOOL WINAPI LookupAccountNameA(LPCSTR sys, LPCSTR name, PSID sid, LPDWORD ns, LPSTR dom, LPDWORD nd, PSID_NAME_USE use)
 {
-    (void)sys; (void)name;
-    DWORD len = GetLengthSid((PSID)g_user_sid);
-    if (!sid || *ns < len || !dom || *nd < 7) { *ns = len; *nd = 7; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-    memcpy(sid, g_user_sid, len);
-    memcpy(dom, "NOVAOS", 7);
-    *ns = len; *nd = 6;
-    if (use) *use = SidTypeUser;
+    (void)sys;
+    BYTE buf[SECURITY_MAX_SID_SIZE];
+    const char *d;
+    SID_NAME_USE u;
+    DWORD len = account_sid(name, buf, &d, &u), ld = (DWORD)strlen_(d);
+    if (!sid || *ns < len || !dom || *nd <= ld) { *ns = len; *nd = ld + 1; SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+    memcpy(sid, buf, len);
+    memcpy(dom, d, ld + 1);
+    *ns = len; *nd = ld;
+    if (use) *use = u;
     return TRUE;
 }
 WINADVAPI BOOL WINAPI SetKernelObjectSecurity(HANDLE h, SECURITY_INFORMATION si, PSECURITY_DESCRIPTOR sd)
@@ -1331,6 +1375,91 @@ WINADVAPI VOID WINAPI BuildTrusteeWithSidW(TRUSTEE_W_ *t, PSID sid)
     t->ptstrName = (LPWSTR)sid;
 }
 WINADVAPI VOID WINAPI BuildTrusteeWithSidA(TRUSTEE_W_ *t, PSID sid) { BuildTrusteeWithSidW(t, sid); }
+
+/* SetEntriesInAcl: a new ACL (freed with LocalFree) of @old's ACEs changed
+ * by @n EXPLICIT_ACCESS entries, as Windows does it: SET_ACCESS and
+ * REVOKE_ACCESS first drop the trustee's own (not inherited) ACEs;
+ * GRANT_ACCESS and SET_ACCESS add an allowing ACE, DENY_ACCESS a denying
+ * one.  The result is in canonical order: denying ACEs, allowing ones,
+ * then those @old had inherited.  A trustee is a SID or an account name
+ * (ANSI for the A function). */
+typedef struct { DWORD perms; int mode; DWORD inherit; TRUSTEE_W_ trustee; } EXPLICIT_ACCESS_;
+#define INHERITED_ACE_ 0x10
+
+/* Whether an entry setting or revoking access (SET_ACCESS, REVOKE_ACCESS)
+ * drops @a, an ACE of the old ACL naming that entry's trustee */
+static BOOL dropped(const ACCESS_ALLOWED_ACE *a, ULONG n, const EXPLICIT_ACCESS_ *ea, BYTE (*sids)[SECURITY_MAX_SID_SIZE])
+{
+    if ((a->Header.AceFlags & INHERITED_ACE_) || a->Header.AceType > 1) return FALSE;
+    for (ULONG i = 0; i < n; i++)
+        if ((ea[i].mode == 2 || ea[i].mode == 4) && EqualSid((PSID)&a->SidStart, (PSID)sids[i])) return TRUE;
+    return FALSE;
+}
+
+static DWORD entries_in_acl(ULONG n, const EXPLICIT_ACCESS_ *ea, PACL old, PACL *out, BOOL ansi)
+{
+    if (!out || (n && !ea)) return ERROR_INVALID_PARAMETER;
+    *out = 0;
+    BYTE (*sids)[SECURITY_MAX_SID_SIZE] = n ? LocalAlloc(LMEM_ZEROINIT, n * SECURITY_MAX_SID_SIZE) : 0;
+    if (n && !sids) return ERROR_NOT_ENOUGH_MEMORY;
+    DWORD size = sizeof(ACL);
+    for (ULONG i = 0; i < n; i++) {
+        const TRUSTEE_W_ *t = &ea[i].trustee;
+        if (t->TrusteeForm == 0 /* TRUSTEE_IS_SID */) {
+            if (!IsValidSid((PSID)t->ptstrName)) { LocalFree(sids); return ERROR_INVALID_SID; }
+            memcpy(sids[i], t->ptstrName, GetLengthSid((PSID)t->ptstrName));
+        } else if (t->TrusteeForm == 1 /* TRUSTEE_IS_NAME */) {
+            char a[256];
+            DWORD k = 0;
+            if (ansi) for (const char *s = (const char *)t->ptstrName; s && s[k] && k < sizeof(a) - 1; k++) a[k] = s[k];
+            else for (const WCHAR *s = t->ptstrName; s && s[k] && k < sizeof(a) - 1; k++) a[k] = (char)s[k];
+            a[k] = 0;
+            const char *d;
+            SID_NAME_USE u;
+            if (name_eq(a, "CURRENT_USER")) memcpy(sids[i], g_user_sid, GetLengthSid((PSID)g_user_sid));
+            else account_sid(a, sids[i], &d, &u);
+        } else {
+            LocalFree(sids);
+            return ERROR_INVALID_PARAMETER;                 /* (object-type trustees: directory objects) */
+        }
+        size += 8 + GetLengthSid((PSID)sids[i]);
+    }
+    if (old) size += acl_used(old);
+    PACL acl = LocalAlloc(LMEM_ZEROINIT, size);
+    if (!acl) { LocalFree(sids); return ERROR_NOT_ENOUGH_MEMORY; }
+    InitializeAcl(acl, size, old && old->AclRevision > 2 ? old->AclRevision : 2);
+    for (int pass = 0; pass < 3; pass++) {              /* denying, allowing, inherited */
+        for (ULONG i = 0; i < n && pass < 2; i++) {
+            int m = ea[i].mode;
+            BYTE type = m == 3 /* DENY_ACCESS */ ? 1 : 0;
+            if (m != 1 && m != 2 && m != 3) continue;   /* (REVOKE_ACCESS adds nothing; audits: no SACL here) */
+            if (type != (pass == 0 ? 1 : 0)) continue;
+            add_ace(acl, type, ea[i].inherit & 0x1F & ~INHERITED_ACE_, ea[i].perms, (PSID)sids[i]);
+        }
+        for (WORD k = 0; old && k < old->AceCount; k++) {
+            ACCESS_ALLOWED_ACE *a;
+            if (!GetAce(old, k, (LPVOID *)&a)) break;
+            BOOL inh = (a->Header.AceFlags & INHERITED_ACE_) != 0;
+            if (pass == 2 ? !inh : inh || (a->Header.AceType == 1) != (pass == 0)) continue;
+            if (dropped(a, n, ea, sids)) continue;
+            DWORD at = acl_used(acl);
+            memcpy((BYTE *)acl + at, a, a->Header.AceSize);
+            acl->AceCount++;
+        }
+    }
+    LocalFree(sids);
+    *out = acl;
+    return ERROR_SUCCESS;
+}
+
+WINADVAPI DWORD WINAPI SetEntriesInAclW(ULONG n, void *entries, PACL old, PACL *out)
+{
+    return entries_in_acl(n, entries, old, out, FALSE);
+}
+WINADVAPI DWORD WINAPI SetEntriesInAclA(ULONG n, void *entries, PACL old, PACL *out)
+{
+    return entries_in_acl(n, entries, old, out, TRUE);
+}
 
 /* Private object security: the new object's descriptor is a self-relative
  * copy of the creator's (no inheritance from the parent: NovaOS's own
