@@ -37,7 +37,8 @@ What changed:
   free pages in a NovaOS field (0x7FFE0F08, kept current on every timer
   tick); `GlobalMemoryStatusEx`, `GlobalMemoryStatus` (capped at 4 GB - 1
   for 32-bit programs, as on Windows), `K32GetPerformanceInfo` and
-  `SystemBasicInformation`/`SystemPerformanceInformation` read them.
+  `SystemBasicInformation`/`SystemPerformanceInformation` give the same
+  figures (the kernel answers 64-bit programs, ntdll 32-bit ones).
   `GlobalMemoryStatusEx` fails with `ERROR_INVALID_PARAMETER` on a wrong
   `dwLength`, as Windows does.
 - **The App Store reports a failed unpack.**  It said "Installed" when the
