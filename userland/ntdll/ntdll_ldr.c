@@ -63,6 +63,36 @@ RTL_CRITICAL_SECTION RtlpLoaderLock = { 0, -1, 0, 0, 0, 0 };
 static void llock(void)   { RtlEnterCriticalSection(&RtlpLoaderLock); }
 static void lunlock(void) { RtlLeaveCriticalSection(&RtlpLoaderLock); }
 static void *tls_pointer(void) { return *(void **)(teb() + TEB_TLS_POINTER); }
+BOOLEAN NTAPI RtlTryEnterCriticalSection(PRTL_CRITICAL_SECTION cs);
+
+/* LdrLockLoaderLock: take the loader lock (flags bit 1: only try, *state
+ * 1 when taken, 2 when busy); the cookie names this thread's hold for
+ * LdrUnlockLoaderLock.  Bit 0 (raise instead of returning an error) needs
+ * nothing here: no argument check fails silently. */
+#define LDR_LOCK_TRY 2
+NTSYSAPI NTSTATUS NTAPI LdrLockLoaderLock(ULONG flags, PULONG state, PULONG_PTR cookie)
+{
+    if (state) *state = 0;
+    if (!cookie || (flags & LDR_LOCK_TRY && !state) || flags & ~3u) return STATUS_INVALID_PARAMETER;
+    *cookie = 0;
+    if (flags & LDR_LOCK_TRY) {
+        if (!RtlTryEnterCriticalSection(&RtlpLoaderLock)) { *state = 2; return STATUS_SUCCESS; }
+    } else
+        llock();
+    if (state) *state = 1;
+    *cookie = (ULONG_PTR)RtlpLoaderLock.OwningThread << 16 | 0x1E;    /* the holder + a mark */
+    return STATUS_SUCCESS;
+}
+
+NTSYSAPI NTSTATUS NTAPI LdrUnlockLoaderLock(ULONG flags, ULONG_PTR cookie)
+{
+    if (flags & ~1u) return STATUS_INVALID_PARAMETER;
+    if (!cookie) return STATUS_SUCCESS;             /* a try that did not take it */
+    if ((cookie & 0xFFFF) != 0x1E || cookie >> 16 != (ULONG_PTR)RtlpLoaderLock.OwningThread)
+        return 0xC00000F0;                          /* STATUS_INVALID_PARAMETER_2: not this thread's hold */
+    lunlock();
+    return STATUS_SUCCESS;
+}
 
 static void wcopy(WCHAR *d, const char *s, int cap)
 {

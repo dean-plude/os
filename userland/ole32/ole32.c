@@ -15,6 +15,7 @@
 
 #define NOVA_BUILD_OLE32
 #include "com_private.h"
+#include <winternl.h>
 
 /* ---------------------------------------------------------------------------
  * Apartments
@@ -22,7 +23,32 @@
 static __declspec(thread) LONG t_inits;       /* CoInitialize calls not yet undone */
 static __declspec(thread) DWORD t_model;      /* COINIT_* of the first call */
 static __declspec(thread) LONG t_ole_inits;
+static __declspec(thread) DWORD t_ole1dde;     /* OLETLS_DISABLE_OLE1DDE when CoInitializeEx asked */
 static volatile LONG g_mta_usage;             /* CoIncrementMTAUsage */
+
+/* The thread's COM state where Windows keeps it: the TEB's ReservedForOle
+ * points at OLE's per-thread data, whose apartment flags Chromium reads
+ * directly to tell an STA from the MTA (base/win/com_init_util.cc) */
+typedef struct {
+    void *thread_base, *sm_allocator;
+    DWORD apartment_id, apartment_flags;
+    DWORD_PTR rest[16];
+} OleTls;
+#define OLETLS_DISABLE_OLE1DDE   0x40
+#define OLETLS_APARTMENTTHREADED 0x80
+#define OLETLS_MULTITHREADED     0x100
+#define TEB_RESERVED_FOR_OLE     (sizeof(void *) == 8 ? 0x1758 : 0xF80)
+static __declspec(thread) OleTls t_oletls;
+
+static void publish_apartment(void)
+{
+    t_oletls.apartment_flags &= ~(DWORD)(OLETLS_DISABLE_OLE1DDE | OLETLS_APARTMENTTHREADED | OLETLS_MULTITHREADED);
+    if (t_inits > 0)
+        t_oletls.apartment_flags |= t_model == COINIT_APARTMENTTHREADED ? OLETLS_APARTMENTTHREADED | t_ole1dde
+                                                                         : OLETLS_MULTITHREADED | OLETLS_DISABLE_OLE1DDE;
+    t_oletls.apartment_id = GetCurrentThreadId();
+    *(OleTls **)(NtCurrentTebBytes() + TEB_RESERVED_FOR_OLE) = &t_oletls;
+}
 
 WINOLEAPI_(HRESULT) CoInitializeEx(LPVOID reserved, DWORD coinit)
 {
@@ -35,6 +61,8 @@ WINOLEAPI_(HRESULT) CoInitializeEx(LPVOID reserved, DWORD coinit)
     }
     t_model = model;
     t_inits = 1;
+    t_ole1dde = coinit & COINIT_DISABLE_OLE1DDE ? OLETLS_DISABLE_OLE1DDE : 0;
+    publish_apartment();
     return S_OK;
 }
 
@@ -42,7 +70,10 @@ WINOLEAPI_(HRESULT) CoInitialize(LPVOID reserved) { return CoInitializeEx(reserv
 
 WINOLEAPI_(void) CoUninitialize(void)
 {
-    if (t_inits > 0 && --t_inits == 0) CoFreeUnusedLibraries();
+    if (t_inits > 0 && --t_inits == 0) {
+        publish_apartment();
+        CoFreeUnusedLibraries();
+    }
 }
 
 int ole_thread_is_sta(void) { return t_inits > 0 && t_model == COINIT_APARTMENTTHREADED; }

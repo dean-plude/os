@@ -258,6 +258,181 @@ void FreeAddrInfoW(PADDRINFOW ai)
     }
 }
 
+/* GetAddrInfoExW: GetAddrInfoW's answer in ADDRINFOEX form.  Only the
+ * default name space (DNS and the hosts file) is asked; a timeout is not
+ * kept to.  With an OVERLAPPED the lookup runs on a thread of its own and
+ * returns WSA_IO_PENDING: when it ends, *result and the OVERLAPPED's
+ * status are set, its event signalled and the completion routine called
+ * on that thread (on Windows a thread-pool thread), as Chromium's
+ * resolver expects.  *cancel names the lookup for GetAddrInfoExCancel,
+ * which makes it end with WSA_E_CANCELLED. */
+#define WSA_E_CANCELLED 10111
+#define WSA_INVALID_HANDLE 6
+#ifndef WSA_NOT_ENOUGH_MEMORY
+#define WSA_NOT_ENOUGH_MEMORY 8
+#endif
+#define LOOKUPS 64
+typedef struct {
+    PWSTR name, service;
+    ADDRINFOEXW hints;
+    int has_hints;
+    PADDRINFOEXW *result;
+    LPOVERLAPPED ov;
+    LPLOOKUPSERVICE_COMPLETION_ROUTINE done;
+} Lookup;
+static Lookup *volatile g_lookups[LOOKUPS];
+static volatile LONG g_cancelled[LOOKUPS], g_slot_gen[LOOKUPS];
+static volatile LONG g_lookup_gen;
+
+static PWSTR wdup(PCWSTR s)
+{
+    if (!s) return 0;
+    SIZE_T n = 0;
+    while (s[n]) n++;
+    PWSTR d = HeapAlloc(GetProcessHeap(), 0, (n + 1) * 2);
+    if (d) memcpy(d, s, (n + 1) * 2);
+    return d;
+}
+
+static int lookup(PCWSTR name, PCWSTR service, const ADDRINFOEXW *hints, PADDRINFOEXW *result)
+{
+    ADDRINFOW h, *ai = 0;
+    if (hints) {
+        memset(&h, 0, sizeof(h));
+        h.ai_flags = hints->ai_flags;
+        h.ai_family = hints->ai_family;
+        h.ai_socktype = hints->ai_socktype;
+        h.ai_protocol = hints->ai_protocol;
+    }
+    *result = 0;
+    int r = GetAddrInfoW(name, service, hints ? &h : 0, &ai);
+    if (r) return r;
+    PADDRINFOEXW *tail = result;
+    for (ADDRINFOW *a = ai; a; a = a->ai_next) {
+        ADDRINFOEXW *x = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(ADDRINFOEXW) + a->ai_addrlen);
+        if (!x) break;
+        x->ai_flags = a->ai_flags;
+        x->ai_family = a->ai_family;
+        x->ai_socktype = a->ai_socktype;
+        x->ai_protocol = a->ai_protocol;
+        x->ai_addrlen = a->ai_addrlen;
+        x->ai_addr = (struct sockaddr *)(x + 1);
+        memcpy(x->ai_addr, a->ai_addr, a->ai_addrlen);
+        x->ai_canonname = wdup(a->ai_canonname);
+        *tail = x;
+        tail = &x->ai_next;
+    }
+    FreeAddrInfoW(ai);
+    return 0;
+}
+
+static DWORD WINAPI lookup_thread(LPVOID arg)
+{
+    int slot = (int)(INT_PTR)arg & (LOOKUPS - 1);
+    Lookup *l = g_lookups[slot];
+    PADDRINFOEXW res = 0;
+    int r = lookup(l->name, l->service, l->has_hints ? &l->hints : 0, &res);
+    g_lookups[slot] = 0;                            /* no longer cancellable */
+    if (InterlockedExchange(&g_cancelled[slot], 0)) {
+        FreeAddrInfoExW(res);
+        res = 0;
+        r = WSA_E_CANCELLED;
+    }
+    *l->result = res;
+    l->ov->Internal = (ULONG_PTR)r;
+    l->ov->InternalHigh = 0;
+    if (l->ov->hEvent) SetEvent(l->ov->hEvent);
+    if (l->done) l->done((DWORD)r, 0, l->ov);
+    HeapFree(GetProcessHeap(), 0, l->name);
+    HeapFree(GetProcessHeap(), 0, l->service);
+    HeapFree(GetProcessHeap(), 0, l);
+    return 0;
+}
+
+int GetAddrInfoExW(PCWSTR name, PCWSTR service, DWORD ns, GUID *nsid, const ADDRINFOEXW *hints,
+                   PADDRINFOEXW *result, struct timeval *timeout, LPOVERLAPPED ov,
+                   LPLOOKUPSERVICE_COMPLETION_ROUTINE done, LPHANDLE cancel)
+{
+    (void)nsid; (void)timeout;
+    if (!result || (ns != NS_ALL && ns != NS_DNS) || (done && !ov)) { set_err(WSAEINVAL); return WSAEINVAL; }
+    if (cancel) *cancel = 0;
+    if (!ov) {
+        int r = lookup(name, service, hints, result);
+        set_err(r);
+        return r;
+    }
+    Lookup *l = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Lookup));
+    if (!l) { set_err(WSA_NOT_ENOUGH_MEMORY); return WSA_NOT_ENOUGH_MEMORY; }
+    l->name = wdup(name);
+    l->service = wdup(service);
+    if (hints) { l->hints = *hints; l->has_hints = 1; }
+    l->result = result;
+    l->ov = ov;
+    l->done = done;
+    *result = 0;
+    ov->Internal = WSA_IO_PENDING;
+    int slot = -1;
+    for (int i = 0; i < LOOKUPS && slot < 0; i++)
+        if (InterlockedCompareExchangePointer((PVOID volatile *)&g_lookups[i], l, 0) == 0) slot = i;
+    if (slot < 0) {                                 /* too many at once: answer this one now */
+        HeapFree(GetProcessHeap(), 0, l->name);
+        HeapFree(GetProcessHeap(), 0, l->service);
+        HeapFree(GetProcessHeap(), 0, l);
+        int r = lookup(name, service, hints, result);
+        ov->Internal = (ULONG_PTR)r;
+        if (ov->hEvent) SetEvent(ov->hEvent);
+        if (done) done((DWORD)r, 0, ov);
+        set_err(r);
+        return r;
+    }
+    g_cancelled[slot] = 0;
+    /* the handle: the slot and a generation, so a stale one cancels nothing */
+    LONG gen = InterlockedIncrement(&g_lookup_gen) & 0xFFFF;
+    INT_PTR id = slot | (INT_PTR)gen << 8 | 0x1000000;
+    g_slot_gen[slot] = gen;
+    if (cancel) *cancel = (HANDLE)id;
+    HANDLE t = CreateThread(0, 64 * 1024, lookup_thread, (LPVOID)id, 0, 0);
+    if (!t) {
+        g_lookups[slot] = 0;
+        HeapFree(GetProcessHeap(), 0, l->name);
+        HeapFree(GetProcessHeap(), 0, l->service);
+        HeapFree(GetProcessHeap(), 0, l);
+        if (cancel) *cancel = 0;
+        set_err(WSA_NOT_ENOUGH_MEMORY);
+        return WSA_NOT_ENOUGH_MEMORY;
+    }
+    CloseHandle(t);
+    set_err(WSA_IO_PENDING);
+    return WSA_IO_PENDING;
+}
+
+int GetAddrInfoExCancel(LPHANDLE cancel)
+{
+    if (!cancel || !*cancel) { set_err(WSA_INVALID_HANDLE); return WSA_INVALID_HANDLE; }
+    int slot = (int)((INT_PTR)*cancel & (LOOKUPS - 1));
+    if (!g_lookups[slot] || g_slot_gen[slot] != (((INT_PTR)*cancel >> 8) & 0xFFFF)) {     /* already ended */
+        set_err(WSA_INVALID_HANDLE);
+        return WSA_INVALID_HANDLE;
+    }
+    InterlockedExchange(&g_cancelled[slot], 1);
+    return 0;
+}
+
+int GetAddrInfoExOverlappedResult(LPOVERLAPPED ov)
+{
+    return ov ? (int)ov->Internal : WSAEINVAL;
+}
+
+void FreeAddrInfoExW(PADDRINFOEXW ai)
+{
+    while (ai) {
+        PADDRINFOEXW next = ai->ai_next;
+        if (ai->ai_canonname) HeapFree(GetProcessHeap(), 0, ai->ai_canonname);
+        HeapFree(GetProcessHeap(), 0, ai);
+        ai = next;
+    }
+}
+
 /* IPv6 text (RFC 4291 2.2: groups, one "::", an IPv4 tail) */
 static int pton6(const char *src, unsigned char out[16])
 {
