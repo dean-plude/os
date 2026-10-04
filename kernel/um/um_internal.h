@@ -90,7 +90,7 @@ void um_unlock_excl(UmRwLock *l);
  * Kernel objects reachable through handles
  * ----------------------------------------------------------------------- */
 typedef enum { UO_EVENT = 1, UO_MUTANT, UO_SEMAPHORE, UO_THREAD, UO_SOCKET, UO_WINDOW, UO_PROCESS, UO_KEY, UO_SECTION, UO_PIPE,
-               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE, UO_TOKEN, UO_GPU } UmObType;
+               UO_DIRECTORY, UO_SYMLINK, UO_TIMER, UO_AUDIO, UO_CONSOLE, UO_TOKEN, UO_GPU, UO_AFD, UO_KEYED_EVENT } UmObType;
 
 typedef struct UmThread UmThread;
 
@@ -438,6 +438,14 @@ UINT32     um_pipe_cancel(UmObject *o, UINT64 iosb);
 bool       um_pipe_is_async(UmObject *o);
 UINT32     um_pipe_client_pid(UmObject *o);
 void       um_pipe_process_gone(UmProcess *p);
+
+/* um_afd.c: \Device\Afd helper handles (IOCTL_AFD_POLL, as wepoll uses) */
+bool       um_afd_name(const char *path);     /* "\Device\Afd[\...]" */
+UmObject  *um_afd_open(void);
+UINT32     um_afd_ioctl(UmObject *o, UINT64 event, UINT64 ctx, UINT64 iosb, UINT32 code,
+                        UINT64 in, UINT32 in_len, UINT64 out, UINT32 out_len);
+UINT32     um_afd_cancel(UmObject *o, UINT64 iosb);
+INT64      um_afd_ctl(UINT64 h, UINT64 op, UINT64 arg, UINT64 out);
 
 /* um_thread.c: threads, synchronization objects, waits */
 void       um_thread_syscalls_init(void);

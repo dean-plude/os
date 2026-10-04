@@ -64,6 +64,7 @@ typedef struct {
     UINT16        linger_s;
     UINT8         so_options;             /* lwIP SOF_* (REUSEADDR, KEEPALIVE, BROADCAST) */
     UINT8         ttl;
+    UINT32        owner;                  /* the process id the connection tables name (0: the system) */
 } Sock;
 
 static Sock g_sock[NSOCK];
@@ -244,6 +245,7 @@ static err_t tcp_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err)
     ns->rcvtimeo = s->rcvtimeo; ns->sndtimeo = s->sndtimeo;
     ns->nodelay = s->nodelay; ns->linger_on = s->linger_on; ns->linger_s = s->linger_s;
     ns->so_options = s->so_options; ns->ttl = s->ttl;
+    ns->owner = s->owner;                                   /* (until a process accepts it) */
     newpcb->so_options = s->so_options;
     newpcb->ttl = s->ttl;
     if (s->nodelay) tcp_nagle_disable(newpcb);
@@ -455,7 +457,16 @@ int NetSockSendTo(int sd, const void *buf, int len, const NetSockAddr *to)
     if (!p) { net_unlock(); return -SOCK_ENOBUFS; }
     pbuf_take(p, buf, (UINT16)len);
     ip_addr_t ip; to_lwip(to, &ip);
-    err_t e = udp_sendto(s->udp_pcb, p, &ip, lwip_htons(to->port_be));
+    err_t e;
+    /* Bound to 127.0.0.1 or ::1 (a program's wake-up socket, Poco's PollSet):
+     * lwIP's udp_sendto drops a source that is not the interface's own
+     * address, so name it; the loopback delivers it */
+    const ip_addr_t *lo = &s->udp_pcb->local_ip;
+    struct netif *nif;
+    if (ip_addr_isloopback(lo) && (nif = ip_route(lo, &ip)) != NULL)
+        e = udp_sendto_if_src(s->udp_pcb, p, &ip, lwip_htons(to->port_be), nif, lo);
+    else
+        e = udp_sendto(s->udp_pcb, p, &ip, lwip_htons(to->port_be));
     pbuf_free(p);
     net_unlock();
     return e == ERR_OK ? len : -SOCK_EHOSTUNREACH;
@@ -615,6 +626,37 @@ int NetSockLocalName(int sd, NetSockAddr *out)
         memset(out->addr, 0, 16);                         /* unbound: ::, not ::ffff:0.0.0.0 */
     net_unlock();
     return 0;
+}
+
+void NetSockSetOwner(int sd, UINT32 pid)
+{
+    Sock *s = slot(sd);
+    if (s) s->owner = pid;
+}
+
+/* The TCP connection table: a row per TCP socket with a local port (lwIP's
+ * states are MIB_TCP_STATE's less one).  Fills up to @max rows and returns
+ * how many there are. */
+int NetSockTcpTable(NetTcpRow *rows, int max)
+{
+    int n = 0;
+    net_lock();
+    for (int i = 0; i < NSOCK; i++) {
+        Sock *s = &g_sock[i];
+        if (!s->used || s->udp || !s->tcp || !s->tcp->local_port || s->tcp->state == CLOSED) continue;
+        if (n < max) {
+            NetTcpRow *r = &rows[n];
+            memset(r, 0, sizeof(*r));
+            from_lwip(s, &s->tcp->local_ip, s->tcp->local_port, &r->local);
+            if (s->listening) r->remote.family = r->local.family;
+            else from_lwip(s, &s->tcp->remote_ip, s->tcp->remote_port, &r->remote);
+            r->state = (UINT32)s->tcp->state + 1;
+            r->owner = s->owner;
+        }
+        n++;
+    }
+    net_unlock();
+    return n;
 }
 
 int NetSockPeerName(int sd, NetSockAddr *out)

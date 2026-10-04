@@ -712,10 +712,12 @@ static UINT32 open_other(UmProcess *p, const char *path, UINT32 access, UINT32 o
         if (!put_u64(handle_ptr, hv)) { um_close_handle(hv); return UM_STATUS_ACCESS_VIOLATION; }
         return iosb(iosb_ptr, ST_SUCCESS, 1);
     }
-    if (um_pipe_name(path) || um_hid_name(path)) {              /* a pipe's client end, a HID device */
+    if (um_pipe_name(path) || um_hid_name(path) || um_afd_name(path)) {   /* a pipe's client end, a HID device, an AFD helper */
         UmObject *o;
         bool rd = true, wr = false;
-        UINT32 pst = um_hid_name(path) ? um_hid_open(path, options, &o) : um_pipe_open(path, access, options, &o, &rd, &wr);
+        UINT32 pst;
+        if (um_afd_name(path)) { pst = (o = um_afd_open()) ? ST_SUCCESS : ST_NO_MEMORY; wr = true; }
+        else pst = um_hid_name(path) ? um_hid_open(path, options, &o) : um_pipe_open(path, access, options, &o, &rd, &wr);
         if (pst) return iosb(iosb_ptr, pst, 0);
         um_lock_excl(&p->lock);
         UINT64 hv = handle_alloc(p, &h);
@@ -786,7 +788,7 @@ static UINT32 open_file(UINT64 handle_ptr, UINT32 access, UINT64 oa_ptr, UINT64 
     bool inherit = *oa_attrs() & 0x2;                           /* OBJ_INHERIT */
     UmHandleKind ck;
     UmHandle *h;
-    if (um_pipe_name(path) || um_hid_name(path) || is_console_name(path, &ck)) {   /* not files: under the big lock */
+    if (um_pipe_name(path) || um_hid_name(path) || um_afd_name(path) || is_console_name(path, &ck)) {   /* not files: under the big lock */
         FsUnlockShared();
         bkl_acquire();
         st = open_other(p, path, access, options, inherit, handle_ptr, iosb_ptr);
@@ -2657,9 +2659,10 @@ static UINT64 sys_fs_control(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT64 sys_cancel_io(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a3; (void)a4;
-    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE);
-    UINT32 st = po ? um_pipe_cancel(po, 0) : ST_SUCCESS;
+    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE), *ao = po ? NULL : um_handle_object(UmCurrent(), a1, UO_AFD);
+    UINT32 st = po ? um_pipe_cancel(po, 0) : ao ? um_afd_cancel(ao, 0) : ST_SUCCESS;
     if (po) um_ob_unref(po);
+    if (ao) um_ob_unref(ao);
     return iosb(a2, st, 0);
 }
 
@@ -2667,9 +2670,10 @@ static UINT64 sys_cancel_io(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 static UINT64 sys_cancel_io_ex(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     (void)a4;
-    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE);
-    UINT32 st = po ? um_pipe_cancel(po, a2) : 0xC0000225u;    /* STATUS_NOT_FOUND */
+    UmObject *po = um_handle_object(UmCurrent(), a1, UO_PIPE), *ao = po ? NULL : um_handle_object(UmCurrent(), a1, UO_AFD);
+    UINT32 st = po ? um_pipe_cancel(po, a2) : ao ? um_afd_cancel(ao, a2) : 0xC0000225u;    /* STATUS_NOT_FOUND */
     if (po) um_ob_unref(po);
+    if (ao) um_ob_unref(ao);
     return iosb(a3, st, 0);
 }
 
@@ -2772,11 +2776,11 @@ static UINT64 sys_query_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         case UO_KEY: type = "Key"; break;
         case UO_PROCESS: type = "Process"; break;
         case UO_THREAD: type = "Thread"; break;
-        case UO_SOCKET: strcpy(name, "\\Device\\Afd"); break;
+        case UO_SOCKET: case UO_AFD: strcpy(name, "\\Device\\Afd"); break;
         default:
             type = o->type == UO_EVENT ? "Event" : o->type == UO_MUTANT ? "Mutant" : o->type == UO_SEMAPHORE ? "Semaphore" :
                    o->type == UO_SECTION ? "Section" : o->type == UO_DIRECTORY ? "Directory" :
-                   o->type == UO_SYMLINK ? "SymbolicLink" : o->type == UO_TIMER ? "Timer" : o->type == UO_WINDOW ? "Window" : "Unknown";
+                   o->type == UO_SYMLINK ? "SymbolicLink" : o->type == UO_KEYED_EVENT ? "KeyedEvent" : o->type == UO_TIMER ? "Timer" : o->type == UO_WINDOW ? "Window" : "Unknown";
             um_object_name(o, n, sizeof(n));
             if (n[0]) ksnprintf(name, sizeof(name), "%s%s", n[0] == '\\' ? "" : "\\BaseNamedObjects\\", n);
             break;

@@ -94,6 +94,43 @@ static BOOL post(Port *p, DWORD bytes, ULONG_PTR key, LPOVERLAPPED ov, NTSTATUS 
     return TRUE;
 }
 
+/* \Device\Afd helper handles (NtCreateFile "\Device\Afd\..."; wepoll's
+ * IOCTL_AFD_POLL): the kernel finishes the polls and keeps a record for
+ * the port of each; a thread per bound helper takes them and queues the
+ * packets (lpOverlapped = the request's ApcContext, as on Windows). */
+typedef struct { HANDLE h; ULONG serial; } AfdPump;
+
+static DWORD WINAPI afd_pump(LPVOID arg)
+{
+    AfdPump a = *(AfdPump *)arg;
+    zfree(arg);
+    for (;;) {
+        ULONGLONG rec[3];                                   /* ApcContext, status, information */
+        LONG_PTR r = NtNovaSockCtl((INT_PTR)a.h, 13, a.serial, rec);
+        if (r < 0) return 0;                                /* the helper was closed */
+        if (r) continue;
+        lock();
+        FileInfo *f = file_info(a.h, FALSE);
+        Port *p = f ? f->port : 0;
+        BOOL queued = p && post(p, (DWORD)rec[2], f->key, (LPOVERLAPPED)(ULONG_PTR)rec[0], (NTSTATUS)rec[1]);
+        HANDLE port = p ? p->h : 0;
+        unlock();
+        if (queued) ReleaseSemaphore(port, 1, 0);
+    }
+}
+
+static void afd_bind(HANDLE h)
+{
+    LONG_PTR serial = NtNovaSockCtl((INT_PTR)h, 12, 0, 0);
+    if (serial <= 0) return;                                /* (not an AFD helper) */
+    AfdPump *a = zalloc(sizeof(*a));
+    if (!a) return;
+    a->h = h;
+    a->serial = (ULONG)serial;
+    HANDLE t = CreateThread(0, 64 * 1024, afd_pump, a, 0, 0);
+    if (t) CloseHandle(t); else zfree(a);
+}
+
 WINBASEAPI HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE existing, ULONG_PTR key, DWORD threads)
 {
     (void)threads;
@@ -110,12 +147,15 @@ WINBASEAPI HANDLE WINAPI CreateIoCompletionPort(HANDLE file, HANDLE existing, UL
         p->next = g_ports;
         g_ports = p;
     }
+    BOOL bound = FALSE;
     if (file && file != INVALID_HANDLE_VALUE) {
         FileInfo *f = file_info(file, TRUE);
-        if (f) { f->port = p; f->key = key; }
+        if (f) { bound = !f->port; f->port = p; f->key = key; }
     }
+    HANDLE ph = p->h;
     unlock();
-    return p->h;
+    if (bound) afd_bind(file);
+    return ph;
 }
 
 WINBASEAPI BOOL WINAPI PostQueuedCompletionStatus(HANDLE port, DWORD bytes, ULONG_PTR key, LPOVERLAPPED ov)

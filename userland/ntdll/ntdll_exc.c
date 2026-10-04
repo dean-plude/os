@@ -66,9 +66,63 @@ static LONG run_vectored(VEH *list, PEXCEPTION_POINTERS info)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Reads @n bytes at @a, false where they are not mapped */
+static BOOLEAN peek(ULONG_PTR a, void *out, SIZE_T n)
+{
+    SIZE_T got = 0;
+    return a && NtReadVirtualMemory((HANDLE)-1, (PVOID)a, out, n, &got) >= 0 && got == n;
+}
+
+/* An unhandled C++ exception (0xE06D7363) ends the process with nothing
+ * but "abnormal program termination" from the program's own filter: the
+ * debug output names what was thrown first, the type from the throw's
+ * ThrowInfo and, for a std::exception, its message */
+static void note_cxx_exception(const EXCEPTION_RECORD *rec)
+{
+    if (rec->ExceptionCode != 0xE06D7363u || rec->NumberParameters < 3) return;
+    ULONG_PTR obj = rec->ExceptionInformation[1], ti = rec->ExceptionInformation[2], base = 0;
+#ifdef _WIN64
+    if (rec->NumberParameters < 4) return;
+    base = rec->ExceptionInformation[3];
+#endif
+    int f[4], n = 0, ct[2];
+    char name[96] = "?", what[160] = "";
+    ULONG_PTR cta, td, str = 0;
+    /* ThrowInfo { attributes, unwind, forward compat, catchable type array }:
+     * image-relative offsets on x64, pointers on x86 */
+    if (ti && peek(ti, f, sizeof(f)) && (cta = base + (ULONG)f[3]) && peek(cta, &n, sizeof(n)) && n > 0 &&
+        peek(cta + 4, &ct[0], sizeof(int)) && peek(base + (ULONG)ct[0] + 4, &ct[1], sizeof(int))) {
+        td = base + (ULONG)ct[1];                       /* TypeDescriptor { vftable, spare, name } */
+        if (!peek(td + 2 * sizeof(void *), name, sizeof(name) - 1)) name[0] = '?', name[1] = 0;
+        name[sizeof(name) - 1] = 0;
+    }
+    /* std::exception { vftable, { const char *what, bool free } } */
+    for (int i = 0; i < n && i < 16; i++) {
+        int c, t;
+        char tn[32];
+        if (!peek(cta + 4 + 4 * (ULONG_PTR)i, &c, sizeof(c)) || !peek(base + (ULONG)c + 4, &t, sizeof(t)) ||
+            !peek(base + (ULONG)t + 2 * sizeof(void *), tn, sizeof(tn))) break;
+        if (!__builtin_memcmp(tn, ".?AVexception@std@@", 20)) {
+            if (peek(obj + sizeof(void *), &str, sizeof(str)) && str) {
+                SIZE_T k = 0;
+                while (k < sizeof(what) - 1 && peek(str + k, &what[k], 1) && what[k]) k++;
+                what[k] = 0;
+            }
+            break;
+        }
+    }
+    char msg[320];
+    SIZE_T m = 0;
+    const char *parts[] = { "unhandled C++ exception ", name, what[0] ? ": " : "", what, "\n" };
+    for (int i = 0; i < 5; i++)
+        for (const char *p = parts[i]; *p && m < sizeof(msg) - 1; p++) msg[m++] = *p;
+    NtNovaDebugPrint(msg, (ULONG)m);
+}
+
 /* Called by the loader's top-level __except filter (last resort) */
 LONG nova_top_level_filter(PEXCEPTION_POINTERS info)
 {
+    if (info && info->ExceptionRecord) note_cxx_exception(info->ExceptionRecord);
     LONG r = g_top_filter ? g_top_filter(info) : EXCEPTION_EXECUTE_HANDLER;
     /* ending the process: the kernel says where it crashed (second chance) */
     if (r == EXCEPTION_EXECUTE_HANDLER && info && info->ExceptionRecord && info->ContextRecord)

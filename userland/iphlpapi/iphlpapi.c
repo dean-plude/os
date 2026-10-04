@@ -2,10 +2,13 @@
  * iphlpapi.dll — IP helper: the host's network parameters and tables.
  *
  * GetNetworkParams gives the computer's name (no DNS domain).  The
- * adapter and connection tables are empty: programs find no interfaces to
- * list, the answer Windows gives on a machine without IP configured.
+ * adapter tables are empty: programs find no interfaces to list, the
+ * answer Windows gives on a machine without IP configured.  The TCP
+ * connection tables are real (the kernel's sockets, with the process that
+ * owns each): a local server finds which process is calling it this way.
  */
 #include <windows.h>
+#include <winternl.h>
 
 #define IPHLPAPI __declspec(dllexport)
 #define ERROR_NO_DATA_ 232
@@ -26,6 +29,8 @@ typedef struct {
 } FIXED_INFO_;
 
 void *memset(void *d, int c, size_t n);
+void *memcpy(void *d, const void *s, size_t n);
+int memcmp(const void *a, const void *b, size_t n);
 
 IPHLPAPI DWORD WINAPI GetNetworkParams(FIXED_INFO_ *info, PULONG size)
 {
@@ -59,14 +64,109 @@ static DWORD empty_table(PVOID table, PULONG size)
 }
 IPHLPAPI DWORD WINAPI GetIpAddrTable(PVOID t, PULONG size, BOOL order) { (void)order; return empty_table(t, size); }
 IPHLPAPI DWORD WINAPI GetIpForwardTable(PVOID t, PULONG size, BOOL order) { (void)order; return empty_table(t, size); }
-IPHLPAPI DWORD WINAPI GetTcpTable(PVOID t, PULONG size, BOOL order) { (void)order; return empty_table(t, size); }
-IPHLPAPI DWORD WINAPI GetTcp6Table(PVOID t, PULONG size, BOOL order) { (void)order; return empty_table(t, size); }
 IPHLPAPI DWORD WINAPI GetUdpTable(PVOID t, PULONG size, BOOL order) { (void)order; return empty_table(t, size); }
 IPHLPAPI DWORD WINAPI GetIfTable(PVOID t, PULONG size, BOOL order) { (void)order; return empty_table(t, size); }
-IPHLPAPI DWORD WINAPI GetExtendedTcpTable(PVOID t, PDWORD size, BOOL order, ULONG af, int cls, ULONG r)
-{ (void)order; (void)af; (void)cls; (void)r; return empty_table(t, size); }
 IPHLPAPI DWORD WINAPI GetExtendedUdpTable(PVOID t, PDWORD size, BOOL order, ULONG af, int cls, ULONG r)
 { (void)order; (void)af; (void)cls; (void)r; return empty_table(t, size); }
+/* -----------------------------------------------------------------------
+ * The TCP connection tables (GetTcpTable, GetTcp6Table, GetExtendedTcpTable)
+ * ----------------------------------------------------------------------- */
+/* A row from the kernel (NtNovaSockCtl op 14): addresses as Winsock's,
+ * ports in network order, a MIB_TCP_STATE and the owning process */
+typedef struct { USHORT family, port; BYTE addr[16]; ULONG scope; } KAddr;
+typedef struct { KAddr local, remote; DWORD state, owner; } KTcpRow;
+
+#define MIB_TCP_STATE_LISTEN_ 2
+#define AF_INET_  2
+#define AF_INET6_ 23
+enum { TCP_BASIC_LISTENER, TCP_BASIC_CONNECTIONS, TCP_BASIC_ALL, TCP_PID_LISTENER, TCP_PID_CONNECTIONS,
+       TCP_PID_ALL, TCP_MODULE_LISTENER, TCP_MODULE_CONNECTIONS, TCP_MODULE_ALL };
+
+/* The kernel's rows for one family (2 or 23), filtered by the class's
+ * listener / connection choice, sorted when @order asks; HeapFree them */
+static KTcpRow *tcp_rows(ULONG af, int which, BOOL order, DWORD *count)
+{
+    KTcpRow *all = NULL;
+    LONG_PTR n = NtNovaSockCtl(0, 14, 0, NULL);
+    for (int tries = 0; tries < 4 && n > 0; tries++) {
+        HeapFree(GetProcessHeap(), 0, all);
+        all = HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(n + 8) * sizeof(KTcpRow));
+        if (!all) { n = 0; break; }
+        LONG_PTR got = NtNovaSockCtl(0, 14, (ULONG_PTR)(n + 8), all);
+        if (got <= n + 8) { n = got; break; }
+        n = got;                                    /* (more sockets came meanwhile) */
+    }
+    DWORD k = 0;
+    for (LONG_PTR i = 0; i < n; i++) {
+        KTcpRow *r = &all[i];
+        BOOL listening = r->state == MIB_TCP_STATE_LISTEN_;
+        if (r->local.family != af || (which == 0 && !listening) || (which == 1 && listening)) continue;
+        all[k++] = *r;
+    }
+    /* by local address and port, then remote address and port */
+    for (DWORD i = 1; order && i < k; i++)
+        for (DWORD j = i; j > 0; j--) {
+            KTcpRow *a = &all[j - 1], *b = &all[j];
+            int c = memcmp(a->local.addr, b->local.addr, 16);
+            if (!c) c = (int)((a->local.port >> 8 | a->local.port << 8) & 0xFFFF) - (int)((b->local.port >> 8 | b->local.port << 8) & 0xFFFF);
+            if (!c) c = memcmp(a->remote.addr, b->remote.addr, 16);
+            if (!c) c = (int)((a->remote.port >> 8 | a->remote.port << 8) & 0xFFFF) - (int)((b->remote.port >> 8 | b->remote.port << 8) & 0xFFFF);
+            if (c <= 0) break;
+            KTcpRow t = *a; *a = *b; *b = t;
+        }
+    *count = k;
+    return all;
+}
+
+static DWORD tcp_table(PVOID t, PDWORD size, BOOL order, ULONG af, int cls)
+{
+    if (!size || (af != AF_INET_ && af != AF_INET6_) || cls < -1 || cls > TCP_MODULE_ALL) return ERROR_INVALID_PARAMETER;
+    if (af == AF_INET6_ && cls >= 0 && cls <= TCP_BASIC_ALL) return ERROR_NOT_SUPPORTED;
+    /* row sizes: MIB_TCPROW(_OWNER_PID/_OWNER_MODULE), MIB_TCP6ROW_OWNER_PID/_MODULE, MIB_TCP6ROW (cls -1) */
+    static const DWORD v4[3] = { 20, 24, 160 }, v6[3] = { 52, 56, 192 };
+    int kind = cls < 0 ? 0 : cls / 3;
+    DWORD row = af == AF_INET_ ? v4[kind] : v6[kind], head = kind == 2 ? 8 : 4;
+    DWORD n;
+    KTcpRow *rows = tcp_rows(af, cls % 3, order, &n);
+    DWORD need = head + n * row;
+    if (!t || *size < need) {
+        HeapFree(GetProcessHeap(), 0, rows);
+        *size = need + 4 * row;                      /* (room for a few more) */
+        return ERROR_INSUFFICIENT_BUFFER;
+    }
+    memset(t, 0, need);
+    *(DWORD *)t = n;
+    for (DWORD i = 0; i < n; i++) {
+        BYTE *o = (BYTE *)t + head + i * row;
+        KTcpRow *r = &rows[i];
+        DWORD *d = (DWORD *)o;
+        if (af == AF_INET_) {                         /* state, local addr, port, remote addr, port[, pid] */
+            d[0] = r->state;
+            memcpy(&d[1], r->local.addr, 4); d[2] = r->local.port;
+            memcpy(&d[3], r->remote.addr, 4); d[4] = r->remote.port;
+            if (kind) d[5] = r->owner;
+        } else if (kind) {                           /* MIB_TCP6ROW_OWNER_*: local, scope, port, remote, scope, port, state, pid */
+            memcpy(o, r->local.addr, 16); d[4] = r->local.scope; d[5] = r->local.port;
+            memcpy(o + 24, r->remote.addr, 16); d[10] = r->remote.scope; d[11] = r->remote.port;
+            d[12] = r->state; d[13] = r->owner;
+        } else {                                     /* MIB_TCP6ROW: state, local, scope, port, remote, scope, port */
+            d[0] = r->state;
+            memcpy(o + 4, r->local.addr, 16); d[5] = r->local.scope; d[6] = r->local.port;
+            memcpy(o + 28, r->remote.addr, 16); d[11] = r->remote.scope; d[12] = r->remote.port;
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, rows);
+    return NO_ERROR;
+}
+
+IPHLPAPI DWORD WINAPI GetExtendedTcpTable(PVOID t, PDWORD size, BOOL order, ULONG af, int cls, ULONG r)
+{
+    if (r) return ERROR_INVALID_PARAMETER;
+    return tcp_table(t, size, order, af, cls);
+}
+IPHLPAPI DWORD WINAPI GetTcpTable(PVOID t, PULONG size, BOOL order) { return tcp_table(t, size, order, AF_INET_, TCP_BASIC_ALL); }
+IPHLPAPI DWORD WINAPI GetTcp6Table(PVOID t, PULONG size, BOOL order) { return tcp_table(t, size, order, AF_INET6_, -1); }
+
 IPHLPAPI DWORD WINAPI GetBestInterface(DWORD addr, PDWORD index) { (void)addr; (void)index; return ERROR_NO_DATA_; }
 IPHLPAPI DWORD WINAPI NotifyAddrChange(PHANDLE h, LPOVERLAPPED o) { (void)h; (void)o; return ERROR_NOT_SUPPORTED; }
 

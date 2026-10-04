@@ -82,6 +82,7 @@ static UINT64 sys_socket(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     int fam = a2 ? (int)a2 : NET_AF_INET;
     int s = a1 == 1 ? NetSockUdp(fam) : NetSockTcp(fam);
     if (s < 0) return (UINT64)(INT64)s;
+    NetSockSetOwner(s, p->pid);
     UmObject *o = kzalloc(sizeof(*o));
     if (!o) { NetSockClose(s); return (UINT64)(INT64)-SOCK_ENOBUFS; }
     o->type = UO_SOCKET;
@@ -172,6 +173,7 @@ static UINT64 sys_accept(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     NetSockAddr peer;
     int ns = NetSockAccept(s, &peer, sock_cancel, NULL);
     if (ns < 0) return 0;
+    NetSockSetOwner(ns, p->pid);
     UmObject *o = kzalloc(sizeof(*o));
     if (!o) { NetSockClose(ns); return 0; }
     o->type = UO_SOCKET; o->refs = 1; o->sock = ns; o->destroy = sock_destroy;
@@ -181,18 +183,35 @@ static UINT64 sys_accept(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return hv;
 }
 
+/* The TCP connection table for iphlpapi: up to @max rows to @out */
+static UINT64 tcp_table(UINT64 max, UINT64 out)
+{
+    if (max > 1024) max = 1024;
+    NetTcpRow *rows = max ? kmalloc(max * sizeof(NetTcpRow)) : NULL;
+    if (max && !rows) return (UINT64)(INT64)-SOCK_ENOBUFS;
+    int n = NetSockTcpTable(rows, (int)max);
+    int k = n < (int)max ? n : (int)max;
+    if (k && (!out || !NT_SUCCESS(CopyToUser((void *)(uintptr_t)out, rows, k * sizeof(NetTcpRow))))) n = -SOCK_EFAULT;
+    kfree(rows);
+    return (UINT64)(INT64)n;
+}
+
 /* NtNovaSockCtl(h, op, arg, outptr):
  *   0 set non-blocking (arg=0/1); 1 shutdown (arg=how);
  *   2 getpeername; 3 getsockname; 4 poll (outptr gets 3 bytes r/w/e);
  *   9 setsockopt (arg = SOCKOPT_*, outptr = the value itself);
  *   10 getsockopt (arg = SOCKOPT_*; returns the value, below 2^31, or -err);
  *   11 AcceptEx's accept (arg = the listening handle; the connection
- *   replaces this handle's socket) */
+ *   replaces this handle's socket);
+ *   14 the TCP connection table (no handle; up to arg NetTcpRow rows into
+ *   outptr; returns how many there are) */
 static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     /* 6: the network generation (select reads it before looking);
      * 5: sleep until it moves on from arg, at most a4 ms */
     if (a2 == 6) return net_gen();
+    if (a2 == 12 || a2 == 13) return (UINT64)um_afd_ctl(a1, a2, a3, a4);   /* \Device\Afd helpers (um_afd.c) */
+    if (a2 == 14) return tcp_table(a3, a4);
     if (a2 == 5) {
         UINT64 ticks = (a4 + 9) / 10;
         if (ticks > 10) ticks = 10;
@@ -242,6 +261,7 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (ls < 0) return (UINT64)(INT64)-SOCK_ENOTSOCK;
         int ns = NetSockAccept(ls, &na, sock_cancel, NULL);
         if (ns < 0) return (UINT64)(INT64)ns;
+        NetSockSetOwner(ns, p->pid);
         UmObject *o = um_handle_object(p, a1, UO_SOCKET);
         if (!o) { NetSockClose(ns); return (UINT64)(INT64)-SOCK_ENOTSOCK; }
         int old = o->sock;
