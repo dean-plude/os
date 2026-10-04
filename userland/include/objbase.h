@@ -78,7 +78,7 @@ DEFINE_OLEGUID(IID_IClassFactory,        0x00000001, 0, 0);
 DEFINE_OLEGUID(IID_IMalloc,              0x00000002, 0, 0);
 DEFINE_OLEGUID(IID_IMarshal,             0x00000003, 0, 0);
 DEFINE_OLEGUID(IID_IStream,              0x0000000C, 0, 0);
-DEFINE_OLEGUID(IID_ISequentialStream,    0x0C733A30, 0x2A1C, 0x11CE);
+DEFINE_GUID(IID_ISequentialStream,       0x0C733A30, 0x2A1C, 0x11CE, 0xAD, 0xE5, 0x00, 0xAA, 0x00, 0x44, 0x77, 0x3D);
 DEFINE_OLEGUID(IID_IPersist,             0x0000010C, 0, 0);
 DEFINE_OLEGUID(IID_IEnumUnknown,         0x00000100, 0, 0);
 DEFINE_OLEGUID(IID_IDispatch,            0x00020400, 0, 0);
