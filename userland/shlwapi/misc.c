@@ -148,6 +148,143 @@ LWSTDAPI_(HRESULT) UrlUnescapeW(LPWSTR in, LPWSTR out, LPDWORD n, DWORD flags)
     return S_OK_;
 }
 
+/* The ANSI forms work on the bytes themselves, as Windows' do: a %XX
+ * escape is one byte, whatever the code page makes of it */
+LWSTDAPI_(HRESULT) UrlEscapeA(LPCSTR in, LPSTR out, LPDWORD n, DWORD flags)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char tmp[4096];
+    int o = 0;
+    BOOL in_query = FALSE;
+    if (!in || !out || !n) return E_INVALIDARG_;
+    for (const unsigned char *p = (const unsigned char *)in; *p && o < 4090; p++) {
+        unsigned char c = *p;
+        if (c == '?' || c == '#') in_query = TRUE;
+        BOOL esc;
+        if (flags & URL_ESCAPE_SPACES_ONLY) esc = c == ' ';
+        else if (in_query && !(flags & URL_ESCAPE_SEGMENT_ONLY)) esc = FALSE;
+        else esc = c <= 32 || c >= 127 || c == '"' || c == '<' || c == '>' || c == '{' || c == '}' || c == '|' ||
+                   c == '\\' || c == '^' || c == '`' || c == '[' || c == ']' || (c == '%' && (flags & URL_ESCAPE_PERCENT)) ||
+                   ((flags & URL_ESCAPE_SEGMENT_ONLY) && (c == '/' || c == '?' || c == '#'));
+        if (esc) { tmp[o++] = '%'; tmp[o++] = hex[c >> 4]; tmp[o++] = hex[c & 15]; }
+        else tmp[o++] = (char)c;
+    }
+    tmp[o] = 0;
+    if ((DWORD)o >= *n) { *n = (DWORD)o + 1; return E_POINTER_; }
+    for (int i = 0; i <= o; i++) out[i] = tmp[i];
+    *n = (DWORD)o;
+    return S_OK_;
+}
+
+LWSTDAPI_(HRESULT) UrlUnescapeA(LPSTR in, LPSTR out, LPDWORD n, DWORD flags)
+{
+    char tmp[4096];
+    int o = 0;
+    if (!in) return E_INVALIDARG_;
+    for (char *p = in; *p && o < 4095; p++) {
+        if (*p == '%' && hexval((unsigned char)p[1]) >= 0 && hexval((unsigned char)p[2]) >= 0) {
+            tmp[o++] = (char)(hexval((unsigned char)p[1]) * 16 + hexval((unsigned char)p[2]));
+            p += 2;
+        } else tmp[o++] = *p;
+    }
+    tmp[o] = 0;
+    if (flags & URL_UNESCAPE_INPLACE) { for (int i = 0; i <= o; i++) in[i] = tmp[i]; return S_OK_; }
+    if (!out || !n) return E_INVALIDARG_;
+    if ((DWORD)o >= *n) { *n = (DWORD)o + 1; return E_POINTER_; }
+    for (int i = 0; i <= o; i++) out[i] = tmp[i];
+    *n = (DWORD)o;
+    return S_OK_;
+}
+
+/* RFC 3986 5.2.4: drop "." and resolve ".." segments of @p in place
+ * (the output never overtakes the input, so one buffer serves both) */
+static void remove_dots(WCHAR *p)
+{
+    WCHAR *o = p, *i = p;
+    while (*i) {
+        if (i[0] == '.' && i[1] == '.' && i[2] == '/') i += 3;                  /* A */
+        else if (i[0] == '.' && i[1] == '/') i += 2;
+        else if (i[0] == '/' && i[1] == '.' && i[2] == '/') i += 2;             /* B */
+        else if (i[0] == '/' && i[1] == '.' && !i[2]) i[1] = 0;
+        else if (i[0] == '/' && i[1] == '.' && i[2] == '.' && (i[3] == '/' || !i[3])) {   /* C */
+            while (o > p && *--o != '/') {}
+            if (i[3]) i += 3; else { i++; i[0] = '/'; i[1] = 0; }
+        } else if ((i[0] == '.' && !i[1]) || (i[0] == '.' && i[1] == '.' && !i[2])) i += i[1] ? 2 : 1;   /* D */
+        else { if (*i == '/') *o++ = *i++; while (*i && *i != '/') *o++ = *i++; }   /* E */
+    }
+    *o = 0;
+}
+
+/* @rel resolved against @base (RFC 3986 5.2.2); URL_DONT_SIMPLIFY (0x08000000)
+ * keeps "." and ".." segments as they are */
+LWSTDAPI_(HRESULT) UrlCombineW(LPCWSTR base, LPCWSTR rel, LPWSTR out, LPDWORD n, DWORD flags)
+{
+    static WCHAR res[4096];
+    WCHAR path[2048];
+    int sl, i, o = 0;
+    if (!base || !rel || !n) return E_INVALIDARG_;
+    #define PUT(s, len) do { for (int k_ = 0; k_ < (len) && o < 4095; k_++) res[o++] = (s)[k_]; } while (0)
+    if (url_scheme(rel, &sl)) {                            /* already absolute */
+        PUT(rel, wlen(rel));
+    } else if (!url_scheme(base, &sl)) {
+        PUT(rel, wlen(rel));
+    } else {
+        const WCHAR *auth = base + sl + 1, *ae = auth, *pe, *qe;
+        BOOL has_auth = auth[0] == '/' && auth[1] == '/';
+        if (has_auth) { ae = auth + 2; while (*ae && *ae != '/' && *ae != '?' && *ae != '#') ae++; }
+        pe = ae; while (*pe && *pe != '?' && *pe != '#') pe++;
+        qe = pe; while (*qe && *qe != '#') qe++;
+        PUT(base, (int)(ae - base));                       /* scheme: and //authority */
+        if (rel[0] == '/' && rel[1] == '/') {
+            o = sl + 1;
+            PUT(rel, wlen(rel));
+        } else if (rel[0] == '/') {
+            for (i = 0; rel[i] && i < 2047; i++) path[i] = rel[i];
+            path[i] = 0;
+            if (!(flags & 0x08000000)) remove_dots(path);
+            PUT(path, wlen(path));
+        } else if (!rel[0] || rel[0] == '?' || rel[0] == '#') {
+            PUT(ae, (int)((rel[0] != '?' ? qe : pe) - ae));
+            PUT(rel, wlen(rel));
+        } else {
+            const WCHAR *slash = 0;                        /* merge with the base's directory */
+            for (const WCHAR *c = ae; c < pe; c++) if (*c == '/') slash = c;
+            int k = 0;
+            if (slash) for (const WCHAR *c = ae; c <= slash && k < 1023; c++) path[k++] = *c;
+            else if (has_auth) path[k++] = '/';
+            const WCHAR *r = rel, *re = rel;
+            while (*re && *re != '?' && *re != '#') re++;
+            for (; r < re && k < 2047; r++) path[k++] = *r;
+            path[k] = 0;
+            if (!(flags & 0x08000000)) remove_dots(path);
+            PUT(path, wlen(path));
+            PUT(re, wlen(re));
+        }
+    }
+    #undef PUT
+    res[o] = 0;
+    if (!out || (DWORD)o >= *n) { *n = (DWORD)o + 1; return E_POINTER_; }
+    for (i = 0; i <= o; i++) out[i] = res[i];
+    *n = (DWORD)o;
+    return S_OK_;
+}
+
+LWSTDAPI_(HRESULT) UrlCombineA(LPCSTR base, LPCSTR rel, LPSTR out, LPDWORD n, DWORD flags)
+{
+    WCHAR wb[2048], wr[2048], wo[4096];
+    DWORD wn = 4096;
+    if (!base || !rel || !n) return E_INVALIDARG_;
+    MultiByteToWideChar(CP_ACP, 0, base, -1, wb, 2048);
+    MultiByteToWideChar(CP_ACP, 0, rel, -1, wr, 2048);
+    HRESULT hr = UrlCombineW(wb, wr, wo, &wn, flags);
+    if (hr != S_OK_) return hr;
+    int need = WideCharToMultiByte(CP_ACP, 0, wo, -1, 0, 0, 0, 0);
+    if (!out || (DWORD)need > *n) { *n = (DWORD)need; return E_POINTER_; }
+    WideCharToMultiByte(CP_ACP, 0, wo, -1, out, (int)*n, 0, 0);
+    *n = (DWORD)need - 1;
+    return S_OK_;
+}
+
 LWSTDAPI_(HRESULT) UrlCanonicalizeW(LPCWSTR in, LPWSTR out, LPDWORD n, DWORD flags)
 {
     (void)flags;

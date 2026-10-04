@@ -181,6 +181,11 @@ INETAPI BOOL WINAPI InternetCloseHandle(HANDLE h) { (void)h; return TRUE; }
 INETAPI BOOL WINAPI InternetSetOptionW(HANDLE h, DWORD opt, LPVOID buf, DWORD n) { (void)h; (void)opt; (void)buf; (void)n; return TRUE; }
 INETAPI BOOL WINAPI InternetSetOptionA(HANDLE h, DWORD opt, LPVOID buf, DWORD n) { (void)h; (void)opt; (void)buf; (void)n; return TRUE; }
 
+/* there is never a valid handle (InternetOpen gives none) to call back on */
+INETAPI PVOID WINAPI InternetSetStatusCallbackW(HANDLE h, PVOID cb)
+{ (void)h; (void)cb; SetLastError(12018); return (PVOID)(LONG_PTR)-1; }    /* INTERNET_INVALID_STATUS_CALLBACK */
+INETAPI PVOID WINAPI InternetSetStatusCallbackA(HANDLE h, PVOID cb) { return InternetSetStatusCallbackW(h, cb); }
+
 INETAPI BOOL WINAPI InternetGetConnectedStateExW(LPDWORD flags, LPWSTR name, DWORD n, DWORD reserved)
 {
     if (name && n) name[0] = 0;
