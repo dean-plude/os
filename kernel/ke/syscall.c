@@ -166,11 +166,8 @@ static UINT64 sys_NtQuerySystemInformation(UINT64 InfoClass,
         sbi.MaximumUserModeAddress = 0x7FFFFFFFFFFEFFFF;
         sbi.ActiveProcessorsAffinityMask = (1ULL << g_cpu_count) - 1;
         sbi.NumberOfProcessors    = (UINT8)g_cpu_count;
-        /* PMM stats for physical page counts */
-        uint64_t total_pages, free_pages, used_pages;
-        extern void pmm_stats(uint64_t *, uint64_t *, uint64_t *);
-        pmm_stats(&total_pages, &free_pages, &used_pages);
-        sbi.NumberOfPhysicalPages = (UINT32)total_pages;
+        extern size_t pmm_ram_pages(void);
+        sbi.NumberOfPhysicalPages = (UINT32)pmm_ram_pages();     /* the machine's RAM */
         return CopyToUser(UPTR(InfoPtr), &sbi, sizeof(sbi));
     }
     default:

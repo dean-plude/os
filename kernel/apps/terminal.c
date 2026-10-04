@@ -478,6 +478,8 @@ static void cmd_mem(Term *t)
 {
     uint64_t total, free_p, used;
     pmm_stats(&total, &free_p, &used);
+    total = pmm_ram_pages();                    /* (pmm_stats' total counts the holes too) */
+    used = total > free_p ? total - free_p : 0;
     tprintf(t, "Physical memory: %u MB total, %u MB used, %u MB free",
             (unsigned)(total * 4 / 1024), (unsigned)(used * 4 / 1024),
             (unsigned)(free_p * 4 / 1024));

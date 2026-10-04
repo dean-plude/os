@@ -1964,16 +1964,25 @@ WINBASEAPI SIZE_T WINAPI VirtualQuery(LPCVOID p, PMEMORY_BASIC_INFORMATION mbi, 
     return got;
 }
 
+/* The machine's memory as the kernel publishes it in KUSER_SHARED_DATA:
+ * Windows' NumberOfPhysicalPages and NovaOS's free page count (0xF08,
+ * kept current on every timer tick).  NovaOS has no page file, so the
+ * commit figures are the physical ones. */
+#define KUSD_PHYS_PAGES  (*(volatile const ULONG *)(ULONG_PTR)0x7FFE02E8)
+#define KUSD_AVAIL_PAGES (*(volatile const ULONG *)(ULONG_PTR)0x7FFE0F08)
+
 WINBASEAPI BOOL WINAPI GlobalMemoryStatusEx(LPMEMORYSTATUSEX ms)
 {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    ms->dwMemoryLoad = 30;
-    ms->ullTotalPhys = 512ULL << 20;
-    ms->ullAvailPhys = 256ULL << 20;
-    ms->ullTotalPageFile = ms->ullTotalPhys;
-    ms->ullAvailPageFile = ms->ullAvailPhys;
-    ms->ullTotalVirtual = sizeof(void *) == 4 ? 0x7FFE0000ULL : 0x7FFE0000000ULL;
+    if (ms->dwLength != sizeof(*ms)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    ULONGLONG total = (ULONGLONG)KUSD_PHYS_PAGES << 12, avail = (ULONGLONG)KUSD_AVAIL_PAGES << 12;
+    if (!total) total = 512ULL << 20;                   /* (a kernel without the fields) */
+    if (avail > total) avail = total;
+    ms->dwMemoryLoad = (DWORD)(100 - avail * 100 / total);
+    ms->ullTotalPhys = total;
+    ms->ullAvailPhys = avail;
+    ms->ullTotalPageFile = total;
+    ms->ullAvailPageFile = avail;
+    ms->ullTotalVirtual = sizeof(void *) == 4 ? 0x7FFE0000ULL : 0x7FFFFFE0000ULL;
     ms->ullAvailVirtual = sizeof(void *) == 4 ? 0x70000000ULL : 0x7F000000000ULL;
     ms->ullAvailExtendedVirtual = 0;
     return TRUE;
@@ -3462,10 +3471,12 @@ WINBASEAPI VOID    WINAPI GlobalMemoryStatus(LPVOID p)
     ms.dwLength = sizeof(ms);
     GlobalMemoryStatusEx(&ms);
     DWORD *o = p;                                           /* MEMORYSTATUS: SIZE_Ts after two DWORDs */
-    o[0] = 56; o[1] = ms.dwMemoryLoad;
+    o[0] = 2 * sizeof(DWORD) + 6 * sizeof(SIZE_T); o[1] = ms.dwMemoryLoad;
     SIZE_T *s = (SIZE_T *)(o + 2);
-    s[0] = (SIZE_T)ms.ullTotalPhys; s[1] = (SIZE_T)ms.ullAvailPhys; s[2] = (SIZE_T)ms.ullTotalPageFile;
-    s[3] = (SIZE_T)ms.ullAvailPageFile; s[4] = (SIZE_T)ms.ullTotalVirtual; s[5] = (SIZE_T)ms.ullAvailVirtual;
+    const ULONGLONG v[6] = { ms.ullTotalPhys, ms.ullAvailPhys, ms.ullTotalPageFile,
+                             ms.ullAvailPageFile, ms.ullTotalVirtual, ms.ullAvailVirtual };
+    for (int i = 0; i < 6; i++)                             /* (32-bit: at most 4 GB - 1, as on Windows) */
+        s[i] = v[i] > (SIZE_T)-1 ? (SIZE_T)-1 : (SIZE_T)v[i];
 }
 
 /* ---- odds and ends VLC and Audacity import ---------------------------- */

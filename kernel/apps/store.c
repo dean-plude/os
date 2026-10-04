@@ -604,7 +604,10 @@ static bool unpack_tick(Store *s)
     s->tar_layer = false;
     s->tar[0] = '\0';
     if (a->system && status == 0) move_system_files(a);
-    if (installed_exe(a) || (!a->exe && status == 0)) {
+    /* 7-Zip's exit codes: 0 done, 1 warnings, 2 and up a file it could not
+     * write (Firefox's xul.dll with memory short: the program is there but
+     * cut off) */
+    if (status <= 1 && (installed_exe(a) || (!a->exe && status == 0))) {
         char m[96];
         if (a->system) ksnprintf(m, sizeof(m), "Installed in C:\\Windows\\System32");
         else           ksnprintf(m, sizeof(m), "Installed in C:\\Programs\\%s", a->dest);

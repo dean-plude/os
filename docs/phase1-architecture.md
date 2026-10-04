@@ -120,11 +120,21 @@ Slab sizes: 8, 16, 32, 64, 128, 256, 512, 1024, 2048 bytes
 Each slab:  One 4KiB page, header at page start, objects following
 Free list:  Embedded in free objects (first 8 bytes = next pointer)
 Large (>2KB): Direct PMM allocation + header page for size tracking
+Mapped (>=4MB, or any large block when no run of pages is free):
+              single pages from anywhere, mapped one after another
+              (header page first) into 2 MiB slots of a kernel window
 ```
 
-The heap lives entirely in the physmap window — no new page table entries
-needed. This is efficient for Phase 1 but means kernel data isn't protected
-from accidental overwrites. Phase 2 will add guard pages.
+Slabs and large blocks live in the physmap window — no new page table
+entries needed.  A large block there is one physically contiguous run,
+which a machine whose memory is in use in small pieces may lack even with
+hundreds of megabytes free, so big blocks (drive C:'s files, a DLL's image
+while it loads) are mapped blocks instead: they live at physmap + 384 GiB
+(128 GiB, in the top-level entry every address space shares), take whole
+2 MiB slots (one page table each), and grow in place into the slots after
+them.  Freed slots are reused only after one TLB shootdown for all of them.
+Kernel data isn't protected from accidental overwrites; Phase 2 will add
+guard pages.
 
 ---
 
