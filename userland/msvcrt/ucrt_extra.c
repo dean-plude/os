@@ -361,6 +361,35 @@ CRTEXP errno_t _ltow_s(long v, wchar_t *buf, size_t n, int radix)
     return 0;
 }
 
+/* The other secure integer-to-wide conversions: as _ltow_s, a minus sign
+ * only in base 10 */
+static errno_t u64tow_s(unsigned long long u, int neg, wchar_t *buf, size_t n, int radix)
+{
+    if (!buf || !n) return EINVAL;
+    if (radix < 2 || radix > 36) { buf[0] = 0; return EINVAL; }
+    wchar_t tmp[72];
+    int k = 0;
+    do { int d = (int)(u % (unsigned)radix); tmp[k++] = (wchar_t)(d < 10 ? '0' + d : 'a' + d - 10); u /= (unsigned)radix; } while (u);
+    if ((size_t)(k + neg + 1) > n) { buf[0] = 0; return ERANGE; }
+    size_t i = 0;
+    if (neg) buf[i++] = L'-';
+    while (k) buf[i++] = tmp[--k];
+    buf[i] = 0;
+    return 0;
+}
+CRTEXP errno_t _ultow_s(unsigned long v, wchar_t *buf, size_t n, int radix) { return u64tow_s(v, 0, buf, n, radix); }
+CRTEXP errno_t _ui64tow_s(unsigned long long v, wchar_t *buf, size_t n, int radix) { return u64tow_s(v, 0, buf, n, radix); }
+CRTEXP errno_t _i64tow_s(long long v, wchar_t *buf, size_t n, int radix)
+{
+    int neg = radix == 10 && v < 0;
+    return u64tow_s(neg ? 0ULL - (unsigned long long)v : (unsigned long long)v, neg, buf, n, radix);
+}
+CRTEXP errno_t _itow_s(int v, wchar_t *buf, size_t n, int radix)
+{
+    int neg = radix == 10 && v < 0;
+    return u64tow_s(neg ? 0ULL - (unsigned long long)(long long)v : (unsigned)v, neg, buf, n, radix);
+}
+
 /* Defined elsewhere without the export (on x86 the linker drops one
  * leading underscore from an /EXPORT name) */
 #ifdef _WIN64

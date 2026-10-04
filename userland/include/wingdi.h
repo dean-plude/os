@@ -46,6 +46,7 @@ typedef struct NOVA_DC {
     float    xform[6];     /* the world transform (eM11 eM12 eM21 eM22 eDx eDy); all zero means identity */
     int      nclip_rects;  /* > 1: the clip region is these rectangles (device pixels, not overlapping) */
     RECT     clip_rects[NOVA_DC_CLIP_RECTS];
+    int      arc_dir;      /* AD_CLOCKWISE (2), or 0 for counterclockwise */
 } NOVA_DC;
 
 #define TRANSPARENT 1

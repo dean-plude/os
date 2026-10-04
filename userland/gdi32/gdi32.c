@@ -515,8 +515,10 @@ GDIAPI BOOL Ellipse(HDC h, int l, int t, int r, int b)
 }
 
 /* Arcs: the ellipse in (l, t, r, b) from the ray through (xs, ys) to the
- * ray through (xe, ye), counterclockwise as GDI draws by default; as a
- * polyline of up to 256 points.  @shape 0 Arc, 1 Pie (to the centre and
+ * ray through (xe, ye), counterclockwise as GDI draws by default
+ * (clockwise after SetArcDirection(AD_CLOCKWISE): the same points as
+ * counterclockwise from the end ray to the start); as a polyline of up to
+ * 256 points.  @shape 0 Arc, 1 Pie (to the centre and
  * filled), 2 Chord (closed by a straight line and filled). */
 static double nsqrt(double v)
 {
@@ -529,6 +531,7 @@ static double nsqrt(double v)
 static BOOL arc_shape(HDC h, int l, int t, int r, int b, int xs, int ys, int xe, int ye, int shape)
 {
     NOVA_DC *d = dc_of(h); if (!d) return FALSE;
+    if (d->arc_dir == 2) { int tx = xs, ty = ys; xs = xe; ys = ye; xe = tx; ye = ty; }
     double ax = (r - l) / 2.0, ay = (b - t) / 2.0, cx = (l + r) / 2.0, cy = (t + b) / 2.0;
     if (ax <= 0 || ay <= 0) return TRUE;
     /* the rays as unit vectors on the circle the ellipse is a stretch of */
@@ -1068,8 +1071,17 @@ GDIAPI int GetDIBits(HDC h, HBITMAP bmp, UINT start, UINT lines, void *bits, BIT
     if (!o || o->kind != K_BITMAP) return 0;
     BITMAPINFOHEADER *bh = &bi->bmiHeader;
     if (!bits) {                                            /* just describe the bitmap */
-        bh->biWidth = o->bw; bh->biHeight = o->bh; bh->biPlanes = 1; bh->biBitCount = 32;
-        bh->biCompression = 0; bh->biSizeImage = (DWORD)o->bw * o->bh * 4;
+        if (!bh->biBitCount) {                              /* its own format, as Windows' 32-bit display gives it */
+            bh->biWidth = o->bw; bh->biHeight = o->bh; bh->biPlanes = 1; bh->biBitCount = 32;
+            bh->biCompression = BI_BITFIELDS;
+        } else {
+            if (!bh->biWidth && !bh->biHeight) { bh->biWidth = o->bw; bh->biHeight = o->bh; bh->biPlanes = 1; }
+            if (bh->biCompression == BI_BITFIELDS && bh->biBitCount == 32) {
+                DWORD *mask = (DWORD *)bi->bmiColors;       /* asked again: the colour masks (SDL reads them) */
+                mask[0] = 0x00FF0000; mask[1] = 0x0000FF00; mask[2] = 0x000000FF;
+            }
+        }
+        bh->biSizeImage = (DWORD)(((o->bw * bh->biBitCount + 31) / 32) * 4) * o->bh;
         return o->bh;
     }
     if (bh->biBitCount != 32 && bh->biBitCount != 24) return 0;

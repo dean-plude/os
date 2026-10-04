@@ -905,6 +905,7 @@ static HANDLE g_stopped;
 static SvcH g_status_handle;
 static SERVICE_MAIN_W g_main_w;
 static SERVICE_MAIN_A g_main_a;
+static SRWLOCK g_control_lock = SRWLOCK_INIT;   /* held while a control is answered */
 
 static DWORD WINAPI control_loop(void *arg)
 {
@@ -917,12 +918,17 @@ static DWORD WINAPI control_loop(void *arg)
         if (!ConnectNamedPipe(p, NULL) && GetLastError() != ERROR_PIPE_CONNECTED) { CloseHandle(p); continue; }
         DWORD control = 0, n = 0, result;
         if (ReadFile(p, &control, sizeof(control), &n, NULL) && n == sizeof(control)) {
+            /* a stop handler that reports SERVICE_STOPPED lets the
+             * dispatcher return and the process end: the lock keeps the
+             * process until the answer is written */
+            AcquireSRWLockShared(&g_control_lock);
             if (g_handler_ex) result = g_handler_ex(control, 0, NULL, g_handler_ctx);
             else if (g_handler) { g_handler(control); result = 0; }
             else result = ERROR_SERVICE_CANNOT_ACCEPT_CTRL;
             if (control == SERVICE_CONTROL_INTERROGATE) result = 0;
             WriteFile(p, &result, sizeof(result), &n, NULL);
             FlushFileBuffers(p);
+            ReleaseSRWLockShared(&g_control_lock);
         }
         CloseHandle(p);
     }
@@ -995,6 +1001,8 @@ static BOOL dispatch(SERVICE_MAIN_W mw, SERVICE_MAIN_A ma)
     CloseHandle(t);
     /* until the service reports itself stopped */
     WaitForSingleObject(g_stopped, INFINITE);
+    AcquireSRWLockExclusive(&g_control_lock);         /* a control being answered finishes first */
+    ReleaseSRWLockExclusive(&g_control_lock);
     return TRUE;
 }
 

@@ -537,5 +537,18 @@ int fwprintf(FILE *f, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); in
 int wprintf(const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vfwprintf(stdout, fmt, a); va_end(a); return r; }
 int _vscwprintf(const wchar_t *fmt, va_list ap) { return __nova_vsnwprintf(NULL, 0, fmt, ap, 0); }
 int _scwprintf(const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = _vscwprintf(fmt, a); va_end(a); return r; }
-int vswprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap) { int r = _vsnwprintf(s, n, fmt, ap); if (n && (r < 0 || (size_t)r >= n)) { s[0] = 0; return -1; } return r; }
-int swprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswprintf_s(s, n, fmt, a); va_end(a); return r; }
+__declspec(dllexport) int vswprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, va_list ap) { int r = _vsnwprintf(s, n, fmt, ap); if (n && (r < 0 || (size_t)r >= n)) { s[0] = 0; return -1; } return r; }
+__declspec(dllexport) int swprintf_s(wchar_t *s, size_t n, const wchar_t *fmt, ...) { va_list a; va_start(a, fmt); int r = vswprintf_s(s, n, fmt, a); va_end(a); return r; }
+/* at most @cnt characters (_TRUNCATE: as many as fit), always terminated; -1 when cut short */
+__declspec(dllexport) int _vsnwprintf_s(wchar_t *s, size_t n, size_t cnt, const wchar_t *fmt, va_list ap)
+{
+    if (!s || !n) return -1;
+    size_t room = cnt < n ? cnt : n - 1;
+    int r = _vsnwprintf(s, room + 1, fmt, ap);
+    if (r < 0 || (size_t)r > room) { s[room] = 0; return -1; }
+    return r;
+}
+__declspec(dllexport) int _snwprintf_s(wchar_t *s, size_t n, size_t cnt, const wchar_t *fmt, ...)
+{
+    va_list a; va_start(a, fmt); int r = _vsnwprintf_s(s, n, cnt, fmt, a); va_end(a); return r;
+}

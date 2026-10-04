@@ -16,7 +16,7 @@
   `comdlg32` (the Open and Save As dialogs, classic and `IFileDialog`),
   `comctl32`, `riched20`/`msftedit` (Rich Edit controls that take RTF,
   as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
-  type libraries), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
+  type libraries, and calls between processes over named pipes with the standard marshaler and the `IDispatch` proxy), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
   stubless proxies, `NdrStubCall2`, `CStdStubBuffer`, the `NdrDll*` entry points), `advapi32`, `ws2_32`, `oleacc`,
   `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
   WASAPI playback and capture, a device ID or endpoint for each sound
@@ -35,9 +35,17 @@
   `crypt32` and `wintrust` (certificate stores and chains, signed PKCS #7
   messages, and Authenticode: `WinVerifyTrust` checks a program's
   signature, its timestamp and its chain to the trusted roots),
-  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`),
+  `usp10` (Uniscribe), `normaliz` (IDN), `urlmon` (`CreateUri`, and the
+  Internet security manager's zones),
   `wintab32` (Wintab pen tablets: pressure, tilt and barrel rotation for GTK,
   Qt and Krita), `cabinet` (the FDI functions installers extract cabinets
-  with, MSZIP and LZX, on `msi`'s cabinet readers), and
+  with, MSZIP and LZX, on `msi`'s cabinet readers), `wldap32` (LDAP
+  sessions, for programs that link to it; no directory servers yet),
+  `opengl32` (Mesa from the App Store, or with no driver NovaOS's own
+  OpenGL 1.1, which draws 2D as ScummVM needs: textures, vertex arrays,
+  blending, scissor), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
-  `dhcpcsvc`, `d3dcompiler_47`), and more.
+  `dhcpcsvc`, `d3dcompiler_47`), the ones Qt WebEngine imports
+  (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12
+  device or WinUSB device, as on a PC without them, with Bluetooth's SDP
+  record parsers working in full), and more.

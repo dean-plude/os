@@ -662,6 +662,41 @@ WINBASEAPI LPSTR  WINAPI GetEnvironmentStrings(void)  { return k32_env_block(0, 
 WINBASEAPI BOOL   WINAPI FreeEnvironmentStringsW(LPWSTR env) { if (env) RtlFreeHeap(RtlGetProcessHeap(), 0, env); return TRUE; }
 WINBASEAPI BOOL   WINAPI FreeEnvironmentStringsA(LPSTR env)  { if (env) RtlFreeHeap(RtlGetProcessHeap(), 0, env); return TRUE; }
 
+/* Replaces the whole environment with @block (UTF-16 "NAME=value" strings,
+ * then an empty one); every string must have its '=' or nothing changes */
+WINBASEAPI BOOL WINAPI SetEnvironmentStringsW(LPWSTR block)
+{
+    if (!block) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    for (const WCHAR *w = block; *w; ) {
+        const WCHAR *e = w + 1;                             /* a leading '=' belongs to the name */
+        while (*e && *e != '=') e++;
+        if (*e != '=') { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+        while (*e) e++;
+        w = e + 1;
+    }
+    env_lock();
+    env_init();
+    PVOID heap = RtlGetProcessHeap();
+    for (int i = 0; i < g_nenv; i++) RtlFreeHeap(heap, 0, g_env[i]);
+    g_nenv = 0;
+    BOOL ok = TRUE;
+    for (const WCHAR *w = block; *w && ok; ) {
+        int len = 0;
+        while (w[len]) len++;
+        int n = w2u(w, len, 0, 0);
+        char *tmp = RtlAllocateHeap(heap, 0, (SIZE_T)n + 1);
+        if (!tmp) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); ok = FALSE; break; }
+        w2u(w, len, tmp, n);
+        tmp[n] = 0;
+        int nl = env_name_len(tmp);
+        ok = env_put(tmp, nl, tmp + nl + 1);
+        RtlFreeHeap(heap, 0, tmp);
+        w += len + 1;
+    }
+    env_unlock();
+    return ok;
+}
+
 WINBASEAPI VOID WINAPI GetStartupInfoA(LPSTARTUPINFOA si)
 {
     memset(si, 0, sizeof(*si));

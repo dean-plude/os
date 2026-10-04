@@ -5,7 +5,8 @@
  * controller (xHCI, EHCI, OHCI and UHCI: usb_hc.h) and on hubs, sets their
  * configuration and offers each interface to the class drivers: hubs
  * (usbhub.c), HID keyboards, mice, tablets and touch screens (usbhid.c),
- * mass storage (usbmsc.c) and audio (usbaudio.c).  A driver that takes an
+ * game controllers (gamepad.c, xpad.c), mass storage (usbmsc.c) and
+ * audio (usbaudio.c).  A driver that takes an
  * interface opens pipes to its endpoints and keeps an instance; when the
  * device goes away its gone() callback runs and the pipes stop.
  *
@@ -155,3 +156,5 @@ void  UsbHidSyncLeds(void);                            /* usb thread: lock-key L
 int   UsbHidSelfCheck(void (*say)(void *ctx, const char *line), void *ctx);
 void *UsbMscProbe(UsbDev *d, const UsbIface *f);      /* usbmsc.c */
 void *UsbAudioProbe(UsbDev *d, const UsbIface *f);    /* usbaudio.c */
+void *UsbPadHidProbe(UsbDev *d, const UsbIface *f);   /* gamepad.c: HID gamepads and joysticks (before usbhid.c) */
+void *UsbXpadProbe(UsbDev *d, const UsbIface *f);     /* xpad.c: Xbox 360 and Xbox One controllers */

@@ -6,7 +6,9 @@
   and dual-stack sockets with `getaddrinfo`, and its socket options reach
   the TCP/IP stack (`TCP_NODELAY`, `SO_RCVTIMEO`/`SO_SNDTIMEO`,
   `SO_LINGER`, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_BROADCAST`, `IP_TTL`,
-  `SO_RCVBUF`/`SO_SNDBUF`) and read back;
+  `SO_RCVBUF`/`SO_SNDBUF`) and read back; a program keeps hundreds of
+  sockets open at once, as a browser does, and `select`, `WSAPoll` and
+  `WSAEventSelect` wait on any number of them;
   overlapped requests that have to wait (an `AcceptEx`, a `ConnectEx`, a
   `WSARecv` with nothing to read yet) stay pending and complete on an I/O
   completion port, which proactor event loops such as Python's asyncio need;

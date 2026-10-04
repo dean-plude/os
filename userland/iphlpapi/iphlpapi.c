@@ -69,13 +69,6 @@ IPHLPAPI DWORD WINAPI GetExtendedUdpTable(PVOID t, PDWORD size, BOOL order, ULON
 { (void)order; (void)af; (void)cls; (void)r; return empty_table(t, size); }
 IPHLPAPI DWORD WINAPI GetBestInterface(DWORD addr, PDWORD index) { (void)addr; (void)index; return ERROR_NO_DATA_; }
 IPHLPAPI DWORD WINAPI NotifyAddrChange(PHANDLE h, LPOVERLAPPED o) { (void)h; (void)o; return ERROR_NOT_SUPPORTED; }
-/* NotifyAddrChange never queues a request, so there is none to cancel */
-IPHLPAPI BOOL WINAPI CancelIPChangeNotify(LPOVERLAPPED o) { (void)o; SetLastError(ERROR_NOT_FOUND); return FALSE; }
-/* The DHCP adapter list is as empty as the adapter tables: no adapter to
- * name, release or renew */
-IPHLPAPI DWORD WINAPI GetInterfaceInfo(PVOID info, PULONG size) { (void)info; return size ? ERROR_NO_DATA_ : ERROR_INVALID_PARAMETER; }
-IPHLPAPI DWORD WINAPI IpReleaseAddress(PVOID adapter) { return adapter ? ERROR_NOT_FOUND : ERROR_INVALID_PARAMETER; }
-IPHLPAPI DWORD WINAPI IpRenewAddress(PVOID adapter)   { return adapter ? ERROR_NOT_FOUND : ERROR_INVALID_PARAMETER; }
 
 /* Interface names and indexes: the one interface is "eth0", index 1 */
 IPHLPAPI ULONG WINAPI if_nametoindex(const char *name) { return name && !lstrcmpA(name, "eth0") ? 1 : 0; }
@@ -161,3 +154,47 @@ IPHLPAPI VOID WINAPI FreeMibTable(PVOID table) { if (table) HeapFree(GetProcessH
 
 /* The interface toward an address (sockaddr form): no route is known */
 IPHLPAPI DWORD WINAPI GetBestInterfaceEx(const void *addr, PDWORD index) { (void)addr; (void)index; return ERROR_NO_DATA_; }
+
+/* The interface's other names: "ethernet_1" (its NDIS-style name) and a
+ * GUID of its own, both naming eth0's LUID */
+static const GUID eth0_guid = { 0x4e6f7661, 0x0001, 0x4e6f, { 0x80, 0x00, 0x65, 0x74, 0x68, 0x30, 0x00, 0x01 } };
+#define ETH0_LUID (((ULONG64)6 << 48) | ((ULONG64)1 << 24))
+IPHLPAPI DWORD WINAPI ConvertInterfaceNameToLuidW(LPCWSTR name, NET_LUID_ *luid)
+{
+    if (!name || !luid) return ERROR_INVALID_PARAMETER;
+    if (lstrcmpiW(name, L"ethernet_1")) { luid->Value = 0; return ERROR_INVALID_NAME; }
+    luid->Value = ETH0_LUID;
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI ConvertInterfaceNameToLuidA(LPCSTR name, NET_LUID_ *luid)
+{
+    if (!name || !luid) return ERROR_INVALID_PARAMETER;
+    if (lstrcmpiA(name, "ethernet_1")) { luid->Value = 0; return ERROR_INVALID_NAME; }
+    luid->Value = ETH0_LUID;
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI ConvertInterfaceLuidToGuid(const NET_LUID_ *luid, GUID *guid)
+{
+    if (!luid || !guid) return ERROR_INVALID_PARAMETER;
+    if (luid->Value != ETH0_LUID) { memset(guid, 0, sizeof(*guid)); return ERROR_FILE_NOT_FOUND; }
+    *guid = eth0_guid;
+    return NO_ERROR;
+}
+IPHLPAPI DWORD WINAPI ConvertInterfaceGuidToLuid(const GUID *guid, NET_LUID_ *luid)
+{
+    if (!luid || !guid) return ERROR_INVALID_PARAMETER;
+    const BYTE *a = (const BYTE *)guid, *b = (const BYTE *)&eth0_guid;
+    for (int i = 0; i < 16; i++)
+        if (a[i] != b[i]) { luid->Value = 0; return ERROR_FILE_NOT_FOUND; }
+    luid->Value = ETH0_LUID;
+    return NO_ERROR;
+}
+
+/* The adapter list for DHCP's calls (IP_INTERFACE_INFO): empty, like
+ * GetAdaptersInfo's; the kernel keeps the DHCP lease (dhcpcsvc), so there
+ * is no adapter here to release or renew */
+IPHLPAPI DWORD WINAPI GetInterfaceInfo(PVOID info, PULONG size) { (void)info; if (!size) return ERROR_INVALID_PARAMETER; return ERROR_NO_DATA_; }
+IPHLPAPI DWORD WINAPI IpReleaseAddress(PVOID adapter) { return adapter ? ERROR_NOT_SUPPORTED : ERROR_INVALID_PARAMETER; }
+IPHLPAPI DWORD WINAPI IpRenewAddress(PVOID adapter) { return adapter ? ERROR_NOT_SUPPORTED : ERROR_INVALID_PARAMETER; }
+/* NotifyAddrChange never starts one, so there is no request to cancel */
+IPHLPAPI BOOL WINAPI CancelIPChangeNotify(LPOVERLAPPED o) { (void)o; SetLastError(ERROR_NOT_FOUND); return FALSE; }

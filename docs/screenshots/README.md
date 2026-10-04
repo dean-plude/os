@@ -10,6 +10,7 @@ and saved as an optimized PNG.
 | `notepad++.png` | Notepad++ 8.8.3 portable (the app corpus's download) staged with `--put DIR=C:\Apps\npp`, opened on `kernel/ke/scheduler.c` staged in `C:\Projects\src` |
 | `app-store.png` | the App Store opened from the dock, Terminal minimized |
 | `firefox.png`, `vlc.png`, `keepassxc.png`, `inkscape.png` | copies of `tests/reference/` screenshots, which `tools/appcorpus.py` takes of those apps |
+| `beneath-a-steel-sky.png` | a copy of `tests/reference/beneath a steel sky.png`: the corpus installs ScummVM, starts the game, skips the intro and walks Foster with a click |
 
 To refresh one, take a new screenshot the same way (`!shot NAME.png` in
 `tools/novarun.py`, or `tools/appcorpus.py --only NAME --update-reference`

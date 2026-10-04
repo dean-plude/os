@@ -370,10 +370,13 @@ USERAPI void NovaFlushDC(HDC dc, const RECT *r)
     present(t);
 }
 
+/* (the screen's DC, GetDC(NULL), is the desktop window's, as on Windows:
+ * ANGLE takes it for a valid EGL display only when this finds a window) */
 USERAPI HWND WindowFromDC(HDC dc)
 {
     NOVA_DC *d = (NOVA_DC *)dc;
-    if (!d || d == &g_screen_dc) return 0;
+    if (!d) return 0;
+    if (d == &g_screen_dc) return GetDesktopWindow();
     for (DcRec *r = g_dcs; r; r = r->next) if (r->dc == d) return r->h;
     return 0;
 }
@@ -630,7 +633,7 @@ USERAPI BOOL ScrollDC(HDC dc, int dx, int dy, const RECT *scroll, const RECT *cl
 {
     NOVA_DC *d = (NOVA_DC *)dc;
     HWND h = WindowFromDC(dc);
-    Wnd *w = W_quiet(h);
+    Wnd *w = h != GetDesktopWindow() ? W_quiet(h) : NULL;
     if (!w) { if (upd) SetRectEmpty(upd); return TRUE; }
     RECT area = scroll ? *scroll : (RECT){ 0, 0, w->client.right - w->client.left, w->client.bottom - w->client.top };
     if (clip) IntersectRect(&area, &area, clip);

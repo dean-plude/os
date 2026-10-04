@@ -138,8 +138,9 @@ made in parallel add files rather than collide on the same lines.
   0x97000000 (x86), and the build checks that no two DLLs overlap.  The
   older DLLs keep the fixed addresses written in their `dll.json`.  Other
   keys: `sources` (directories its `.c` files come from, default its own),
-  `entry` (`"DllMain"`), `x64_only`, and `ordinals` (`{"Name": 12}`, for
-  DLLs programs import from by number).
+  `entry` (`"DllMain"`), `x64_only`, `ordinals` (`{"Name": 12}`, for
+  DLLs programs import from by number), and `file` for a DLL whose file
+  name is not `NAME.dll` (`"bthprops.cpl"`, a Control Panel item).
 - **When a DLL needs more** (a third-party library, extra flags, a
   special link), put the code in `userland/NAME/build.py`, not in
   `tools/build_userland.py`: it may define `cflags(b)` (flags for the
@@ -272,7 +273,14 @@ usb-ehci` (USB 2), `-device pci-ohci` or `-device piix3-usb-uhci` (USB
 1.1), or an ICH9 EHCI with UHCI companions (`ich9-usb-ehci1` plus
 `ich9-usb-uhci1..3` with `masterbus=`), then e.g. `-device usb-kbd
 -device usb-tablet`.  With `-machine q35,i8042=off` there is no PS/2
-keyboard, so typing goes over USB.
+keyboard, so typing goes over USB.  QEMU has no game controller of its
+own: pass the host's through (`-device
+usb-host,vendorid=0x045e,productid=0x028e` for a wired Xbox 360
+controller), or run `tools/padpeer.py --port 10710 --kind xbox360`
+(or `xboxone`, `hid`) and add `-chardev
+socket,id=pad,host=127.0.0.1,port=10710 -device
+usb-redir,chardev=pad`; the peer takes lines such as `buttons=0x1000
+lx=20000` on port 10810 and moves the controller.
 
 For sound add `-device intel-hda -device hda-output` (or `hda-duplex` or
 `hda-micro`, which add a line in or a microphone to record from);
@@ -549,7 +557,17 @@ the test closes the lid (pc-testdev port `0xE8`), NovaOS must sleep in
 low-power S0 idle, and opening it must wake it; then `install nvme0n1`
 installs NovaOS on the NVMe disk, and after `shutdown /r` it must start
 from that disk and add its firmware boot entry
-([install-and-power.md](install-and-power.md)):
+([install-and-power.md](install-and-power.md)).  The "gamepad" boot has
+three USB game controllers on an xHCI controller, each
+`tools/padpeer.py` behind a `usb-redir` device: a wired Xbox 360
+controller, an Xbox One controller and a HID game pad.  `padtest`
+checks what XInput and DirectInput 8 list; at each step it prints, the
+test sets a controller's buttons, triggers, sticks and hat through the
+peer's control port, and `padtest` must read them through both APIs
+(and DirectInput's buffered events); the motors it sets must reach the
+two Xbox controllers (the peers' logs), and the Xbox 360 one is
+unplugged while it runs.  The 32-bit `padtest still` then reads the two
+left.  To run the suite:
 
 ```bash
 python3 tools/selftest.py --suite devices
@@ -583,7 +601,12 @@ a network) and then runs `gltest` (on virgl and, with
 `GALLIUM_DRIVER=llvmpipe`, on llvmpipe) and `d3dtest` (on Venus:
 the first monitor is a 3D virtio-gpu, `virtio-vga-gl,venus=on`, and the
 test expects the Venus adapter), x64 and x86, from `C:\Tests`, taking a
-screenshot of each while it draws.  `gltest fps 10` draws an OpenGL
+screenshot of each while it draws, and `d3dtest angle`, which brings
+Direct3D 11 up the way ANGLE (Chromium's GPU process) does: the screen's DC
+as the EGL display (`WindowFromDC` must find the desktop window), the first
+adapter that is not Microsoft's, a device from feature levels 11.1 to 9.3,
+`IDXGIDevice2`, the adapter's description, factory and driver version, the
+feature and format queries, a DXGI 1.2 swap chain and a WARP device.  `gltest fps 10` draws an OpenGL
 scene that keeps the rasterizer busy (64 blended quads over a 640x480
 window) for 10 s on virgl and 10 s on llvmpipe, each in a child process
 whose `GALLIUM_DRIVER` names the driver, and passes when virgl draws more
@@ -625,7 +648,8 @@ card: on QEMU's user network it runs `ipconfig`, `ping 10.0.2.2`, `netcat`
 bodies, POST, redirects, certificate checks, chunked HTTP/1.1, the
 asynchronous API) against `tools/h2server.js` with a throwaway self-signed
 certificate, then `looptest` (socket pairs over 127.0.0.1 and ::1,
-`localhost`); on an IPv6-only network made by `tools/v6peer.py` it checks
+`localhost`) and `loadtest` (hundreds of sockets open at once, parallel
+downloads); on an IPv6-only network made by `tools/v6peer.py` it checks
 SLAAC and RDNSS (`ipconfig`), `ping -6`, `curl -6` and `netcat` over IPv6.
 A third boot (`tests/selftest/network-e1000e`) has QEMU's e1000e (the
 82574L) instead of virtio-net: the boot log must show the PHY's ID, its
@@ -918,7 +942,10 @@ and plain HTTP on 8080 for `httptest` (`httptest -2 -k https://10.0.2.2:8443/hel
 
 - `tools/pe_imports.py PROGRAM.exe ...` lists every DLL and function a
   Windows program imports that NovaOS's DLLs do not provide (by default it
-  reads the DLLs in `build/kernel_build/userland`).
+  reads the DLLs in `build/kernel_build/userland`), mapping API sets as the
+  kernel's loader does (`api-ms-win-core-synch-*` to `kernelbase`, with
+  `kernel32` and `kernelbase` standing in for each other;
+  `api-ms-win-power-*` to `powrprof`).
 - `tools/msitest/hosttest.c` dumps a Windows Installer package's tables
   and cabinets with the same readers `msi.dll` uses (build instructions in
   the file); `tools/msitest/make_package.sh` builds a test package with

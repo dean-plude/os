@@ -1305,6 +1305,80 @@ WINADVAPI DWORD WINAPI SetNamedSecurityInfoA(LPSTR name, SE_OBJECT_TYPE t, SECUR
     return set_named(w, si, o, g, d);
 }
 
+/* TreeResetNamedSecurityInfo: @name gets the owner, group and DACL as
+ * SetNamedSecurityInfo sets them, and every file and folder below it the
+ * same owner and group and a DACL that only inherits from its folder (its
+ * own explicit entries kept with @keep), visited top-down so each inherits
+ * what its folder now has.  @fn hears of each object as @invoke asks
+ * (ProgressInvokeEveryObject 2, ProgressInvokeOnError 3) and may cancel
+ * (ProgressCancelOperation 4). */
+typedef void (WINAPI *tree_progress_t)(LPWSTR, DWORD, DWORD *, PVOID, BOOL);
+
+static BOOL tree_reset(WCHAR *path, SIZE_T cap, SECURITY_INFORMATION si, PSID o, PSID g, BOOL keep,
+                       tree_progress_t fn, DWORD *invoke, PVOID args)
+{
+    SIZE_T len = (SIZE_T)lstrlenW(path);
+    if (len + 3 >= cap) return TRUE;
+    memcpy(path + len, L"\\*", 3 * sizeof(WCHAR));
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileW(path, &fd);
+    path[len] = 0;
+    if (f == INVALID_HANDLE_VALUE) return TRUE;
+    BOOL go = TRUE;
+    do {
+        if (!lstrcmpW(fd.cFileName, L".") || !lstrcmpW(fd.cFileName, L"..")) continue;
+        SIZE_T n = (SIZE_T)lstrlenW(fd.cFileName);
+        if (len + 1 + n >= cap) continue;
+        path[len] = '\\';
+        memcpy(path + len + 1, fd.cFileName, (n + 1) * sizeof(WCHAR));
+        PACL d = 0;
+        PSECURITY_DESCRIPTOR cur = 0;
+        static const ACL empty = { ACL_REVISION, 0, sizeof(ACL), 0, 0 };
+        SECURITY_INFORMATION csi = si & (OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION);
+        if (si & DACL_SECURITY_INFORMATION) {
+            csi |= DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION;
+            if (keep) GetNamedSecurityInfoW(path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, 0, 0, &d, 0, &cur);
+            if (!d) d = (PACL)&empty;                       /* (auto_inherit drops the inherited entries it had) */
+        }
+        DWORD e = set_named(path, csi, o, g, d);
+        if (cur) LocalFree(cur);
+        if (fn && (*invoke == 2 || (*invoke == 3 && e))) {
+            fn(path, e, invoke, args, !e);
+            if (*invoke == 4) go = FALSE;
+        }
+        if (go && (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(fd.dwFileAttributes & 0x400 /* FILE_ATTRIBUTE_REPARSE_POINT */))
+            go = tree_reset(path, cap, si, o, g, keep, fn, invoke, args);
+        path[len] = 0;
+    } while (go && FindNextFileW(f, &fd));
+    FindClose(f);
+    return go;
+}
+
+WINADVAPI DWORD WINAPI TreeResetNamedSecurityInfoW(LPWSTR name, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g,
+                                                   PACL d, PACL s, BOOL keep, tree_progress_t fn, DWORD invoke, PVOID args)
+{
+    (void)s;
+    if (!name) return ERROR_INVALID_PARAMETER;
+    if (t != SE_FILE_OBJECT) return SetNamedSecurityInfoW(name, t, si, o, g, d, s);
+    DWORD e = set_named(name, si, o, g, d);
+    if (fn && (invoke == 2 || (invoke == 3 && e))) {
+        fn(name, e, &invoke, args, !e);
+        if (invoke == 4) return e;
+    }
+    if (e) return e;
+    DWORD attr = GetFileAttributesW(name);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return ERROR_SUCCESS;
+    WCHAR *path = LocalAlloc(LMEM_FIXED, 32768 * sizeof(WCHAR));
+    if (!path) return ERROR_NOT_ENOUGH_MEMORY;
+    SIZE_T n = (SIZE_T)lstrlenW(name);
+    if (n >= 32767) { LocalFree(path); return ERROR_FILENAME_EXCED_RANGE; }
+    memcpy(path, name, (n + 1) * sizeof(WCHAR));
+    while (n > 0 && (path[n - 1] == '\\' || path[n - 1] == '/')) path[--n] = 0;
+    tree_reset(path, 32768, si, o, g, keep, fn, &invoke, args);
+    LocalFree(path);
+    return ERROR_SUCCESS;
+}
+
 WINADVAPI DWORD WINAPI SetSecurityInfo(HANDLE h, SE_OBJECT_TYPE t, SECURITY_INFORMATION si, PSID o, PSID g, PACL d, PACL s)
 {
     (void)s;                                /* (SACLs are not kept) */

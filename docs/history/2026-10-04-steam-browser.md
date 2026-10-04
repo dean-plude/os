@@ -31,17 +31,10 @@ needed, each a NovaOS gap:
   `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` passes only the listed inheritable
   handles to the child, the way Chromium hands each child its pipe and
   shared memory.  The attribute list functions keep real attribute lists.
-- **The rest of `libcef.dll`'s imports.**  crypt32 `CertControlStore`,
-  `CertCompareCertificateName` and `CryptVerifyCertificateSignatureEx`;
-  kernel32 `GetFirmwareType` (UEFI), `GetConsoleDisplayMode` and
-  `Wow64GetThreadContext`; iphlpapi `GetInterfaceInfo`,
-  `CancelIPChangeNotify`, `IpReleaseAddress` and `IpRenewAddress` (no
-  adapters, as the other tables report); userenv
-  `CreateAppContainerProfile` and the Group Policy notifications; wintrust
-  `CryptCATCatalogInfoFromContext`; WinHTTP's proxy resolver
-  (`WinHttpCreateProxyResolver`, `WinHttpGetProxyForUrlEx`, which
-  completes on another thread with "autodetection failed" as on a network
-  without a proxy script).
+- **The rest of `libcef.dll`'s imports.**  With GOG GALAXY's imports
+  (already on main), these were left: kernel32 `GetFirmwareType` (UEFI),
+  `GetConsoleDisplayMode` and `Wow64GetThreadContext`, userenv's Group
+  Policy notifications, and wintrust `CryptCATCatalogInfoFromContext`.
 - **Windows' version, read from files.**  Chromium reads the version of
   `kernelbase.dll` (or `kernel32.dll`) with `GetFileVersionInfo` and stops
   when neither has one.  Both now carry a version resource (Windows 10

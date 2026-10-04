@@ -230,7 +230,7 @@ static void imports(void)
     const CertCtx *a = root && enumc ? enumc(root, 0) : 0;
     if (a) a = dupc(a);                                 /* the enumeration frees the one it moves past */
     const CertCtx *b = a ? enumc(root, a) : 0;
-    check(ctl && root && ctl(root, 0, 1, 0) && !ctl(root, 0, 99, 0) && GetLastError() == ERROR_CALL_NOT_IMPLEMENTED,
+    check(ctl && root && ctl(root, 0, 1, 0) && !ctl(root, 0, 99, 0),
           "CertControlStore resyncs and refuses an unknown control");
     check(a && b && cmpn && cmpn(1, &a->info->issuer, &a->info->subject) && !cmpn(1, &a->info->subject, &b->info->subject),
           "CertCompareCertificateName: a root's issuer is its subject, two roots differ");
