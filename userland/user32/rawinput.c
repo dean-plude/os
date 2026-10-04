@@ -1,5 +1,5 @@
 /*
- * rawinput.c — Raw Input for HID devices: game controllers
+ * rawinput.c — Raw Input: the mouse, the keyboard and game controllers
  *
  * A program registers the top-level collections it wants (usage page and
  * usage: Generic Desktop 4 joysticks, 5 game pads, 8 multi-axis
@@ -23,8 +23,17 @@
  * the HID paths CreateFile opens (kernel/um/um_hid.c); RIDI_PREPARSEDDATA
  * is what HidD_GetPreparsedData returns, for hid.dll's HidP_* calls.
  *
- * The keyboard and the mouse are not listed: registering for them is
- * accepted but no raw input comes from them yet.
+ * The mouse (Generic Desktop usage 2) and the keyboard (6) are one device
+ * each, every mouse and keyboard together, as Windows' Raw Input shows
+ * them on a machine with one of each: WM_INPUT carries a RAWMOUSE
+ * (relative motion, the buttons that went down or up, the wheels' turns)
+ * or a RAWKEYBOARD (scan code, break and E0 flags, virtual key, the
+ * message the key makes) as the desktop takes them from the input queue,
+ * through the same ring as the controllers' reports (slots
+ * NOVA_RAW_MOUSE and NOVA_RAW_KEYBOARD).  RIDEV_NOLEGACY (flags 0x30,
+ * which share their bits with RIDEV_EXCLUDE 0x10 and RIDEV_PAGEONLY 0x20:
+ * the three are a mode) stops the process's legacy mouse or keyboard
+ * messages (msg.c asks raw_nolegacy).
  */
 #include "u32.h"
 #include <novapad.h>
@@ -33,13 +42,19 @@
 #define MAX_REG   32
 #define HELD      256                 /* raw input handles kept for GetRawInputData */
 #define DEV_BASE  0x10000             /* device handles: DEV_BASE + serial * 8 + slot */
+#define DEV_MOUSE    ((HANDLE)(ULONG_PTR)(DEV_BASE + 1))
+#define DEV_KEYBOARD ((HANDLE)(ULONG_PTR)(DEV_BASE + 2))
+#define USAGE_MOUSE    0x00010002     /* usage page << 16 | usage */
+#define USAGE_KEYBOARD 0x00010006
+#define MODE(f)   ((f) & 0x30)        /* RIDEV_EXCLUDE, RIDEV_PAGEONLY, RIDEV_NOLEGACY */
 
 typedef struct {
     DWORD id;                         /* HRAWINPUT value (0: free) */
+    DWORD type;                       /* RIM_TYPEMOUSE, RIM_TYPEKEYBOARD, RIM_TYPEHID */
     HANDLE dev;
     WPARAM code;
     DWORD len;
-    BYTE data[NOVA_PAD_REPORT_MAX];
+    union { BYTE data[NOVA_PAD_REPORT_MAX]; RAWMOUSE mouse; RAWKEYBOARD keyboard; };
 } Held;
 
 static SRWLOCK        g_lock = SRWLOCK_INIT;
@@ -87,9 +102,9 @@ static RAWINPUTDEVICE *reg_for(DWORD usage)
     for (int i = 0; i < g_nreg; i++) {
         RAWINPUTDEVICE *r = &g_reg[i];
         if (r->usUsagePage != page) continue;
-        if (r->usUsage == u && !(r->dwFlags & RIDEV_PAGEONLY))
-            return (r->dwFlags & RIDEV_EXCLUDE) ? NULL : r;
-        if ((r->dwFlags & RIDEV_PAGEONLY) && !page_only) page_only = r;
+        if (r->usUsage == u && MODE(r->dwFlags) != RIDEV_PAGEONLY)
+            return MODE(r->dwFlags) == RIDEV_EXCLUDE ? NULL : r;
+        if (MODE(r->dwFlags) == RIDEV_PAGEONLY && !page_only) page_only = r;
     }
     return page_only;
 }
@@ -118,12 +133,47 @@ static HWND target_of(const RAWINPUTDEVICE *r, WPARAM *code)
  * The reader
  * ------------------------------------------------------------------------- */
 
+/* What a mouse or keyboard block of the ring is as RAWMOUSE or
+ * RAWKEYBOARD (into @h) */
+static void from_ring(const NovaPadRaw *r, Held *h)
+{
+    if (r->slot == NOVA_RAW_MOUSE) {
+        NovaRawMouse m;
+        memcpy(&m, r->data, sizeof(m));
+        memset(&h->mouse, 0, sizeof(h->mouse));
+        h->mouse.usFlags = m.flags;
+        h->mouse.usButtonFlags = m.button_flags;
+        h->mouse.usButtonData = (USHORT)m.button_data;
+        h->mouse.ulRawButtons = m.raw_buttons;
+        h->mouse.lLastX = m.x;
+        h->mouse.lLastY = m.y;
+        h->type = RIM_TYPEMOUSE;
+        h->dev = DEV_MOUSE;
+        h->len = sizeof(RAWMOUSE);
+    } else {
+        NovaRawKey k;
+        memcpy(&k, r->data, sizeof(k));
+        memset(&h->keyboard, 0, sizeof(h->keyboard));
+        h->keyboard.MakeCode = k.make;
+        h->keyboard.Flags = k.flags;
+        h->keyboard.VKey = k.vkey;
+        h->keyboard.Message = k.message;
+        h->type = RIM_TYPEKEYBOARD;
+        h->dev = DEV_KEYBOARD;
+        h->len = sizeof(RAWKEYBOARD);
+    }
+}
+
 static void deliver(const NovaPadRaw *r)
 {
     NovaPadInfo info;
-    if (!nova_pad_info(r->slot, &info) || info.serial != r->serial) return;
+    DWORD usage;
+    if (r->slot == NOVA_RAW_MOUSE) usage = USAGE_MOUSE;
+    else if (r->slot == NOVA_RAW_KEYBOARD) usage = USAGE_KEYBOARD;
+    else if (!nova_pad_info(r->slot, &info) || info.serial != r->serial) return;
+    else usage = dev_usage(&info);
     AcquireSRWLockExclusive(&g_lock);
-    RAWINPUTDEVICE *reg = reg_for(dev_usage(&info));
+    RAWINPUTDEVICE *reg = reg_for(usage);
     WPARAM code = 0;
     HWND to = reg ? target_of(reg, &code) : NULL;
     DWORD id = 0;
@@ -132,10 +182,14 @@ static void deliver(const NovaPadRaw *r)
         id = g_next_id;
         Held *h = &g_held[id % HELD];
         h->id = id;
-        h->dev = dev_handle(r->slot, r->serial);
         h->code = code;
-        h->len = r->len;
-        memcpy(h->data, r->data, r->len);
+        if (r->slot >= NOVA_PAD_SLOTS) from_ring(r, h);
+        else {
+            h->type = RIM_TYPEHID;
+            h->dev = dev_handle(r->slot, r->serial);
+            h->len = r->len;
+            memcpy(h->data, r->data, r->len);
+        }
     }
     ReleaseSRWLockExclusive(&g_lock);
     if (to) PostMessageW(to, WM_INPUT, code, (LPARAM)id);
@@ -212,7 +266,7 @@ USERAPI BOOL RegisterRawInputDevices(PCRAWINPUTDEVICE d, UINT n, UINT cb)
         if ((d[i].dwFlags & (RIDEV_INPUTSINK | RIDEV_EXINPUTSINK)) && !d[i].hwndTarget) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
         if (d[i].hwndTarget && !IsWindow(d[i].hwndTarget)) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return FALSE; }
     }
-    BOOL hid = FALSE;
+    BOOL added = FALSE;
     AcquireSRWLockExclusive(&g_lock);
     for (UINT i = 0; i < n; i++) {
         int at = -1;
@@ -227,19 +281,22 @@ USERAPI BOOL RegisterRawInputDevices(PCRAWINPUTDEVICE d, UINT n, UINT cb)
             at = g_nreg++;
         }
         g_reg[at] = d[i];
-        if (!(d[i].usUsagePage == 1 && (d[i].usUsage == 2 || d[i].usUsage == 6))) hid = TRUE;   /* not the mouse or keyboard */
+        added = TRUE;
     }
     ReleaseSRWLockExclusive(&g_lock);
-    if (!hid) return TRUE;
+    if (!added) return TRUE;
     start_reader();
     for (UINT i = 0; i < n; i++) {                     /* the devices already there */
-        if (!(d[i].dwFlags & RIDEV_DEVNOTIFY) || (d[i].dwFlags & (RIDEV_REMOVE | RIDEV_EXCLUDE))) continue;
+        if (!(d[i].dwFlags & RIDEV_DEVNOTIFY) || (d[i].dwFlags & RIDEV_REMOVE) || MODE(d[i].dwFlags) == RIDEV_EXCLUDE) continue;
+        BOOL page_only = MODE(d[i].dwFlags) == RIDEV_PAGEONLY;
+        if (d[i].usUsagePage == 1 && (page_only || d[i].usUsage == 2)) notify(USAGE_MOUSE, DEV_MOUSE, TRUE);
+        if (d[i].usUsagePage == 1 && (page_only || d[i].usUsage == 6)) notify(USAGE_KEYBOARD, DEV_KEYBOARD, TRUE);
         for (int s = 0; s < NOVA_PAD_SLOTS; s++) {
             NovaPadInfo info;
             if (!nova_pad_info(s, &info)) continue;
             DWORD u = dev_usage(&info);
             if ((USHORT)(u >> 16) != d[i].usUsagePage) continue;
-            if (!(d[i].dwFlags & RIDEV_PAGEONLY) && (USHORT)u != d[i].usUsage) continue;
+            if (!page_only && (USHORT)u != d[i].usUsage) continue;
             notify(u, dev_handle(s, info.serial), TRUE);
         }
     }
@@ -261,8 +318,12 @@ USERAPI UINT GetRegisteredRawInputDevices(PRAWINPUTDEVICE d, PUINT n, UINT cb)
 USERAPI UINT GetRawInputDeviceList(PRAWINPUTDEVICELIST list, PUINT n, UINT cb)
 {
     if (!n || cb != sizeof(RAWINPUTDEVICELIST)) { SetLastError(ERROR_INVALID_PARAMETER); return (UINT)-1; }
-    RAWINPUTDEVICELIST all[NOVA_PAD_SLOTS];
+    RAWINPUTDEVICELIST all[2 + NOVA_PAD_SLOTS];
     UINT have = 0;
+    all[have].hDevice = DEV_MOUSE;
+    all[have++].dwType = RIM_TYPEMOUSE;
+    all[have].hDevice = DEV_KEYBOARD;
+    all[have++].dwType = RIM_TYPEKEYBOARD;
     for (int s = 0; s < NOVA_PAD_SLOTS; s++) {
         NovaPadInfo i;
         if (!nova_pad_info(s, &i)) continue;
@@ -276,8 +337,59 @@ USERAPI UINT GetRawInputDeviceList(PRAWINPUTDEVICELIST list, PUINT n, UINT cb)
     return have;
 }
 
+/* The mouse's or the keyboard's: names as Windows gives a PS/2 one
+ * (GUID_DEVINTERFACE_MOUSE, GUID_DEVINTERFACE_KEYBOARD) */
+static UINT input_device_info(BOOL mouse, UINT cmd, LPVOID data, PUINT size, BOOL wide)
+{
+    switch (cmd) {
+    case RIDI_DEVICENAME: {
+        const char *name = mouse ? "\\\\?\\ACPI#PNP0F13#4&1d5e3c1b&0#{378de44c-56ef-11d1-bc8c-00a0c91405dd}"
+                                 : "\\\\?\\ACPI#PNP0303#4&1d5e3c1b&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        UINT len = (UINT)strlen(name) + 1;
+        if (!data) { *size = len; return 0; }
+        if (*size < len) { *size = len; SetLastError(ERROR_INSUFFICIENT_BUFFER); return (UINT)-1; }
+        for (UINT i = 0; i < len; i++) {
+            if (wide) ((WCHAR *)data)[i] = (WCHAR)name[i];
+            else ((char *)data)[i] = name[i];
+        }
+        return len;
+    }
+    case RIDI_DEVICEINFO: {
+        UINT len = sizeof(RID_DEVICE_INFO);
+        if (!data) { *size = len; return 0; }
+        if (*size < len) { *size = len; SetLastError(ERROR_INSUFFICIENT_BUFFER); return (UINT)-1; }
+        RID_DEVICE_INFO *ri = data;
+        memset(ri, 0, len);
+        ri->cbSize = len;
+        if (mouse) {
+            ri->dwType = RIM_TYPEMOUSE;
+            ri->mouse.dwId = 2;                        /* MOUSE_I8042_HARDWARE */
+            ri->mouse.dwNumberOfButtons = 5;
+            ri->mouse.dwSampleRate = 100;
+            ri->mouse.fHasHorizontalWheel = TRUE;
+        } else {
+            ri->dwType = RIM_TYPEKEYBOARD;
+            ri->keyboard.dwType = 4;                   /* IBM enhanced (101- or 102-key) */
+            ri->keyboard.dwKeyboardMode = 1;
+            ri->keyboard.dwNumberOfFunctionKeys = 12;
+            ri->keyboard.dwNumberOfIndicators = 3;
+            ri->keyboard.dwNumberOfKeysTotal = 101;
+        }
+        return len;
+    }
+    case RIDI_PREPARSEDDATA:                           /* (not a HID device: none) */
+        if (!data) { *size = 0; return 0; }
+        SetLastError(ERROR_INVALID_HANDLE);
+        return (UINT)-1;
+    }
+    SetLastError(ERROR_INVALID_PARAMETER);
+    return (UINT)-1;
+}
+
 static UINT device_info(HANDLE dev, UINT cmd, LPVOID data, PUINT size, BOOL wide)
 {
+    if ((dev == DEV_MOUSE || dev == DEV_KEYBOARD) && !size) { SetLastError(998 /* ERROR_NOACCESS */); return (UINT)-1; }
+    if (dev == DEV_MOUSE || dev == DEV_KEYBOARD) return input_device_info(dev == DEV_MOUSE, cmd, data, size, wide);
     NovaPadInfo info;
     int slot = dev_slot(dev, &info);
     if (slot < 0) { SetLastError(ERROR_INVALID_HANDLE); return (UINT)-1; }
@@ -327,12 +439,14 @@ USERAPI UINT GetRawInputDeviceInfoA(HANDLE dev, UINT cmd, LPVOID data, PUINT siz
 /* The RAWINPUT of held input @h: its size (and into @out when given) */
 static UINT raw_block(const Held *h, RAWINPUT *out)
 {
-    UINT size = (UINT)(sizeof(RAWINPUTHEADER) + 2 * sizeof(DWORD) + h->len);
+    UINT size = (UINT)(sizeof(RAWINPUTHEADER) + (h->type == RIM_TYPEHID ? 2 * sizeof(DWORD) : 0) + h->len);
     if (out) {
-        out->header.dwType = RIM_TYPEHID;
+        out->header.dwType = h->type;
         out->header.dwSize = size;
         out->header.hDevice = h->dev;
         out->header.wParam = h->code;
+        if (h->type == RIM_TYPEMOUSE) { out->data.mouse = h->mouse; return size; }
+        if (h->type == RIM_TYPEKEYBOARD) { out->data.keyboard = h->keyboard; return size; }
         out->data.hid.dwSizeHid = h->len;
         out->data.hid.dwCount = 1;
         memcpy(out->data.hid.bRawData, h->data, h->len);
@@ -356,7 +470,7 @@ USERAPI UINT GetRawInputData(HRAWINPUT raw, UINT cmd, LPVOID data, PUINT size, U
     if (*size < need) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return (UINT)-1; }
     if (cmd == RID_HEADER) {
         RAWINPUTHEADER *hd = data;
-        hd->dwType = RIM_TYPEHID;
+        hd->dwType = h.type;
         hd->dwSize = raw_block(&h, NULL);
         hd->hDevice = h.dev;
         hd->wParam = h.code;
@@ -409,4 +523,16 @@ USERAPI LRESULT DefRawInputProc(PRAWINPUT *raw, INT n, UINT header)
 {
     (void)raw; (void)n;
     return header == sizeof(RAWINPUTHEADER) ? 0 : -1;
+}
+
+/* msg.c: whether the process takes the mouse's (or the keyboard's) input
+ * only as raw input (RIDEV_NOLEGACY), not as mouse or key messages */
+BOOL raw_nolegacy(BOOL keyboard)
+{
+    if (!g_nreg) return FALSE;
+    AcquireSRWLockShared(&g_lock);
+    RAWINPUTDEVICE *r = reg_for(keyboard ? USAGE_KEYBOARD : USAGE_MOUSE);
+    BOOL no = r && MODE(r->dwFlags) == RIDEV_NOLEGACY;
+    ReleaseSRWLockShared(&g_lock);
+    return no;
 }

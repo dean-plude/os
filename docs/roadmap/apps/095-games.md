@@ -5,6 +5,7 @@
   (OpenTyrian: Tyrian 2.1 in full screen, into a new game with its
   music)~~ Done (all four in the nightly corpus).  Still to do: joining a
   Teeworlds game on its own server (it times out under TCG while Mesa
-  compiles its shaders; mouse needs Raw Input), a game that switches the
+  compiles its shaders; its menus follow the mouse through Raw Input with
+  `inp_grab 1`, the default needs `SetCursorPos`), a game that switches the
   display mode for full screen, GOG GALAXY's client, Steam's login window,
   Roblox's player (its anti-cheat refuses virtual machines).

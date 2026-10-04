@@ -192,6 +192,7 @@ LRESULT touch_default(Wnd *w, UINT msg, WPARAM wp, LPARAM lp);  /* DefWindowProc
  * from the pen packet @pen (0: the mouse); 1 if it became WM_POINTER* */
 int   pointer_from_mouse(Wnd *target, UINT msg, WPARAM mk, POINT pt, DWORD time, UINT32 pen, int hit);
 void  pointer_left(Wnd *top);          /* the desktop's WM_MOUSELEAVE for @top: the pen (or mouse) left it */
+BOOL  raw_nolegacy(BOOL keyboard);      /* rawinput.c: the mouse's (keyboard's) input is raw input only (RIDEV_NOLEGACY) */
 HWND  recently_active(void);         /* win.c: the window that was active a moment ago (none is now) */
 void  pointer_taken(const MSG *m);     /* GetMessage took @m (GetPointerInfo answers for it) */
 

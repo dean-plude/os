@@ -2010,6 +2010,25 @@ typedef struct tagRAWMOUSE {
     LONG lLastX, lLastY;
     ULONG ulExtraInformation;
 } RAWMOUSE, *PRAWMOUSE, *LPRAWMOUSE;
+#define MOUSE_MOVE_RELATIVE         0x00
+#define MOUSE_MOVE_ABSOLUTE         0x01
+#define MOUSE_VIRTUAL_DESKTOP       0x02
+#define RI_MOUSE_LEFT_BUTTON_DOWN   0x0001
+#define RI_MOUSE_LEFT_BUTTON_UP     0x0002
+#define RI_MOUSE_RIGHT_BUTTON_DOWN  0x0004
+#define RI_MOUSE_RIGHT_BUTTON_UP    0x0008
+#define RI_MOUSE_MIDDLE_BUTTON_DOWN 0x0010
+#define RI_MOUSE_MIDDLE_BUTTON_UP   0x0020
+#define RI_MOUSE_BUTTON_4_DOWN      0x0040
+#define RI_MOUSE_BUTTON_4_UP        0x0080
+#define RI_MOUSE_BUTTON_5_DOWN      0x0100
+#define RI_MOUSE_BUTTON_5_UP        0x0200
+#define RI_MOUSE_WHEEL              0x0400
+#define RI_MOUSE_HWHEEL             0x0800
+#define RI_KEY_MAKE                 0
+#define RI_KEY_BREAK                1
+#define RI_KEY_E0                   2
+#define RI_KEY_E1                   4
 typedef struct tagRAWKEYBOARD { USHORT MakeCode, Flags, Reserved, VKey; UINT Message; ULONG ExtraInformation; } RAWKEYBOARD, *PRAWKEYBOARD, *LPRAWKEYBOARD;
 typedef struct tagRAWHID { DWORD dwSizeHid; DWORD dwCount; BYTE bRawData[1]; } RAWHID, *PRAWHID, *LPRAWHID;
 typedef struct tagRAWINPUT {
