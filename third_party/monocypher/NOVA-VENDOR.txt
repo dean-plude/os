@@ -1,0 +1,7 @@
+Monocypher 4.0.2 (https://monocypher.org/), used under the 2-clause BSD
+licence (it is dual-licensed BSD-2-Clause OR CC0-1.0; see LICENCE.md).
+Source: https://monocypher.org/download/monocypher-4.0.2.tar.gz
+(SHA-256 38d07179738c0c90677dba3ceb7a7b8496bcfea758ba1a53e803fed30ae0879c).
+Only src/monocypher.[ch] and src/optional/monocypher-ed25519.[ch] are kept,
+unchanged.  The kernel uses crypto_ed25519_check to verify the update
+channel's signature (kernel/fs/update.c, docs/updates.md).

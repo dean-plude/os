@@ -87,6 +87,7 @@ set(LWIP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/lwip/src")
 set(MBEDTLS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mbedtls")
 set(UACPI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/uacpi")
 set(VTERM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/libvterm")
+set(MONOCYPHER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/monocypher")
 
 set(KERNEL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -97,6 +98,7 @@ set(KERNEL_INCLUDE_DIRS
     "${MBEDTLS_DIR}/include"
     "${UACPI_DIR}/include"
     "${VTERM_DIR}/include"
+    "${MONOCYPHER_DIR}"
 )
 
 # -------------------------------------------------------------------------
@@ -274,6 +276,12 @@ file(GLOB VTERM_SOURCES "${VTERM_DIR}/src/*.c")
 set_source_files_properties(${VTERM_SOURCES} PROPERTIES COMPILE_OPTIONS
     "-w;-include;${CMAKE_CURRENT_SOURCE_DIR}/apps/vterm_libc.h")
 list(APPEND KERNEL_C_SOURCES ${VTERM_SOURCES})
+
+# Monocypher 4.0.2 (third_party/monocypher, BSD-2-Clause): Ed25519, which
+# checks the update channel's signature (fs/update.c)
+set(MONOCYPHER_SOURCES "${MONOCYPHER_DIR}/monocypher.c" "${MONOCYPHER_DIR}/monocypher-ed25519.c")
+set_source_files_properties(${MONOCYPHER_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+list(APPEND KERNEL_C_SOURCES ${MONOCYPHER_SOURCES})
 
 # The Windows userland (userland/, tools/build_userland.py): system DLLs and
 # programs built with clang for x86_64-pc-windows-msvc, embedded as data and
