@@ -200,6 +200,46 @@ WINOLEAPI_(HRESULT) CoUnmarshalInterface(IStream *s, REFIID riid, void **ppv)
     return E_NOTIMPL;
 }
 
+WINOLEAPI_(HRESULT) CoGetStdMarshalEx(IUnknown *outer, DWORD flags, IUnknown **out)
+{
+    (void)outer; (void)flags;
+    if (out) *out = 0;
+    return E_NOTIMPL;
+}
+
+/* no call ever arrives from another apartment or process, so no code runs
+ * inside one: Windows answers this outside a call */
+WINOLEAPI_(HRESULT) CoGetCallContext(REFIID riid, void **ppv)
+{
+    (void)riid;
+    if (ppv) *ppv = 0;
+    return RPC_E_CALL_COMPLETE;
+}
+
+/* CoRegisterPSClsid: which proxy/stub class serves an interface in this
+ * process (HKCR\Interface\{iid}\ProxyStubClsid32 for everyone else); kept
+ * for the marshaling a cross-process call would need */
+typedef struct PsClsid { IID iid; CLSID clsid; struct PsClsid *next; } PsClsid;
+static PsClsid *g_ps_clsids;
+static SRWLOCK g_ps_lock = SRWLOCK_INIT;
+
+WINOLEAPI_(HRESULT) CoRegisterPSClsid(REFIID riid, REFCLSID rclsid)
+{
+    if (!riid || !rclsid) return E_INVALIDARG;
+    if (!t_inits) return CO_E_NOTINITIALIZED;
+    AcquireSRWLockExclusive(&g_ps_lock);
+    PsClsid *p = g_ps_clsids;
+    while (p && !IsEqualIID(&p->iid, riid)) p = p->next;
+    if (!p && (p = HeapAlloc(GetProcessHeap(), 0, sizeof *p))) {
+        p->iid = *riid;
+        p->next = g_ps_clsids;
+        g_ps_clsids = p;
+    }
+    if (p) p->clsid = *rclsid;
+    ReleaseSRWLockExclusive(&g_ps_lock);
+    return p ? S_OK : E_OUTOFMEMORY;
+}
+
 /* the "proxy" for another apartment is the object itself */
 WINOLEAPI_(HRESULT) CoMarshalInterThreadInterfaceInStream(REFIID riid, IUnknown *p, IStream **out)
 {

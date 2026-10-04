@@ -251,6 +251,7 @@ typedef void *CO_MTA_USAGE_COOKIE;
 #define RPC_E_CHANGED_MODE        ((HRESULT)0x80010106L)
 #define RPC_E_TOO_LATE            ((HRESULT)0x80010119L)
 #define CO_E_NOTINITIALIZED       ((HRESULT)0x800401F0L)
+#define RPC_E_CALL_COMPLETE       ((HRESULT)0x80010117L)
 #define CO_E_CLASSSTRING          ((HRESULT)0x800401F3L)
 #define CO_E_DLLNOTFOUND          ((HRESULT)0x800401F8L)
 #define CO_E_ERRORINDLL           ((HRESULT)0x800401F9L)
@@ -281,6 +282,9 @@ WINOLEAPI_(LPVOID)  CoTaskMemRealloc(LPVOID p, SIZE_T n);
 WINOLEAPI_(void)    CoTaskMemFree(LPVOID p);
 WINOLEAPI_(HRESULT) CoGetMalloc(DWORD ctx, LPMALLOC *out);
 WINOLEAPI_(HRESULT) CoCreateGuid(GUID *g);
+WINOLEAPI_(HRESULT) CoRegisterPSClsid(REFIID riid, REFCLSID rclsid);
+WINOLEAPI_(HRESULT) CoGetCallContext(REFIID riid, void **ppv);
+WINOLEAPI_(HRESULT) CoGetStdMarshalEx(IUnknown *outer, DWORD flags, IUnknown **out);
 WINOLEAPI_(int)     StringFromGUID2(REFGUID g, LPOLESTR out, int cch);
 WINOLEAPI_(HRESULT) StringFromCLSID(REFCLSID clsid, LPOLESTR *out);
 WINOLEAPI_(HRESULT) StringFromIID(REFIID iid, LPOLESTR *out);

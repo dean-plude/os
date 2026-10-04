@@ -586,6 +586,11 @@ static void defaults(void)
     /* the audio endpoints (mmdevapi's MMDeviceEnumerator) */
     RegKey *mmd = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{BCDE0395-E52F-467C-8E3D-C4579291692E}\\InprocServer32", false);
     if (!has_value(mmd, "")) { kset_sz(mmd, "", "mmdevapi.dll", 1); kset_sz(mmd, "ThreadingModel", "Both", 1); }
+    /* Task Scheduler 2.0 (taskschd.dll's TaskScheduler class) */
+    RegKey *ts = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{0F87369F-A4E5-4CFC-BD3E-73E6154572DD}\\InprocServer32", false);
+    if (!has_value(ts, "")) { kset_sz(ts, "", "taskschd.dll", 1); kset_sz(ts, "ThreadingModel", "Both", 1); }
+    RegKey *tsc = kpath("Machine\\SOFTWARE\\Classes\\CLSID\\{0F87369F-A4E5-4CFC-BD3E-73E6154572DD}", false);
+    if (!has_value(tsc, "")) kset_sz(tsc, "", "TaskScheduler class", 1);
     /* DirectSound and DirectSoundCapture (dsound.dll), so CoCreateInstance finds them */
     static const char *const ds_clsids[] = {
         "{47D4D946-62E8-11CF-93BC-444553540000}", "{3901CC3F-84B5-4FA4-BA35-AA8172B8A09B}",

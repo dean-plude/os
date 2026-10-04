@@ -178,8 +178,10 @@ int main(void)
     IO_STATUS_BLOCK io;
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
 
-    /* services the subsystem doesn't provide (legacy/internal ones) */
-    EXPECT("NtQuerySystemInformation", raw_syscall(0x36, 5, 0, 0, 0), STATUS_INVALID_SYSTEM_SERVICE);
+    /* services the subsystem doesn't provide (legacy/internal ones): the
+     * LPC port calls (NtAcceptConnectPort = 0x02), a kernel helper and the
+     * numbers past the table */
+    EXPECT("NtAcceptConnectPort", raw_syscall(0x02, 0, 0, 0, 0), STATUS_INVALID_SYSTEM_SERVICE);
     EXPECT("kernel helper 0x1F7", raw_syscall(0x1F7, 0, 0, 0, 0), STATUS_INVALID_SYSTEM_SERVICE);
     EXPECT("syscall 0x1FF", raw_syscall(0x1FF, 1, 2, 3, 4), STATUS_INVALID_SYSTEM_SERVICE);
     EXPECT("syscall 0xFFFF", raw_syscall(0xFFFF, 0, 0, 0, 0), STATUS_INVALID_SYSTEM_SERVICE);

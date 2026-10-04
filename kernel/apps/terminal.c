@@ -481,6 +481,12 @@ static void cmd_mem(Term *t)
     tprintf(t, "Physical memory: %u MB total, %u MB used, %u MB free",
             (unsigned)(total * 4 / 1024), (unsigned)(used * 4 / 1024),
             (unsigned)(free_p * 4 / 1024));
+    UINT64 files, bytes, held;
+    FsLock();
+    RamfsUsage(&files, &bytes, &held);
+    FsUnlock();
+    tprintf(t, "Drive C: (kept in memory): %u files, %u MB, taking %u MB",
+            (unsigned)files, (unsigned)(bytes >> 20), (unsigned)(held >> 20));
 }
 
 static void cmd_date(Term *t, bool time)

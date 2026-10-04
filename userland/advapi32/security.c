@@ -794,6 +794,39 @@ WINADVAPI BOOL WINAPI MakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DES
     return make_self_relative(abs, rel, n);
 }
 
+/* An absolute copy of the self-relative @rel: the header in @abs and each
+ * part in its own buffer; every size is checked (and the needed ones
+ * returned) before anything is written */
+WINADVAPI BOOL WINAPI MakeAbsoluteSD(PSECURITY_DESCRIPTOR rel, PSECURITY_DESCRIPTOR abs, LPDWORD abs_n,
+                                     PACL dacl, LPDWORD dacl_n, PACL sacl, LPDWORD sacl_n,
+                                     PSID owner, LPDWORD owner_n, PSID group, LPDWORD group_n)
+{
+    SECURITY_DESCRIPTOR *r = rel;
+    if (!r || !abs_n || !dacl_n || !sacl_n || !owner_n || !group_n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!(r->Control & SE_SELF_RELATIVE)) { SetLastError(1305 /* ERROR_BAD_DESCRIPTOR_FORMAT */); return FALSE; }
+    PSID o = sd_part(rel, 0), g = sd_part(rel, 1);
+    PACL sa = sd_part(rel, 2), da = sd_part(rel, 3);
+    DWORD need[5] = { sizeof(SECURITY_DESCRIPTOR), acl_len(da), acl_len(sa), o ? GetLengthSid(o) : 0, g ? GetLengthSid(g) : 0 };
+    LPDWORD have[5] = { abs_n, dacl_n, sacl_n, owner_n, group_n };
+    BOOL small = FALSE;
+    for (int i = 0; i < 5; i++) if (*have[i] < need[i]) small = TRUE;
+    if (small || !abs || (need[1] && !dacl) || (need[2] && !sacl) || (need[3] && !owner) || (need[4] && !group)) {
+        for (int i = 0; i < 5; i++) *have[i] = need[i];
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    SECURITY_DESCRIPTOR *a = abs;
+    memset(a, 0, sizeof(*a));
+    a->Revision = r->Revision;
+    a->Control = (WORD)(r->Control & ~SE_SELF_RELATIVE);
+    if (da) { memcpy(dacl, da, need[1]); a->Dacl = dacl; }
+    if (sa) { memcpy(sacl, sa, need[2]); a->Sacl = sacl; }
+    if (o) { memcpy(owner, o, need[3]); a->Owner = owner; }
+    if (g) { memcpy(group, g, need[4]); a->Group = group; }
+    for (int i = 0; i < 5; i++) *have[i] = need[i];
+    return TRUE;
+}
+
 WINADVAPI BOOL WINAPI InitializeAcl(PACL acl, DWORD n, DWORD rev)
 {
     if (n < sizeof(ACL)) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }

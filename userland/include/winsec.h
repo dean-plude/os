@@ -130,9 +130,13 @@ WINADVAPI BOOL  WINAPI IsTokenRestricted(HANDLE t);
 /* security descriptors and access checks */
 WINADVAPI BOOL  WINAPI InitializeSecurityDescriptor(PSECURITY_DESCRIPTOR sd, DWORD rev);
 WINADVAPI BOOL  WINAPI SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR sd, BOOL present, PACL acl, BOOL defaulted);
+WINADVAPI BOOL  WINAPI MakeSelfRelativeSD(PSECURITY_DESCRIPTOR abs, PSECURITY_DESCRIPTOR rel, LPDWORD n);
+WINADVAPI BOOL  WINAPI GetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR sd, PSID *o, LPBOOL def);
 WINADVAPI BOOL  WINAPI GetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR sd, LPBOOL present, PACL *acl, LPBOOL defaulted);
 WINADVAPI BOOL  WINAPI InitializeAcl(PACL acl, DWORD n, DWORD rev);
 WINADVAPI BOOL  WINAPI AddAccessAllowedAce(PACL acl, DWORD rev, DWORD mask, PSID sid);
+WINADVAPI BOOL  WINAPI MakeAbsoluteSD(PSECURITY_DESCRIPTOR rel, PSECURITY_DESCRIPTOR abs, LPDWORD abs_n, PACL dacl, LPDWORD dacl_n,
+                                      PACL sacl, LPDWORD sacl_n, PSID owner, LPDWORD owner_n, PSID group, LPDWORD group_n);
 WINADVAPI BOOL  WINAPI AddAccessDeniedAce(PACL acl, DWORD rev, DWORD mask, PSID sid);
 WINADVAPI BOOL  WINAPI SetSecurityDescriptorOwner(PSECURITY_DESCRIPTOR sd, PSID o, BOOL def);
 WINADVAPI BOOL  WINAPI SetSecurityDescriptorGroup(PSECURITY_DESCRIPTOR sd, PSID g, BOOL def);

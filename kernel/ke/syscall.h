@@ -244,6 +244,32 @@
 #define SYSCALL_NtQueryFullAttributesFile         0x0140
 #define SYSCALL_NtAlertThreadByThreadId           0x006F
 #define SYSCALL_NtWaitForAlertByThreadId          0x01CA
+/* Services ntdll used to answer itself (um_services.c) */
+#define SYSCALL_NtSetEaFile                       0x018B
+#define SYSCALL_NtQueryEaFile                     0x013F
+#define SYSCALL_NtSignalAndWaitForSingleObject    0x01B0
+#define SYSCALL_NtSetInformationToken             0x0195
+#define SYSCALL_NtPrivilegeCheck                  0x0132
+#define SYSCALL_NtAllocateLocallyUniqueId         0x0070
+#define SYSCALL_NtQueryTimerResolution            0x015C
+#define SYSCALL_NtSetTimerResolution              0x01AA
+#define SYSCALL_NtCreateTransaction               0x00C2
+#define SYSCALL_NtCommitTransaction               0x0097
+#define SYSCALL_NtRollbackTransaction             0x017A
+#define SYSCALL_NtCreateJobObject                 0x00A9
+#define SYSCALL_NtOpenJobObject                   0x011A
+#define SYSCALL_NtAssignProcessToJobObject        0x008D
+#define SYSCALL_NtQueryInformationJobObject       0x0144
+#define SYSCALL_NtSetInformationJobObject         0x0191
+#define SYSCALL_NtLockFile                        0x0105
+#define SYSCALL_NtUnlockFile                      0x01C4
+#define SYSCALL_NtQueryQuotaInformationFile       0x0153
+#define SYSCALL_NtSetQuotaInformationFile         0x01A0
+#define SYSCALL_NtSetVolumeInformationFile        0x01AC
+#define SYSCALL_NtLockVirtualMemory               0x0108
+#define SYSCALL_NtUnlockVirtualMemory             0x01C5
+#define SYSCALL_NtTestAlert                       0x01BA
+#define SYSCALL_NtRaiseHardError                  0x0161
 /* NovaOS GUI (user32/gdi32's kernel half) */
 #define SYSCALL_NtNovaGuiCreate                   0x0220
 #define SYSCALL_NtNovaGuiGetMessage               0x0221
@@ -261,7 +287,7 @@
 /* -----------------------------------------------------------------------
  * Syscall table size
  * ----------------------------------------------------------------------- */
-#define SYSCALL_MAX  0x0300   /* Win10 1903 numbers (0x000-0x1C3), NovaOS's own services (0x200-0x2FF) */
+#define SYSCALL_MAX  0x0300   /* Win10 1903 numbers (0x000-0x1CF), NovaOS's own services (0x200-0x2FF) */
 
 /* -----------------------------------------------------------------------
  * NtQuerySystemInformation system information classes

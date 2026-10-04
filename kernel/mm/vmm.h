@@ -51,6 +51,20 @@ void *kzalloc(size_t size);
 void kfree(void *ptr);
 
 /*
+ * The bytes usable at @ptr (from kmalloc): its size class, or its pages.
+ */
+size_t ksize(const void *ptr);
+
+/*
+ * Resize the block at @ptr (from kmalloc) where it is, keeping its contents:
+ * a large block (over 2 KiB) gives back the pages it no longer needs, or
+ * takes the free pages right after it.  False, and the block unchanged,
+ * when that is not possible (a small block, or the next pages are in use);
+ * the caller then allocates a new block.
+ */
+bool kresize(void *ptr, size_t size);
+
+/*
  * Allocate `count` physically contiguous pages.
  * Returns a kernel virtual address (physmap window), or NULL on OOM.
  * Pages are NOT zeroed.

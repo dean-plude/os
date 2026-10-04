@@ -70,21 +70,50 @@ results; until then they are kept by hand.
 
 Roblox's installer works on NovaOS (it needed the firmware tables
 `GetSystemFirmwareTable` reads and Windows' answer for a registry key
-below a missing one).  The client, `RobloxPlayerBeta.exe`, does not start:
-its first code is Hyperion, Roblox's anti-cheat (`RobloxPlayerBeta.dll`),
-which decrypts the game at run time and makes its own `syscall`
-instructions instead of calling ntdll.  On NovaOS the service numbers it
-works out for those calls all come out as 0, so its own file and
-information calls fail, it calls `NtTerminateProcess` through service 0
-too (which is not that service), and it then jumps to an address that was
-never mapped.  The likely reason is that NovaOS's ntdll is not yet the one
-Windows ships: it has about 175 of Windows' 470 system services, a few
-of them (`NtQuerySystemInformation` among them) are C code rather than
-system-call stubs, and its stubs are not laid out in service-number order
-as Windows' are.  The faithful fix is an ntdll with a stub for every
-Windows 10 service, in service-number order, and a kernel that implements
-every service a program may call directly.  NovaOS does not, and will not,
-work around anti-cheat checks or change Roblox itself.
+below a missing one).  The client, `RobloxPlayerBeta.exe`, starts with
+Hyperion, Roblox's anti-cheat (`RobloxPlayerBeta.dll`), which decrypts the
+game at run time and makes its own `syscall` instructions instead of
+calling ntdll.  It does not read ntdll's stubs for the service numbers;
+it works them out the way the kernel assigns them, by ranking ntdll's `Zw`
+exports by address.  So ntdll now has a stub for every Windows 10 1903
+service, laid out in service-number order (one per line in
+`userland/ntdll/ntdll.c`, from `nt1903_services.h`), the way Windows'
+ntdll is; the services that used to be ntdll C code are now system calls
+the kernel answers (`kernel/um/um_services.c`), and the kernel reads a
+system-call number the way Windows does, from the low bits of `EAX`,
+ignoring the noise Hyperion leaves in the top bits.
+
+With that, every raw system call Hyperion makes lands on the service it
+meant, and it gets past the point where it used to crash on service 0: it
+initialises, reads the kernel's loaded-module list
+(`NtQuerySystemInformation(SystemModuleInformation)`), its own token
+(`NtQueryInformationToken`) and ntdll's version resource, and then stops
+with "Roblox encountered an unexpected error" and exits on its own (exit
+code 50) rather than crashing.  What it checks next is a deeper
+Hyperion-specific integrity step, the faithful next piece of work.  NovaOS
+does not, and will not, work around anti-cheat checks or change Roblox
+itself.  `syscalltest` checks the table the way Hyperion reads it: it
+ranks ntdll's `Zw` exports, confirms the numbers against Windows 10 1903
+and that the kernel answers them.
+
+## WebView2
+
+Roblox's login page, and many other programs, show web content with
+Microsoft Edge WebView2, a runtime Windows installs once for every
+program.  Its installer is Microsoft Edge Update, a 32-bit program that
+installs itself, registers its update tasks with the Task Scheduler and
+its COM servers, and then runs the runtime's own setup.  On NovaOS, Edge
+Update now starts and reaches its install step (NovaOS gained the
+functions it calls: Task Scheduler 2.0, the Data Protection API,
+`UrlCombine`, the package-name functions, the MDM enrolment check and
+others).  It stops there: before installing anything it makes an MSXML 6
+`DOMDocument`, which NovaOS does not have yet, and then reports that
+Windows needs an update.  What comes after MSXML, in order: Edge Update
+hands the install to its own COM server in another process (NovaOS's COM
+is in-process only so far), the 32-bit updater's registry keys need
+Windows' `WOW6432Node` view for the 64-bit programs that look for the
+runtime there, and then the runtime itself (a Chromium browser process
+with its sandbox) has to run.
 
 ## Programs that come with NovaOS
 

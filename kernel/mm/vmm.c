@@ -246,6 +246,37 @@ static void large_free(void *ptr)
     pmm_free_pages(pa, total_pages);
 }
 
+static LargeAllocHeader *large_header(const void *ptr)
+{
+    uintptr_t page_before = ALIGN_DOWN((uintptr_t)ptr, PAGE_SIZE) - PAGE_SIZE;
+    if (page_before < PHYSMAP_BASE) return NULL;
+    LargeAllocHeader *hdr = (LargeAllocHeader *)page_before;
+    return hdr->magic == LARGE_ALLOC_MAGIC ? hdr : NULL;
+}
+
+size_t ksize(const void *ptr)
+{
+    if (!ptr) return 0;
+    LargeAllocHeader *hdr = large_header(ptr);
+    if (hdr) return hdr->pages * PAGE_SIZE;
+    return ((Slab *)ALIGN_DOWN((uintptr_t)ptr, PAGE_SIZE))->obj_size;
+}
+
+bool kresize(void *ptr, size_t size)
+{
+    LargeAllocHeader *hdr = ptr ? large_header(ptr) : NULL;
+    if (!hdr || !size) return false;
+    size_t pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    uintptr_t end = (uintptr_t)ptr - PHYSMAP_BASE + hdr->pages * PAGE_SIZE;
+    if (pages < hdr->pages) {
+        pmm_free_pages(end - (hdr->pages - pages) * PAGE_SIZE, hdr->pages - pages);
+    } else if (pages > hdr->pages) {
+        if (!pmm_claim_pages(end, pages - hdr->pages)) return false;
+    }
+    hdr->pages = pages;
+    return true;
+}
+
 /* -----------------------------------------------------------------------
  * vmm_init
  * ----------------------------------------------------------------------- */

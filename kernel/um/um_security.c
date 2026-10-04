@@ -865,7 +865,9 @@ static UINT64 sys_query_token(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     case 20: v = t.elevation == 2; out_put(&o, 0, &v, 4); break;                /* TokenElevation */
     case 21: v = t.nrestricted ? 1 : 0; out_put(&o, 0, &v, 4); break;           /* TokenHasRestrictions */
     case 23: case 24: case 26: case 29:                                         /* virtualization, UIAccess, AppContainer */
+    case 46: case 47:                                                           /* BnoIsolation, sandbox/isolation queries: none */
         v = 0; out_put(&o, 0, &v, 4); break;
+    case 40: v = t.nrestricted ? 1 : 0; out_put(&o, 0, &v, 4); break;           /* TokenIsRestricted */
     case 25: {                                                                  /* TokenIntegrityLevel */
         SidAttr il;
         sid_set(&il, t.elevation == 2 ? g_high_il_sid : g_medium_il_sid, 0x20);  /* SE_GROUP_INTEGRITY */

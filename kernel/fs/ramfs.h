@@ -138,6 +138,9 @@ UINT32   RamfsDriveMask(void);
 bool     RamfsDriveInfo(const RamNode *n, const char **label, const char **fs, UINT64 *total);
 /* The free bytes on the drive @n is on (0 for a read-only one) */
 UINT64   RamfsDriveFree(const RamNode *n);
+/* Drive C:'s files (kept in memory): how many, their bytes and the memory
+ * they take.  Under the file-system lock. */
+void     RamfsUsage(UINT64 *files, UINT64 *bytes, UINT64 *held);
 /* The letter of the drive @n is on ('C', 'D', ...) */
 char     RamfsDriveLetter(const RamNode *n);
 /* @n is on a mounted volume that can't be changed (or was unmounted) */

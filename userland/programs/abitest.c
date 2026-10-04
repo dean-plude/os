@@ -71,7 +71,7 @@ __attribute__((naked)) static NTSTATUS raw_syscall(ULONG num, ULONG_PTR a1, ULON
 /* Windows 10 1903's numbers, every one */
 static const struct { const char *name; ULONG num; } g_nt1903[] = {
 #define NT1903(n, v) { #n, v },
-#include "abitest_nt1903.h"
+#include "nt1903_services.h"
 #undef NT1903
 };
 
