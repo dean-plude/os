@@ -33,7 +33,16 @@ work across processes:
   gives a device context whose drawing lands in that window, as
   Chromium's GPU process draws into the browser's window in software.
 
-The new `xpwin` selftest covers all of this with three processes.  What
-remains for Chromium's Direct3D path is a window that is a child of
-another process's window from the start (the GPU process's own child
-window) and a DXGI swap chain presenting to it.
+The new `xpwin` selftest covers all of this with three processes.  With
+it, `wv2host` gets its WebView2 controller, the page loads and a script
+runs in it.  The browser then subscribed to the event log; wevtapi's
+missing `EvtCreateBookmark` was a breakpoint through its delay-load hook,
+so wevtapi now has the rest of the Event Log API, answering as a system
+with no event channels (a subscription that never fires, a log with no
+records, empty channel and publisher lists), and shell32 has
+`SHCreateAssociationRegistration`.  The page is not drawn yet: Chromium's
+software output in the GPU process asks for a DXGI factory, which
+Windows gives even without a GPU and NovaOS does not.  For Chromium's
+Direct3D path, a window that is a child of another process's window from
+the start (the GPU process's own child window) and a DXGI swap chain
+presenting to it remain.
