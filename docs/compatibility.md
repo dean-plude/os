@@ -170,17 +170,22 @@ NovaOS used to refuse over 256 MB, reports to Windows Error Reporting
 through `wer.dll` (NovaOS answers as a machine with reporting turned
 off) and checks that it runs on a desktop (`RtlGetDeviceFamilyInfoEnum`).
 It then copies the runtime into
-`C:\AppData\Local\Microsoft\EdgeWebView\Application` but is refused the
-`SetupMetrics` folder there ("Access is denied"; likely the permissions
-it adds to the folder for the runtime's sandboxed processes replace,
-rather than extend, what NovaOS reports for a folder without any) and
-rolls the install back.  Its installer then cleans up its temporary
-files, marking each for deletion on close; NovaOS deletes such a file
-when its last handle closes, as Windows does.  What comes next, in
-order: that folder refusal, the 32-bit updater's registry keys need
-Windows' `WOW6432Node` view for the 64-bit programs that look for the
-runtime there, and then the runtime itself
-(a Chromium browser process with its sandbox) has to run.
+`C:\AppData\Local\Microsoft\EdgeWebView\Application` and gives the
+runtime's sandboxed processes read access to that folder: it reads the
+folder's permissions, adds one entry and sets them back.  Drive C: used
+to have no permissions list anywhere (as on FAT), so that one entry
+became the folder's whole list and shut the user out of it ("Access is
+denied" on `SetupMetrics`, and the install rolled back).  C:'s root now
+has the permissions Windows gives `C:\` (and that a new NTFS volume's
+root already had), which every folder inherits, so the added entry joins
+them and the setup finishes: the runtime is installed and Edge Update
+records it.  Its installer then cleans up its temporary files, marking
+each for deletion on close; NovaOS deletes such a file when its last
+handle closes, as Windows does.  What comes next: the runtime itself (a
+Chromium browser process, `msedgewebview2.exe`, with its sandbox) has to
+run, and 64-bit programs that look for a machine-wide runtime under
+Windows' `WOW6432Node` registry view need that view (the per-user
+install records itself under `HKEY_CURRENT_USER`, which has none).
 
 ## Steam
 
