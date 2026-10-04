@@ -6,9 +6,12 @@
  * (msedgewebview2.exe), puts a WebView in a window, shows a page and runs
  * a script in it.
  *
- *   wv2host [LOADER] [URL]   LOADER: WebView2Loader.dll's path (default:
+ *   wv2host [LOADER] [URL] [HOLD]
+ *                            LOADER: WebView2Loader.dll's path (default:
  *                            found on the DLL search path); URL: the page
- *                            (default: a page of its own)
+ *                            (default: a page of its own; "-" for it);
+ *                            HOLD: seconds to keep the page shown after
+ *                            "done" (for a screenshot)
  *
  * It prints each step as it gets there, so a run that stops says where:
  *   wv2host: runtime VERSION                 the loader found the runtime
@@ -60,6 +63,7 @@ typedef HRESULT (STDMETHODCALLTYPE *AddFn)(void *, void *, INT64 *);
 static HWND g_window;
 static void *g_controller, *g_webview;
 static int g_exit = 1;
+static int g_hold;                  /* seconds the page stays up after the script */
 
 static void finish(int code)
 {
@@ -106,7 +110,11 @@ static HRESULT on_script(HRESULT hr, void *result)
     }
     printf("wv2host: script %ls\n", (LPCWSTR)result);
     printf("wv2host: done\n");
-    finish(0);
+    if (g_hold > 0) {
+        g_exit = 0;
+        SetTimer(g_window, 2, g_hold * 1000, NULL);
+    } else
+        finish(0);
     return S_OK;
 }
 static Handler g_script = { h_vtbl, 1, &IID_ScriptHandler, on_script };
@@ -199,6 +207,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp)
         GetClientRect(w, &r);
         SLOT(g_controller, CTL_PUT_BOUNDS, RectFn)(g_controller, r);
     }
+    if (msg == WM_TIMER && wp == 2) {
+        finish(0);
+        return 0;
+    }
     if (msg == WM_TIMER) {
         printf("wv2host: timed out\n");
         finish(7);
@@ -216,7 +228,8 @@ int main(void)
     WCHAR data[MAX_PATH];
     LPWSTR version = NULL;
     MSG m;
-    g_url = argc > 2 ? argv[2] : NULL;
+    g_url = argc > 2 && wcscmp(argv[2], L"-") ? argv[2] : NULL;
+    g_hold = argc > 3 ? _wtoi(argv[3]) : 0;
     setvbuf(stdout, NULL, _IONBF, 0);
 
     HMODULE dll = LoadLibraryW(loader);

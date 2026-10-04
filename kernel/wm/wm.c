@@ -265,6 +265,14 @@ void WmSetActive(WND *w)
     mark_dirty();
 }
 
+void WmKeepAbove(WND *w, const WND *owner)
+{
+    if (!w || !owner || w->z > owner->z) return;
+    w->z = g_next_z++;
+    raise_owned(w, 0);
+    mark_dirty();
+}
+
 /* The window that takes input for @w: @w itself, or while it is disabled
  * (a modal dialog is up) the topmost enabled window it owns */
 static WND *input_target(WND *w)

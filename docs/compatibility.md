@@ -208,14 +208,20 @@ Microsoft C++ runtime re-raises a rethrow from such a block, and
 to the host's pipe and checks that the pipe's server is the host
 (`GetNamedPipeServerProcessId`); NovaOS's pipes now keep both ends'
 process ids, so it keeps the connection and makes the WebView's window
-(it also needed shlwapi's ordinal 14, `GetAcceptLanguagesA`).  What
-comes next: the host moves that window into its own with `SetParent`
-and `SetWindowPos`, but the window belongs to the browser process, and
-NovaOS's windows cannot yet go inside another process's window, so
-`CreateCoreWebView2Controller` fails with `0x80070578`
-(`ERROR_INVALID_WINDOW_HANDLE`) and there is no page yet.  The GPU
-process finds no Direct3D 11 adapter for ANGLE (none without DXVK, as on
-a PC with no Direct3D driver) and the browser goes on in software.
+(it also needed shlwapi's ordinal 14, `GetAcceptLanguagesA`).  The host
+then moves that window into its own with `SetParent` and `SetWindowPos`;
+NovaOS's window handles now work across processes (messages, the calls
+on a window, `SetParent` of another process's window and drawing into
+it, checked by `xpwin`), so the controller is made, the page loads and
+a script runs in it (`wv2host: script "NovaOS WebView2 / 42"`), with
+the event log functions the browser calls afterwards (`EvtSubscribe`,
+bookmarks, logs).  The page is not drawn yet: the browser's window stays
+black.  The GPU
+process finds no Direct3D 11 adapter for ANGLE (none without DXVK) and
+draws in software, but Chromium's software output also asks for a DXGI
+factory (`CreateDXGIFactory1`), which Windows gives even with no GPU
+(its Basic Render Driver) and NovaOS does not, so the GPU process stops
+on it; after three tries the browser gives up too.
 64-bit programs that look for a machine-wide
 runtime under Windows' `WOW6432Node` registry view also need that view
 (the per-user install records itself under `HKEY_CURRENT_USER`, which
