@@ -45,7 +45,10 @@ static struct {
     volatile uint32_t waiters;               /* CPUs halted waiting for it */
     volatile uint32_t contenders;            /* CPUs in raw_lock */
     uint32_t          next_wake;
-} g_bkl = { 0, 0, 0, 0 };
+    Thread *volatile  holder;                /* who took it, and when (the TSC): bkl_stall_check */
+    volatile uint64_t since;
+    volatile uint32_t holder_cpu;
+} g_bkl = { 0, 0, 0, 0, NULL, 0, 0 };
 
 /* TLB shootdowns, one at a time (a sender and its targets never wait for
  * each other in a circle) */
@@ -87,6 +90,9 @@ static void raw_lock(bool may_halt)
     for (;;) {
         for (int i = 0; i < 1024; i++) {
             if (raw_try()) {
+                g_bkl.holder = k->CurrentThread;
+                g_bkl.holder_cpu = k->CpuNumber;
+                g_bkl.since = rdtsc();
                 __atomic_fetch_sub(&g_bkl.contenders, 1, __ATOMIC_SEQ_CST);
                 return;
             }
@@ -106,6 +112,8 @@ static void raw_lock(bool may_halt)
 
 static void raw_unlock(void)
 {
+    g_bkl.since = 0;
+    g_bkl.holder = NULL;
     __atomic_store_n(&g_bkl.locked, 0, __ATOMIC_SEQ_CST);
     uint32_t w = __atomic_load_n(&g_bkl.waiters, __ATOMIC_SEQ_CST);
     if (!w) return;
@@ -191,6 +199,46 @@ bool bkl_held(void)
 {
     Thread *t = me();
     return t && t->bkl_depth > 0;
+}
+
+/* A lock nobody lets go of stops the whole machine silently: every CPU
+ * halts in raw_lock, whose timer ticks are only acknowledged, so not even
+ * the desktop watchdog gets to run (a graphics-job hang with the host idle,
+ * the guest silent for 45 minutes and no Ctrl+Alt+F12 answer).  Called from
+ * those ticks and from the watchdog: when the lock has been held for 3 s
+ * say who holds it and what each CPU is doing, once per taking; and when the
+ * holder is no CPU's current thread (a thread was switched out or left
+ * without handing the lock back, which bkl_switch_out does for every
+ * switch) let the lock go, so the machine goes on and the log names the bug
+ * instead of the run ending in a timeout. */
+void bkl_stall_check(void)
+{
+    static volatile uint64_t reported;
+    uint64_t since = g_bkl.since;
+    Thread *h = g_bkl.holder;
+    if (!since || !__atomic_load_n(&g_bkl.locked, __ATOMIC_ACQUIRE)) return;
+    uint64_t now = rdtsc(), per_ms = sched_tsc_after(10000ull) - now;      /* (100 ns units) */
+    if (!per_ms || now - since < 3000 * per_ms) return;
+    if (__atomic_exchange_n(&reported, since, __ATOMIC_SEQ_CST) == since) return;
+    bool running = false;
+    for (uint32_t i = 0; i < MAX_CPUS; i++)
+        if (g_kpcr[i].Online && g_kpcr[i].CurrentThread == h) running = true;
+    kprintf("[WATCHDOG] the kernel lock has been held for %llu ms by CPU %u, thread %p%s; waiters %x, contenders %u\n",
+            (unsigned long long)((now - since) / per_ms),
+            g_bkl.holder_cpu, (void *)h, running ? "" : " (no CPU runs it)",
+            g_bkl.waiters, g_bkl.contenders);
+    for (uint32_t i = 0; i < MAX_CPUS; i++) {
+        PKPCR k = &g_kpcr[i];
+        if (!k->Online) continue;
+        Thread *t = k->CurrentThread;
+        kprintf("[WATCHDOG]   CPU %u: %s '%s' (TID %llu, state %d, kernel lock depth %u)%s%s\n", i,
+                t == h ? "holder" : "runs", t ? t->name : "?", (unsigned long long)(t ? t->tid : 0),
+                t ? (int)t->state : -1, t ? (unsigned)t->bkl_depth : 0u,
+                k->LockWait ? ", halted waiting for the lock" : "", k->Idle ? ", idle" : "");
+    }
+    if (running) return;
+    kprintf("[SMP] Bug: the kernel lock was never handed back; letting it go\n");
+    raw_unlock();
 }
 
 /* The scheduler, with interrupts off: a holder leaving and coming back */

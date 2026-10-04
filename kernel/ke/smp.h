@@ -50,6 +50,8 @@ void bkl_release(void);
 void bkl_acquire_boot(void);   /* a starting CPU's first: never enables interrupts */
 void bkl_leave_kernel(void);   /* on the way to user mode: drop it however deep */
 bool bkl_held(void);
+/* Log (once) a kernel lock held for 3 s, and let go of one nobody holds */
+void bkl_stall_check(void);
 /* Long work that needs no big lock (the program loader's copying): let go
  * of it however deep, then take it back to that depth. */
 uint32_t bkl_drop(void);

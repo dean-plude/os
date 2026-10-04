@@ -484,8 +484,19 @@ and the CPU time and thread count of QEMU and of virglrenderer's render server
 processes), `virglrenderer-PID.log` (one per render process), and, once the
 guest's serial log has been silent for six minutes, `host-hang-N.txt`: every
 host thread's state, wait channel and CPU use over five seconds, and gdb's
-backtrace of QEMU and of each render process.  A QEMU whose threads all wait
-and whose CPU time stands still has lost a wake-up; one that spins is busy.
+backtrace of QEMU and of each render process, then what QEMU's monitor says
+about the guest itself: every CPU's registers (with the kernel function its RIP
+is in, named from `build/kernel.elf`), its local APIC timer, and the kernel's
+big lock (`g_bkl`); `serial-hang-N.log` is the whole serial log so far (a job
+cut off by its time limit never reaches the end of the suite, where it is
+normally kept).  A QEMU whose threads all wait and whose CPU time stands still
+has lost a wake-up; one that spins is busy.  Two CPUs that both sit in HLT with
+their timers ticking, the serial log silent and no answer to Ctrl+Alt+F12, are
+waiting for the kernel lock: the kernel then logs `[WATCHDOG] the kernel lock
+has been held for ...` itself after three seconds (who holds it, what each CPU
+runs) and lets go of a lock whose holder no CPU runs (`[SMP] Bug: ...`).  The
+self-tests stop at the first test after which the machine answers neither
+Ctrl+Alt+F12 nor Ctrl+C, instead of waiting out every later test's limit.
 
 `NOVARUN_QEMU` names the QEMU that `tools/novarun.py` runs (default
 `qemu-system-x86_64` from `PATH`); it opens an SDL window with OpenGL
