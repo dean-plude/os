@@ -37,4 +37,4 @@ APP = App('Steam', 'current', 'https://cdn.akamai.steamstatic.com/client/install
            Test('update the client', rf'cmd.exe /c "{PROXY}start {STEAM}\Steam.exe & timeout /t 900 /nobreak & '
                 rf'dir /b {STEAM}\steamclient64.dll {STEAM}\bin\cef\cef.win64\libcef.dll"',
                 [r'steamclient64\.dll', r'libcef\.dll', r'\[UM\] Started steamwebhelper\.exe'], timeout=1500)],
-          unpack=unpack, net=True)
+          unpack=unpack, net=True, mutable=True)

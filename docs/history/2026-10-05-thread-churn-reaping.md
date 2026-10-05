@@ -17,3 +17,13 @@ handle-count growth. Timeouts remain failures; no sleep-based tolerance or extra
 handle allowance is added. Host source-based regressions cover slot reuse and
 reaper safety plus the lazy contention event. Native x64/x86 SMP validation is
 required in Actions. The existing scheduler migration fix is preserved.
+
+The callback stress regression now duplicates and joins each callback thread
+before starting the next batch. The completion event marks callback work,
+not completion of `DLL_THREAD_DETACH` and thread exit. Starting batches on
+that event alone could accumulate live teardown threads and reach WOW64's
+96-thread limit (CI #577 failed submission 2742 with `STATUS_TOO_MANY_THREADS`).
+Temporary join handles are closed before the exact leak baseline check;
+all 5120 submissions and callback assertions remain. A host fixture checks
+bounded joins and failure handling for timeouts, missing handles and close
+failures. Native x64/x86 execution remains covered by CI.

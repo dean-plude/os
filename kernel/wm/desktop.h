@@ -1,9 +1,10 @@
 /*
  * desktop.h — NovaOS desktop shell (Explorer-style)
  *
- * Draws the Windows-11-style desktop on top of the window manager:
+ * Draws the NovaOS desktop on top of the window manager:
  *
- *   - a gradient wallpaper with "wave" layers, in a choice of themes
+ *   - the Aurora sunrise wallpaper, with a procedural fallback, or waves
+ *   - an Aurora sidebar, top search and live calendar at 900x640 or larger
  *   - desktop icons (This PC, folders, NetSurf) with right-click menus
  *   - a floating dock: Start, search, pinned apps, a button for every
  *     other program window, tooltips and a clock
@@ -79,6 +80,7 @@ bool DesktopAvailable(void);
 int         DesktopThemeCount(void);
 const char *DesktopThemeName(int i);
 int         DesktopTheme(void);
+bool        DesktopAurora(void);          /* native apps may adapt to the Aurora palette */
 void        DesktopSetTheme(int i);
 /* A miniature of theme @i's wallpaper in @r */
 void        DesktopDrawThemePreview(int i, GdiRect r);

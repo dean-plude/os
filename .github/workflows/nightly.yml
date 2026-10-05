@@ -22,7 +22,7 @@ on:
         type: boolean
         default: false
   pull_request:                 # a change to the corpus itself runs it too (no issue comment)
-    paths: [tools/appcorpus.py, tests/tools/**, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
+    paths: [tools/download_cache.py, tools/appcorpus.py, tests/tools/**, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
 
 permissions:
   contents: read
@@ -33,11 +33,11 @@ env:                            # ccache, as in ci.yml
   CCACHE_BASEDIR: ${{ github.workspace }}
   CCACHE_NOHASHDIR: 'true'
   CCACHE_COMPILERCHECK: content
-  CCACHE_MAXSIZE: 500M
+  CCACHE_MAXSIZE: 5000M
 
 concurrency:                    # a queued run is replaced by a newer queued run in the same group:
   group: nightly-app-corpus-${{ github.event_name }}-${{ github.ref }}   # keep manual and scheduled runs apart from pull requests
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   gate:
@@ -100,7 +100,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: appcorpus-cache
-          key: appcorpus-${{ hashFiles('tools/appcorpus.py', 'tests/appcorpus/*.py') }}
+          key: appcorpus-v2-${{ hashFiles('tools/download_cache.py', 'tools/appcorpus.py', 'tests/appcorpus/*.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            appcorpus-v2-${{ hashFiles('tools/download_cache.py', 'tools/appcorpus.py', 'tests/appcorpus/*.py') }}-
+            appcorpus-v2-
 
       - name: Build NovaOS
         run: |
@@ -170,3 +173,16 @@ jobs:
       - name: Fail when a program failed
         if: steps.corpus.outcome == 'failure' || steps.smp.outcome == 'failure'
         run: exit 1
+
+  corpus-result:
+    name: Corpus result
+    needs: [gate, app-corpus]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require execution when the gate requests it
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 tools/ci/check_job_results.py corpus

@@ -1,9 +1,9 @@
 /*
  * desktop.c — NovaOS desktop shell
  *
- * A software-rendered Windows-11-style desktop:
+ * A software-rendered desktop with an Aurora sunrise workspace:
  *
- *   - wallpaper: a sky gradient with wave layers, in one of a few themes
+ *   - wallpaper: an Aurora sunrise city or the original wave themes
  *     (Settings > Personalization)
  *   - desktop icons; double-click opens, right-click shows a menu
  *   - the dock (frosted glass): Start, search, pinned apps with running
@@ -28,6 +28,8 @@
 #include "kbdlayout.h"
 #include "tablet.h"
 #include "../gdi/gdi.h"
+#include "../gdi/png.h"
+#include "../mm/vmm.h"
 #include "../ke/printf.h"
 #include "../ke/scheduler.h"
 #include "../ke/smp.h"
@@ -67,9 +69,14 @@ static const Theme g_themes[] = {
       GDI_C(0x0C, 0x0A, 0x1E), GDI_C(0x24, 0x1C, 0x46),
       { GDI_C(0x34, 0x26, 0x62), GDI_C(0x46, 0x30, 0x7E), GDI_C(0x5A, 0x3C, 0x98),
         GDI_C(0x72, 0x4A, 0xB0), GDI_C(0x90, 0x5E, 0xC4), GDI_C(0xB4, 0x7C, 0xD6) } },
+    { "Aurora",
+      GDI_C(29, 48, 79), GDI_C(242, 180, 140),
+      { GDI_C(99, 111, 145), GDI_C(46, 66, 96), GDI_C(19, 37, 59),
+        GDI_C(110, 127, 159), GDI_C(21, 40, 58), GDI_C(8, 19, 31) } },
 };
 #define N_THEMES ((int)(sizeof(g_themes) / sizeof(g_themes[0])))
-static int g_theme;
+#define THEME_AURORA 3
+static int g_theme = THEME_AURORA;
 #define TH (&g_themes[g_theme])
 
 /* The shell's glass (Start menu, dock, tray): neutral dark acrylic that
@@ -89,7 +96,9 @@ static int g_theme;
 
 static void glass(GdiRect r, int rad)
 {
-    GdiBackdrop(r, rad, GLASS_BLUR, GLASS_TINT, GLASS_ALPHA);
+    GdiBackdrop(r, rad, g_theme == THEME_AURORA ? 28 : GLASS_BLUR,
+                g_theme == THEME_AURORA ? GDI_C(19, 25, 42) : GLASS_TINT,
+                g_theme == THEME_AURORA ? 194 : GLASS_ALPHA);
     GdiRoundBorderAlpha(r, rad, GDI_WHITE, EDGE_ALPHA);
 }
 
@@ -164,6 +173,33 @@ static int isin_q16(INT64 mdeg)
 /* -----------------------------------------------------------------------
  * Wallpaper
  * ----------------------------------------------------------------------- */
+#include "aurora.h"
+
+static UINT32 *g_aurora_pixels;
+static int g_aurora_width, g_aurora_height;
+
+/* Decode once at shell startup, never under the compositing lock. Take a
+ * snapshot under FsLock so the decoder does not hold up file operations. */
+static void load_aurora_wallpaper(void)
+{
+    if (g_aurora_pixels) return;
+    char *copy = NULL;
+    UINT32 size = 0;
+    FsLock();
+    RamNode *file = RamfsResolve(NULL, "\\Pictures\\Aurora-Sunrise.png");
+    if (file && !file->dir && RamfsLoad(file) && file->data &&
+        file->size && file->size <= 8 * 1024 * 1024) {
+        size = file->size;
+        copy = kmalloc(size);
+        if (copy) memcpy(copy, file->data, size);
+    }
+    FsUnlock();
+    if (copy) {
+        PngDecode(copy, size, &g_aurora_pixels, &g_aurora_width, &g_aurora_height);
+        kfree(copy);
+    }
+}
+
 typedef struct { int base, amp, phase, period; } Wave;   /* logical px, degrees */
 
 /* y of the wave's top edge at x; both in 1/256 logical px */
@@ -177,6 +213,13 @@ static int wave_curve(int x_256, void *ctx)
 
 static void draw_wallpaper_in(const Theme *t, GdiRect r)
 {
+    if (r.w <= 0 || r.h <= 0) return;
+    if (t == &g_themes[THEME_AURORA]) {
+        if (g_aurora_pixels) GdiDrawImage(r, g_aurora_pixels, g_aurora_width, g_aurora_height);
+        else aurora_wallpaper(r);
+        GdiAlphaFill(r, GDI_C(7, 11, 24), 48);
+        return;
+    }
     GdiGradientV(r, t->sky_top, t->sky_mid);
     static const int base[6]  = { 58, 66, 73, 80, 87, 93 };
     static const int amp[6]   = { 6, 6, 5, 5, 4, 4 };
@@ -196,7 +239,7 @@ static void draw_wallpaper_in(const Theme *t, GdiRect r)
  * ----------------------------------------------------------------------- */
 typedef enum {
     ACT_NONE, ACT_APP, ACT_START, ACT_SEARCH, ACT_ICON, ACT_TASK, ACT_CLOCK,
-    ACT_PROG, ACT_RECENT, ACT_RESULT, ACT_POWER, ACT_MENU, ACT_SWALLOW, ACT_NET,
+    ACT_PROG, ACT_RECENT, ACT_RESULT, ACT_POWER, ACT_MENU, ACT_SWALLOW, ACT_NET, ACT_WORKSPACE,
 } ActKind;
 
 typedef struct { GdiRect r; ActKind kind; int arg; } Hot;
@@ -286,8 +329,25 @@ static UINT64 desktop_files_signature(void)
     return sig;
 }
 
+/* At smaller logical sizes retain the familiar icon grid. */
+static bool aurora_workspace_visible(void)
+{
+    return g_theme == THEME_AURORA && GdiScreenW() >= 900 && GdiScreenH() >= 640;
+}
+
+static void draw_aurora_workspace(void);
+
 static void icon_cell(int i, int *x, int *y)
 {
+    if (aurora_workspace_visible()) {
+        if (i < N_ICONS) { *x = 28; *y = 180 + i * 48; return; }
+        i -= N_ICONS;
+        int rows = (GdiScreenH() - 180 - 84) / 72;
+        if (rows < 1) rows = 1;
+        *x = 184 + (i / rows) * 88;
+        *y = 180 + (i % rows) * 72;
+        return;
+    }
     int rows = (GdiScreenH() - 24 - 120) / 96;          /* clear of the dock */
     if (rows < 1) rows = 1;
     *x = 20 + (i / rows) * 100;
@@ -297,13 +357,17 @@ static void icon_cell(int i, int *x, int *y)
 static void draw_desktop_icons(void)
 {
     g_hot_bg_n = 0;
+    draw_aurora_workspace();
     FsLock();                                           /* (C:\\Desktop's files; not the labels' shadows) */
     scan_desktop_files();
     FsUnlock();
     for (int i = 0; i < N_ICONS + g_ndfiles; i++) {
         int x, y;
         icon_cell(i, &x, &y);
-        GdiRect cell = RECT(x, y - 6, 88, 84);
+        if (aurora_workspace_visible() && i < N_ICONS) continue;
+        bool compact = aurora_workspace_visible();
+        int emblem = compact ? 32 : 48;
+        GdiRect cell = RECT(x, y - 6, 88, compact ? 68 : 84);
         if (i == g_icon_sel) GdiRoundAlpha(cell, 6, GDI_WHITE, 38);   /* soft, no outline */
         char label[48];
         if (i < N_ICONS) {
@@ -313,7 +377,7 @@ static void draw_desktop_icons(void)
         } else {
             FsLock();
             RamNode *n = RamfsResolve(NULL, g_dfile[i - N_ICONS]);
-            if (n) AppDrawNodeIcon(n, x + 20, y, 48);
+            if (n) AppDrawNodeIcon(n, x + (88 - emblem) / 2, y, emblem);
             char name[RAMFS_NAME_MAX];
             if (n) strncpy(name, n->name, sizeof(name) - 1);
             FsUnlock();
@@ -324,7 +388,7 @@ static void draw_desktop_icons(void)
             fit_text(name, 86, label, sizeof(label), false);
         }
         /* a soft blurred shadow keeps labels readable on any wallpaper */
-        GdiTextShadowCenter(x, y + 54, 88, label, TXT_LIGHT, 205);
+        GdiTextShadowCenter(x, y + emblem + 6, 88, label, TXT_LIGHT, 205);
         HOT_BG(cell, ACT_ICON, i);
     }
 }
@@ -1036,6 +1100,9 @@ static void dock_layout(void)
 static char g_clock_time[12] = "12:00 PM";
 static char g_clock_date[12] = "01/01/2026";
 static char g_clock_long[48] = "";
+static char g_clock_short[32] = "";
+
+#include "aurora_workspace.h"
 
 static void draw_tooltip(int cx, int bottom, const char *text)
 {
@@ -1092,11 +1159,15 @@ static void draw_dock(void)
     for (int i = 0; i < g_ndock; i++) {
         DockItem *it = &g_dock[i];
         GdiRect r = it->r;
+        if (DesktopAurora() && i == g_dock_hover) {
+            r.x -= 2; r.y -= 7; r.w += 4; r.h += 4;
+            GdiDropShadow(r, 10, 8, 70);
+        }
         bool lit = i == g_dock_hover || (it->kind == DK_START && g_start_open && !g_query_len) ||
                    (it->kind == DK_SEARCH && g_start_open && g_query_len);
         if (lit) GdiRoundAlpha(r, 8, GDI_WHITE, HOVER_ALPHA + 8);
 
-        int io = (DOCK_ITEM - DOCK_ICON) / 2, go = (DOCK_ITEM - DOCK_GLYPH) / 2;
+        int io = (r.w - DOCK_ICON) / 2, go = (r.w - DOCK_GLYPH) / 2;
         WND *w = NULL;
         switch (it->kind) {
         case DK_START:  AppDrawGlyph(GL_NOVA, r.x + go, r.y + go, DOCK_GLYPH, ACCENT); break;
@@ -1119,7 +1190,7 @@ static void draw_dock(void)
         }
         ActKind k = it->kind == DK_START ? ACT_START : it->kind == DK_SEARCH ? ACT_SEARCH :
                     it->kind == DK_APP ? ACT_APP : ACT_TASK;
-        HOT_OV(RECT(r.x - DOCK_GAP / 2, d.y, r.w + DOCK_GAP, d.h), k, it->arg);
+        HOT_OV(RECT(it->r.x - DOCK_GAP / 2, d.y, it->r.w + DOCK_GAP, d.h), k, it->arg);
         if (i == g_ndock_fixed - 1 && g_ndock > g_ndock_fixed)
             GdiVLine(r.x + r.w + DOCK_GAP / 2 + 6, d.y + 14, d.y + d.h - 14, SH_LINE);
     }
@@ -1230,6 +1301,7 @@ static void draw_switcher(void)
 int         DesktopThemeCount(void)      { return N_THEMES; }
 const char *DesktopThemeName(int i)      { return (i >= 0 && i < N_THEMES) ? g_themes[i].name : ""; }
 int         DesktopTheme(void)           { return g_theme; }
+bool        DesktopAurora(void)          { return g_theme == THEME_AURORA; }
 
 void DesktopSetTheme(int i)
 {
@@ -1286,6 +1358,8 @@ void DesktopInitialize(void)
     WmSetWorkArea(RECT(0, 0, GdiScreenW(), L_dock.y - 8));
     WmSetDesktop(shell_background, shell_overlay);
     AppInit();
+    load_aurora_wallpaper();
+    aurora_load_user();
     kprintf("[SHELL] Desktop shell ready (%dx%d)\n", GdiScreenW(), GdiScreenH());
 }
 
@@ -1447,7 +1521,7 @@ static void update_clock(void);
 void DesktopClockChanged(void)
 {
     update_clock();
-    WmInvalidate();
+    WmInvalidateBackground();
 }
 
 /* Refresh the dock clock strings: local time (ke/timezone.c). */
@@ -1472,6 +1546,12 @@ static void update_clock(void)
     int y = t.year - (t.month < 3);
     int m = t.month >= 1 && t.month <= 12 ? t.month : 1;
     int dow = (y + y / 4 - y / 100 + y / 400 + off[m - 1] + t.day) % 7;
+    static const char *const short_months[12] = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    };
+    static const char *const short_days[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    ksnprintf(g_clock_short, sizeof(g_clock_short), "%s, %s %u, %u", short_days[dow],
+              short_months[m - 1], t.day, t.year);
     ksnprintf(g_clock_long, sizeof(g_clock_long), "%s, %s %u, %u", days[dow], months[m - 1],
               t.day, t.year);
 }
@@ -1617,12 +1697,20 @@ static void desktop_press(int x, int y, bool dbl)
         return;
 
     const Hot *ic = hot_find(g_hot_bg, g_hot_bg_n, x, y);
+    if (ic && ic->kind != ACT_ICON) {
+        if (ic->kind == ACT_WORKSPACE) run_aurora_action(ic->arg);
+        else if (ic->kind == ACT_SEARCH) start_open(true);
+        else if (ic->kind == ACT_CLOCK) AppActivate(APP_CALENDAR);
+        else if (ic->kind == ACT_APP) AppActivate((AppId)ic->arg);
+        WmInvalidate();
+        return;
+    }
     int sel = ic ? ic->arg : -1;
     if (sel != g_icon_sel) {
         g_icon_sel = sel;
         WmInvalidateBackground();
     }
-    if (ic && dbl) open_icon(ic->arg);
+    if (ic && (dbl || (aurora_workspace_visible() && ic->arg < N_ICONS))) open_icon(ic->arg);
 }
 
 static void desktop_right_press(int x, int y)
@@ -1646,7 +1734,7 @@ static void desktop_right_press(int x, int y)
         return;
     }
     const Hot *ic = hot_find(g_hot_bg, g_hot_bg_n, x, y);
-    if (ic) {
+    if (ic && ic->kind == ACT_ICON) {
         if (g_icon_sel != ic->arg) { g_icon_sel = ic->arg; WmInvalidateBackground(); }
         menu_for_icon(ic->arg, x, y);
     } else {
@@ -1843,6 +1931,14 @@ static void desktop_key(const KeyEvent *k)
     }
     if (g_switch.on) {
         if (k->scancode == KEY_ESC) switch_end(false);
+        return;
+    }
+
+    /* Match the HTML omnibar's Ctrl+K, scoped to the Aurora shell. */
+    if (DesktopAurora() && k->ctrl && !k->alt && !k->altgr &&
+        (k->ch == 'k' || k->ch == 'K')) {
+        close_popups();
+        start_open(true);
         return;
     }
 
@@ -2075,7 +2171,8 @@ void DesktopRun(void *arg)
         if (t.minute != last_min) {
             last_min = t.minute;
             update_clock();
-            WmInvalidate();
+            if (aurora_workspace_visible()) WmInvalidateBackground();
+            else WmInvalidate();
         }
 
         if (WmNeedsRedraw()) {
