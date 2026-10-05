@@ -35,4 +35,4 @@ APP = App('WebView2', 'evergreen', 'https://go.microsoft.com/fwlink/?linkid=2124
                 [r'wv2host: runtime [^\r\n]+', r'wv2host: environment\r?\n',
                  r'wv2host: controller \(browser process \d+\)', r'wv2host: navigation ok\r?\n',
                  r'wv2host: script "NovaOS WebView2 / 42"\r?\n', r'wv2host: done\r?\n'], timeout=600)],
-          unpack=unpack, extra=[SDK])
+          unpack=unpack, extra=[SDK], mutable=True)
