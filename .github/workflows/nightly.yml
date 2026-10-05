@@ -13,8 +13,8 @@ name: Nightly app corpus
 on:
   schedule:                     # GitHub drops or delays scheduled runs under load (the only one so far
     - cron: '17 3 * * *'        # came 6 h late, on 2026-10-03 at 09:15, and 2026-10-04's never came), so two
-    - cron: '47 6 * * *'        # fallbacks follow at odd minutes; the "Gate" job lets only the first of the
-    - cron: '23 10 * * *'       # three that fires each day run the corpus
+    - cron: '47 6 * * *'        # fallbacks follow at odd minutes; the "Gate" job retries failures and
+    - cron: '23 10 * * *'       # suppresses duplicates after an active or successful corpus run
   workflow_dispatch:
     inputs:
       allow_tcg:
@@ -22,7 +22,7 @@ on:
         type: boolean
         default: false
   pull_request:                 # a change to the corpus itself runs it too (no issue comment)
-    paths: [tools/appcorpus.py, tests/tools/**, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
+    paths: [tools/ci/nightly_gate.py, tools/appcorpus.py, tests/tools/**, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
 
 permissions:
   contents: read
@@ -41,26 +41,20 @@ concurrency:                    # a queued run is replaced by a newer queued run
 
 jobs:
   gate:
-    name: Gate (one scheduled run per day)
+    name: Gate (retry until nightly succeeds)
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       run: ${{ steps.check.outputs.run }}
     steps:
+      - uses: actions/checkout@v4
+      - name: Test fallback decisions
+        run: python3 -m unittest discover -s tests/tools -p test_nightly_gate.py -v
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
-        run: |
-          run=true
-          if [ "$EVENT" = schedule ]; then
-            since=$(date -u -d '-20 hours' +%Y-%m-%dT%H:%M:%SZ)
-            others=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/nightly.yml/runs?event=schedule&created=%3E%3D$since" \
-              --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)] | length")
-            echo "scheduled runs in the last 20 h besides this one: $others"
-            [ "$others" = 0 ] || run=false
-          fi
-          echo "run=$run" >> "$GITHUB_OUTPUT"
+        run: python3 tools/ci/nightly_gate.py
 
   app-corpus:
     name: App corpus
