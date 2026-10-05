@@ -288,6 +288,7 @@ list(APPEND KERNEL_C_SOURCES ${MONOCYPHER_SOURCES})
 # programs built with clang for x86_64-pc-windows-msvc, embedded as data and
 # installed on drive C: at boot.
 file(GLOB_RECURSE USERLAND_DEPS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../userland/samples/*"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../userland/*.h"

@@ -67,8 +67,8 @@ env:                            # ccache (the build's clang calls go through /us
   CCACHE_MAXSIZE: 500M
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -101,6 +101,9 @@ jobs:
             smoke=$(git diff --name-only HEAD^1 HEAD | python3 -c 'import sys; sys.path.insert(0, "tools"); from compat_smoke import required; print(str(required(sys.stdin.read().splitlines())).lower())')
           fi
           echo "smoke=$smoke" >> "$GITHUB_OUTPUT"
+
+      - name: Host-side compatibility and CI regressions
+        run: python3 -m unittest discover -s tests/tools -v
 
       - name: Host-side compatibility and CI regressions
         run: python3 -m unittest discover -s tests/tools -v
@@ -364,6 +367,19 @@ jobs:
           name: graphics-out
           path: graphics-out
           if-no-files-found: ignore
+
+  ci-result:
+    name: CI result
+    needs: [checks, boot-test, graphics-test]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every in-scope job to complete
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 tools/ci/check_job_results.py ci
 
   publish-iso:
     name: Publish nova.iso

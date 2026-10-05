@@ -79,6 +79,7 @@ typedef struct WND {
     char       title[WM_TITLE_MAX];
     UINT32     style;
     GdiColor   client_bg;
+    bool       acrylic;      /* native app opts into Aurora backdrop rendering */
     GdiColor   accent;       /* colour of the small app mark in the title */
     bool       visible;
     bool       minimized;
