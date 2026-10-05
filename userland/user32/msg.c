@@ -860,7 +860,20 @@ static void from_kernel_(Wnd *top, const MSG *kmsg, UINT32 pen)
     switch (km->message) {
     case WM_SIZE: top_sync_from_kernel(top, 1); break;
     case WM_MOVE: top_sync_from_kernel(top, 0); break;
-    case WM_ACTIVATE: top_activated(top, km->wParam != 0); break;
+    case WM_ACTIVATE: {
+        /* A pen press activates the desktop window before user32 asks
+         * WM_POINTERACTIVATE. PA_NOACTIVATE can restore the previous window
+         * while this notification is still queued. Do not let the old
+         * notification undo that decision (or deactivate the restored
+         * window). Embedded windows have their own activation rules. */
+        INT32 state[9];
+        if (!top->foreign_parent && NtNovaGuiCtl(top->kid, CTL_GET_RECT, 0, state)) {
+            int active = (state[8] & 3) == 3 && !(state[8] & 4);
+            if (active != (km->wParam != 0)) break;
+        }
+        top_activated(top, km->wParam != 0);
+        break;
+    }
     case WM_CLOSE:
         if (!(top->style & WS_DISABLED)) queue_input(top, WM_SYSCOMMAND, SC_CLOSE, 0, GetTickCount());
         break;
