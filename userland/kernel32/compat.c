@@ -673,12 +673,37 @@ K32 VOID WINAPI CloseThreadpoolWork(PVOID p)
     zfree(w);
 }
 
-K32 BOOL WINAPI TrySubmitThreadpoolCallback(PVOID fn, PVOID ctx, PVOID env)
+typedef VOID (WINAPI *SimpleFn)(PVOID instance, PVOID ctx);
+typedef struct { SimpleFn fn; PVOID ctx; } SimpleWork;
+
+static DWORD WINAPI simple_work_thread(LPVOID p)
 {
-    Work *w = CreateThreadpoolWork((WorkFn)fn, ctx, env);   /* (instance, ctx): the extra argument is ignored */
-    if (!w) return FALSE;
-    SubmitThreadpoolWork(w);
-    return TRUE;                                            /* w is leaked once done: rare, and small */
+    SimpleWork w = *(SimpleWork *)p;
+    zfree(p);
+    /* Simple callbacks take two arguments, unlike WorkFn's three. This
+     * also matters for x86's callee-cleaned stack. No persistent work
+     * object or idle event is needed for this one-shot submission. */
+    w.fn(&w, w.ctx);
+    return 0;
+}
+
+K32 BOOL WINAPI TrySubmitThreadpoolCallback(SimpleFn fn, PVOID ctx, PVOID env)
+{
+    (void)env;
+    if (!fn) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    SimpleWork *w = zalloc(sizeof(*w));
+    if (!w) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    w->fn = fn;
+    w->ctx = ctx;
+    HANDLE t = CreateThread(0, 0, simple_work_thread, w, 0, 0);
+    if (!t) {
+        DWORD error = GetLastError();
+        zfree(w);
+        SetLastError(error);
+        return FALSE;
+    }
+    CloseHandle(t);
+    return TRUE;
 }
 
 K32 VOID WINAPI FreeLibraryWhenCallbackReturns(PVOID instance, HMODULE m) { (void)instance; (void)m; }
