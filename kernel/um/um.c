@@ -460,6 +460,28 @@ bool UmDemandFault(UINT64 va)
     return e && back_page(p, e);
 }
 
+/* An instruction fetch from @va hit a page that is not executable: in a
+ * process running with DEP off (UmProcess.dep_off) the page runs as code,
+ * as Windows lets it (the entry keeps PTE_DEP_EXEC so the page still
+ * reports the protection it was given).  True if the fetch can go again. */
+bool UmDepFault(UINT64 va)
+{
+    UmProcess *p = UmCurrent();
+    if (!p || !p->dep_off || va >= UINT64_C(0x00007FFFFFFF0000)) return false;
+    pte_t *e = walk(p->pml4, va, false);
+    if (!e) return false;
+    pte_t v = __atomic_load_n(e, __ATOMIC_ACQUIRE);
+    if ((v & (PTE_PRESENT | PTE_USER | PTE_NX | PTE_DEP_EXEC)) == (PTE_PRESENT | PTE_USER | PTE_DEP_EXEC)) {
+        invlpg(va & ~0xFFFULL);                         /* lifted on another CPU: this one's TLB was stale */
+        return true;
+    }
+    if ((v & (PTE_PRESENT | PTE_USER | PTE_NX)) != (PTE_PRESENT | PTE_USER | PTE_NX)) return false;
+    if (!__atomic_compare_exchange_n(e, &v, (v & ~PTE_NX) | PTE_DEP_EXEC, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return true;                                    /* (changed meanwhile: try again) */
+    invlpg(va & ~0xFFFULL);
+    return true;
+}
+
 /* The program touched @va: if it is a guard page, lift the guard.  On a
  * thread's stack (between the TEB's DeallocationStack and StackBase) the
  * page below becomes the new guard page and StackLimit follows, as
@@ -599,7 +621,7 @@ UINT32 um_page_protect(UmProcess *p, UINT64 va)
     pte_t *e = walk(p->pml4, va, false);
     if (!e || !(*e & (PTE_PRESENT | PTE_LAZY))) return 0;
     pte_t v = *e;
-    bool w = v & PTE_WRITE, x = !(v & PTE_NX);
+    bool w = v & PTE_WRITE, x = !(v & (PTE_NX | PTE_DEP_EXEC));
     UINT32 prot = x ? (w ? 0x40 : 0x20) : (w ? 0x04 : 0x02);
     return prot | ((v & PTE_GUARD) ? 0x100 : 0);
 }
@@ -1035,6 +1057,17 @@ UINT16 um_pe_subsystem(RamNode *f)
     UINT32 nt = rd32(d + 0x3C);
     if (nt + 24 + 70 > f->size) return 0;
     return rd16(d + nt + 24 + 68);                      /* OptionalHeader.Subsystem (PE32 and PE32+) */
+}
+
+/* OptionalHeader.DllCharacteristics (PE32 and PE32+): 0x100 NX_COMPAT,
+ * 0x40 DYNAMIC_BASE, ... (0 if not an image) */
+UINT16 um_pe_dll_characteristics(RamNode *f)
+{
+    if (!RamfsLoad(f) || !um_pe_machine(f)) return 0;
+    const UINT8 *d = (const UINT8 *)f->data;
+    UINT32 nt = rd32(d + 0x3C);
+    if (nt + 24 + 72 > f->size) return 0;
+    return rd16(d + nt + 24 + 70);
 }
 
 /* Whether PE file @f's manifest (resource type 24, its first one) asks
@@ -2324,6 +2357,12 @@ UmProcess *um_spawn_image(RamNode *exe, RamNode *cwd, UmConsole *con, bool yield
     p->prio_class = 2;
     if (UmCurrent() && (UmCurrent()->prio_class == 1 || UmCurrent()->prio_class == 5)) p->prio_class = UmCurrent()->prio_class;
     um_set_layout(p, um_pe_machine(exe) == 0x014C);
+    /* Data Execution Prevention as Windows' client default (OptIn) has it:
+     * always on for 64-bit programs, and for 32-bit ones only when the
+     * program is marked NX-compatible (/NXCOMPAT, every linker's default
+     * since 2008).  Older ones (SDL 1.2.8 builds its blitters into a data
+     * array and calls them) run with DEP off: UmDepFault */
+    p->dep_off = p->wow && !(um_pe_dll_characteristics(exe) & 0x0100);
 
     /* Map the program, ntdll (every process has it) and their imports */
     Loader *L = loader_new(p, err, err_cap);

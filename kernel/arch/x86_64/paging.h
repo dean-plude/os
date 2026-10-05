@@ -57,6 +57,10 @@
  * loaded module whose frame every process with the same bytes there
  * shares (kernel/um/um.c, image pages); never writable */
 #define PTE_IMAGE     (UINT64_C(1) << 52)
+/* Software bit (user pages, ignored by the MMU): a page whose NX bit was
+ * lifted when a program running with DEP off ran code there (UmDepFault);
+ * its protection still says not executable */
+#define PTE_DEP_EXEC  (UINT64_C(1) << 53)
 
 /* Address mask (strips flag bits from PTE) */
 #define PTE_ADDR_MASK UINT64_C(0x000FFFFFFFFFF000)

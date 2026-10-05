@@ -209,6 +209,7 @@ Wnd  *W(HWND h);                    /* NULL (and ERROR_INVALID_WINDOW_HANDLE) if
 Wnd  *W_quiet(HWND h);
 Wnd  *top_of(Wnd *w);               /* the top-level window holding @w */
 WClass *find_class_w(LPCWSTR name, HINSTANCE inst);
+int class_proc_wide(WNDPROC fn);
 void  wnd_screen_origin(Wnd *w, int client, POINT *p);      /* the window's (client) origin on screen */
 void  wnd_to_bitmap(Wnd *w, int client, POINT *p);          /* ...in its top-level's bitmap */
 int   wnd_visible(Wnd *w);          /* the window and all its ancestors are visible */

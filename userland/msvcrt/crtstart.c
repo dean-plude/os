@@ -39,6 +39,9 @@ CRTEXP wchar_t  *_wpgmptr;
 CRTEXP int       _fmode;
 CRTEXP int       _commode;
 CRTEXP unsigned  __mb_cur_max = 4;
+#ifndef _WIN64
+CRTEXP int _adjust_fdiv = 0;            /* x86: the Pentium FDIV workaround's switch (old MSVC code reads it) */
+#endif
 CRTEXP unsigned  __lc_codepage = 65001;           /* the variable older MinGW programs read; UTF-8 */
 
 /* Split a command line the way Microsoft's CRT does: whitespace separates

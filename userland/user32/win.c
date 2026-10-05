@@ -249,6 +249,20 @@ static void ensure_builtins(void)
     register_builtin_classes();
 }
 
+/* Whether @fn is a class's procedure registered with the W functions (1),
+ * the A functions (0), or no class's (-1).  A program that superclasses a
+ * built-in control (Delphi's VCL: GetClassInfoA("BUTTON"), its own class
+ * with its own procedure, CallWindowProcA to BUTTON's) calls the built-in
+ * Unicode procedure with ANSI messages, which Windows converts as it does
+ * for any Unicode procedure called with CallWindowProcA */
+int class_proc_wide(WNDPROC fn)
+{
+    ensure_builtins();
+    for (int i = 0; i < MAX_CLASSES; i++)
+        if (g_class[i].used && g_class[i].proc == fn) return g_class[i].wide;
+    return -1;
+}
+
 static WClass *find_class_raw(LPCWSTR name)
 {
     WClass *sys = NULL;
