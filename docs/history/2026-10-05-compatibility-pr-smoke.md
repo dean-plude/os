@@ -2,8 +2,8 @@
 
 PRs changing kernel, userland, headers, build definitions, core test definitions
 or the smoke harness run seven existing regressions on four CPUs: dlltest on
-x64 and x86, waitmigrationtest on x64 and x86, sectest, unwindtest and wvstarttest.
-They exercise loader/TLS, scheduler migration and waits, section memory, exception
+x64 and x86, waitmigrationtest on x64 and x86, chrometest on x64, unwindtest and wvstarttest.
+They exercise loader/TLS, scheduler migration and waits, shared-memory mapping/access rights, exception
 unwinding and browser runtime APIs. Each retains its core assertions and exit
 checks; starting successfully alone cannot pass. The per-test limits total at
 most 21 minutes and the workflow step has a 25-minute limit. There are no external

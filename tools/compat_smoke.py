@@ -6,7 +6,7 @@ import tempfile
 import selftest
 
 NAMES = ('dlltest x64', 'dlltest x86', 'wait migration x64', 'wait migration x86',
-         'sectest', 'unwindtest', 'wvstarttest')
+         'chromium start-up x64', 'unwindtest', 'wvstarttest')
 
 
 def selected(core=selftest.CORE):
@@ -46,6 +46,7 @@ def main():
         return 0
     Path(a.out).mkdir(parents=True, exist_ok=True)
     a.suite = 'compatibility smoke'
+    selftest.OUT = a.out
     # No downloads, audio, ACPI compiler or deliberate panic/reboot needed.
     with tempfile.TemporaryDirectory(prefix='compat-smoke-') as work:
         results = selftest.run_boot(a, tests, work, None, smp=4, data_mb=64, vga=('-vga', 'std'))
