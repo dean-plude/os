@@ -52,7 +52,7 @@
  * when they are); and a thread that blocks or sleeps changes its state and
  * switches out under the same hold, so a wake-up can't slip in between.
  * The scheduler runs on every CPU at once, without the big kernel lock. */
-#define current_thread ((Thread *)KiGetCurrentKpcr()->CurrentThread)
+#define current_thread ((Thread *)KiGetCurrentThread())
 static inline Thread *cpu_idle(void) { return KiGetCurrentKpcr()->IdleThread; }
 static inline uint32_t this_cpu(void) { return KiGetCurrentKpcr()->CpuNumber; }
 
