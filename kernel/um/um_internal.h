@@ -218,6 +218,7 @@ struct UmProcess {
     UINT32      parent_pid;     /* the process that started it (0: the system) */
     UINT64      create_time;    /* 100 ns units since 1601 */
     bool        wow;            /* a 32-bit (x86) program: compatibility mode, SysWOW64 DLLs */
+    bool        dep_off;        /* data pages run as code: a 32-bit program not marked NX-compatible (UmDepFault) */
     UmLayout    lay;            /* where its system areas and allocations go */
     char        name[32];
     char        image_path[RAMFS_PATH_MAX];   /* its program's path when it started ("C:\Apps\x.exe"; ProcessImageFileName) */
@@ -281,6 +282,7 @@ void       um_set_layout(UmProcess *p, bool wow);   /* 64-bit or 32-bit (WoW) ad
 void       um_wow_path(UmProcess *p, char *path);  /* System32 -> SysWOW64 for 32-bit programs */
 UINT16     um_pe_machine(const RamNode *f);     /* 0x8664, 0x014C, or 0 if not a PE file */
 UINT16     um_pe_subsystem(RamNode *f);   /* IMAGE_SUBSYSTEM_* (2 GUI, 3 console), 0 if not an image */
+UINT16     um_pe_dll_characteristics(RamNode *f);   /* IMAGE_DLLCHARACTERISTICS_* of the optional header */
 UmThread  *UmCurrentThread(void);
 UINT32     um_new_id(void);
 /* The calling thread should stop (its process or itself is being ended) */

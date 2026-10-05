@@ -119,10 +119,41 @@ static void note_cxx_exception(const EXCEPTION_RECORD *rec)
     NtNovaDebugPrint(msg, (ULONG)m);
 }
 
+/* An exception that reaches the program's own top-level filter (MinGW's
+ * startup code and SDL 1.2's "parachute" catch access violations, print
+ * "Fatal signal" and exit, so the kernel never reports the crash): the
+ * debug output says what it was and where */
+static void note_filtered_exception(const EXCEPTION_POINTERS *info)
+{
+    const EXCEPTION_RECORD *rec = info->ExceptionRecord;
+    if (rec->ExceptionCode == 0xE06D7363u) return;          /* (note_cxx_exception's) */
+    PVOID base = 0;
+    ULONG_PTR ret = 0;
+#ifdef _WIN64
+    peek(info->ContextRecord->Rsp, &ret, sizeof(ret));
+#else
+    peek(info->ContextRecord->Esp, &ret, sizeof(ret));
+#endif
+    RtlPcToFileHeader(rec->ExceptionAddress, &base);
+    char msg[256] = "exception ";
+    SIZE_T m = 10;
+    ULONG_PTR v[5] = { rec->ExceptionCode, (ULONG_PTR)rec->ExceptionAddress, (ULONG_PTR)base,
+                       rec->NumberParameters >= 2 ? rec->ExceptionInformation[1] : 0, ret };
+    const char *sep[5] = { " at ", " (module at ", ", address ", ", top of stack ",
+                           ") passed to the program's unhandled-exception filter\n" };
+    for (int i = 0; i < 5; i++) {
+        int digits = i ? 2 * (int)sizeof(void *) : 8;
+        for (int d = digits - 1; d >= 0; d--) msg[m++] = "0123456789ABCDEF"[(v[i] >> (4 * d)) & 0xF];
+        for (const char *q = sep[i]; *q && m < sizeof(msg) - 1; q++) msg[m++] = *q;
+    }
+    NtNovaDebugPrint(msg, (ULONG)m);
+}
+
 /* Called by the loader's top-level __except filter (last resort) */
 LONG nova_top_level_filter(PEXCEPTION_POINTERS info)
 {
     if (info && info->ExceptionRecord) note_cxx_exception(info->ExceptionRecord);
+    if (info && info->ExceptionRecord && info->ContextRecord && g_top_filter) note_filtered_exception(info);
     LONG r = g_top_filter ? g_top_filter(info) : EXCEPTION_EXECUTE_HANDLER;
     /* ending the process: the kernel says where it crashed (second chance) */
     if (r == EXCEPTION_EXECUTE_HANDLER && info && info->ExceptionRecord && info->ContextRecord)

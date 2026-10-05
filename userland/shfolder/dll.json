@@ -1,5 +1,3 @@
 {
-  "deps": [],
-  "base": "0x7FFB70000000",
-  "base_x86": "0x6E000000"
+  "deps": ["shell32", "kernel32", "ntdll"]
 }

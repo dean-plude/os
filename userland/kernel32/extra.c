@@ -878,6 +878,32 @@ WINBASEAPI PSLIST_ENTRY WINAPI InterlockedFlushSList(PSLIST_HEADER h)
 
 WINBASEAPI USHORT WINAPI QueryDepthSList(PSLIST_HEADER h) { return SL_DEPTH(h); }
 
+#ifndef _WIN64
+/* x86: the Interlocked functions are kernel32 exports there (x64 code has
+ * them as compiler intrinsics only), and code built with older compilers
+ * calls them: SuperTux 0.1.3's MinGW build imports InterlockedIncrement */
+LONG WINAPI k32_InterlockedIncrement(LONG volatile *p) { return __atomic_add_fetch(p, 1, __ATOMIC_SEQ_CST); }
+LONG WINAPI k32_InterlockedDecrement(LONG volatile *p) { return __atomic_sub_fetch(p, 1, __ATOMIC_SEQ_CST); }
+LONG WINAPI k32_InterlockedExchange(LONG volatile *p, LONG v) { return __atomic_exchange_n(p, v, __ATOMIC_SEQ_CST); }
+LONG WINAPI k32_InterlockedExchangeAdd(LONG volatile *p, LONG v) { return __atomic_fetch_add(p, v, __ATOMIC_SEQ_CST); }
+LONG WINAPI k32_InterlockedCompareExchange(LONG volatile *p, LONG v, LONG cmp)
+{
+    __atomic_compare_exchange_n(p, &cmp, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return cmp;
+}
+LONGLONG WINAPI k32_InterlockedCompareExchange64(LONGLONG volatile *p, LONGLONG v, LONGLONG cmp)
+{
+    __atomic_compare_exchange_n(p, &cmp, v, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return cmp;
+}
+#pragma comment(linker, "/export:InterlockedIncrement=_k32_InterlockedIncrement@4")
+#pragma comment(linker, "/export:InterlockedDecrement=_k32_InterlockedDecrement@4")
+#pragma comment(linker, "/export:InterlockedExchange=_k32_InterlockedExchange@8")
+#pragma comment(linker, "/export:InterlockedExchangeAdd=_k32_InterlockedExchangeAdd@8")
+#pragma comment(linker, "/export:InterlockedCompareExchange=_k32_InterlockedCompareExchange@12")
+#pragma comment(linker, "/export:InterlockedCompareExchange64=_k32_InterlockedCompareExchange64@20")
+#endif
+
 /* -----------------------------------------------------------------------
  * Processes
  * ----------------------------------------------------------------------- */

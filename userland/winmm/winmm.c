@@ -1,8 +1,7 @@
 /*
  * winmm.dll — multimedia timers, and the audio/joystick/MCI entry points.
- * Timers work; sound output (waveOut, PlaySound) is in wave.c.  There are
- * no recording, MIDI or game-controller drivers: those report that no
- * devices exist (the answer programs handle).
+ * Timers work; sound output (waveOut, PlaySound) is in wave.c, the
+ * joysticks (game controllers) in joystick.c.
  */
 
 #include <windows.h>
@@ -16,7 +15,6 @@ typedef UINT MMRESULT;
 #define MMSYSERR_INVALPARAM 11
 #define MMSYSERR_INVALHANDLE 5
 #define MMSYSERR_NOERROR 0
-#define JOYERR_UNPLUGGED    167
 #define MCIERR_DEVICE_NOT_INSTALLED 275
 
 /* ---- time ---- */
@@ -152,15 +150,6 @@ MMAPI MMRESULT WINAPI mixerGetControlDetailsA(HANDLE h, void *det, DWORD flags) 
 MMAPI MMRESULT WINAPI mixerSetControlDetails(HANDLE h, void *det, DWORD flags) { (void)h; (void)det; (void)flags; return MMSYSERR_INVALHANDLE; }
 MMAPI DWORD WINAPI mixerMessage(HANDLE h, UINT msg, DWORD_PTR a, DWORD_PTR b) { (void)h; (void)msg; (void)a; (void)b; return MMSYSERR_INVALHANDLE; }
 
-/* ---- joysticks: none ---- */
-MMAPI MMRESULT WINAPI joyGetThreshold(UINT id, UINT *t) { (void)id; if (t) *t = 0; return JOYERR_UNPLUGGED; }
-MMAPI MMRESULT WINAPI joySetThreshold(UINT id, UINT t) { (void)id; (void)t; return JOYERR_UNPLUGGED; }
-MMAPI MMRESULT WINAPI joySetCapture(HWND w, UINT id, UINT period, BOOL changed) { (void)w; (void)id; (void)period; (void)changed; return JOYERR_UNPLUGGED; }
-MMAPI MMRESULT WINAPI joyReleaseCapture(UINT id) { (void)id; return JOYERR_UNPLUGGED; }
-MMAPI UINT WINAPI joyGetNumDevs(void) { return 16; }        /* slots; each reports "unplugged" */
-MMAPI MMRESULT WINAPI joyGetPosEx(UINT id, void *info) { (void)id; (void)info; return JOYERR_UNPLUGGED; }
-MMAPI MMRESULT WINAPI joyGetPos(UINT id, void *info) { (void)id; (void)info; return JOYERR_UNPLUGGED; }
-MMAPI MMRESULT WINAPI joyGetDevCapsW(UINT_PTR id, void *caps, UINT n) { (void)id; (void)caps; (void)n; return JOYERR_UNPLUGGED; }
-MMAPI MMRESULT WINAPI joyGetDevCapsA(UINT_PTR id, void *caps, UINT n) { (void)id; (void)caps; (void)n; return JOYERR_UNPLUGGED; }   /* (SDL 1.2) */
+/* ---- joysticks: joystick.c ---- */
 
 

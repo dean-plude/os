@@ -1137,9 +1137,11 @@ USERAPI LRESULT CallWindowProcW(WNDPROC fn, HWND h, UINT msg, WPARAM wp, LPARAM 
     Wnd *w = W_quiet(h);
     /* a class's procedure keeps its own character set */
     int wide = 1;
-    if (w) {
-        if (fn == w->proc) wide = w->wide;
-        else if (w->cls && fn == w->cls->proc) wide = w->cls->wide;
+    if (w && fn == w->proc) wide = w->wide;
+    else if (w && w->cls && fn == w->cls->proc) wide = w->cls->wide;
+    else {
+        int k = class_proc_wide(fn);                    /* another class's (a superclassed control's) */
+        if (k >= 0) wide = k;
     }
     return call_proc(w, fn, wide, h, msg, wp, lp, 1);
 }
@@ -1149,9 +1151,11 @@ USERAPI LRESULT CallWindowProcA(WNDPROC fn, HWND h, UINT msg, WPARAM wp, LPARAM 
     if (!fn) return 0;
     Wnd *w = W_quiet(h);
     int wide = 0;
-    if (w) {
-        if (fn == w->proc) wide = w->wide;
-        else if (w->cls && fn == w->cls->proc) wide = w->cls->wide;
+    if (w && fn == w->proc) wide = w->wide;
+    else if (w && w->cls && fn == w->cls->proc) wide = w->cls->wide;
+    else {
+        int k = class_proc_wide(fn);                    /* another class's (a superclassed control's) */
+        if (k >= 0) wide = k;
     }
     return call_proc(w, fn, wide, h, msg, wp, lp, 0);
 }

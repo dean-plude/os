@@ -172,6 +172,11 @@ static const StoreApp g_catalog[] = {
       "Cave Story\\CaveStory\\Doukutsu.exe", KIND_ARCHIVE, 2,
       "32-bit freeware; draws with DirectDraw (NovaOS's ddraw.dll, cnc-ddraw) and plays on NovaOS (nightly corpus)",
       "CS", GDI_C(0xC0, 0x40, 0x30) },
+    { "SuperTux", "SuperTux Development Team", "Tux's classic 2005 jump-and-run, in 26 levels across Antarctica (GPL)",
+      CAT_MEDIA, "https://downloads.sourceforge.net/project/super-tux/supertux/0.1.3/supertux-0.1.3-setup.exe", "supertux-0.1.3-setup.exe", NULL,
+      "SuperTux\\supertux.exe", KIND_SETUP, 8,
+      "32-bit installer (Inno Setup); an SDL 1.2 game that plays on NovaOS with a game pad (winmm joystick) or the keyboard (nightly corpus)",
+      "ST", GDI_C(0x20, 0x60, 0xC0) },
     /* Runtimes */
     { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
       CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",

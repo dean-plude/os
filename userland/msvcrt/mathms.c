@@ -199,4 +199,27 @@ __asm__(".section .text$ci_math,\"xr\"\n"
         CI_EXPORT(exp) CI_EXPORT(log) CI_EXPORT(log10) CI_EXPORT(sin) CI_EXPORT(sinh) CI_EXPORT(sqrt)
         CI_EXPORT(tan) CI_EXPORT(tanh) CI_EXPORT(atan2) CI_EXPORT(fmod) CI_EXPORT(pow) "\"\n\t"
         ".text\n");
+
+/* x86: what code from older compilers (Visual C++ 6 and before) calls to
+ * convert a double to an integer: _ftol pops st(0) and returns it, cut
+ * toward zero, as a 64-bit integer in edx:eax (an int is eax's half);
+ * _ftol2 and _ftol2_sse are the same conversion under later names */
+#define FTOL(n) ".globl __" #n "\n__" #n ":\n\t"
+__asm__(".section .text$ftol,\"xr\"\n"
+        FTOL(ftol) FTOL(ftol2) FTOL(ftol2_sse)
+        "subl $12, %esp\n\t"
+        "fnstcw 8(%esp)\n\t"
+        "movw 8(%esp), %ax\n\t"
+        "orw $0xC00, %ax\n\t"                     /* round toward zero */
+        "movw %ax, 10(%esp)\n\t"
+        "fldcw 10(%esp)\n\t"
+        "fistpll (%esp)\n\t"
+        "fldcw 8(%esp)\n\t"
+        "movl (%esp), %eax\n\t"
+        "movl 4(%esp), %edx\n\t"
+        "addl $12, %esp\n\t"
+        "retl\n"
+        ".section .drectve,\"yn\"\n\t"
+        ".ascii \" /EXPORT:__ftol=__ftol /EXPORT:__ftol2=__ftol2 /EXPORT:__ftol2_sse=__ftol2_sse\"\n\t"
+        ".text\n");
 #endif

@@ -1,0 +1,3 @@
+{
+  "deps": ["msvcrt", "kernel32", "ntdll"]
+}

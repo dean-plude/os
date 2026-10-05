@@ -15,6 +15,7 @@ and saved as an optimized PNG.
 | `blobby-volley-2.png` | the corpus test's full-screen screenshot (`tests/appcorpus/935-blobby-volley.py`) at the display's 800x600, reduced to 256 colours |
 | `lbreakout2.png` | LBreakout2's first level in full screen at the display's 640x480 (`tests/appcorpus/940-lbreakout2.py`'s steps, then Local Game, Start Original Set), reduced to 256 colours |
 | `cave-story.png` | Cave Story's First Cave in full screen at the display's 640x480 (`tests/appcorpus/945-cave-story.py`'s steps, then Z held through the opening lines), reduced to 256 colours |
+| `supertux.png` | SuperTux's first level, "Welcome to Antarctica", in full screen at the display's 640x480, Tux walked right with the game pad (`tests/appcorpus/947-supertux.py`'s steps), reduced to 256 colours |
 | `beneath-a-steel-sky.png` | a copy of `tests/reference/beneath a steel sky.png`: the corpus installs ScummVM, starts the game, skips the intro and walks Foster with a click |
 
 To refresh one, take a new screenshot the same way (`!shot NAME.png` in

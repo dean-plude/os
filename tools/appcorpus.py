@@ -29,7 +29,11 @@ tone for that long, App(sound=(None, ms)) any sound, such as a game's
 music, for that long while it runs), NovaOS boots with a sound card on a private
 PulseAudio server (as tools/selftest.py's core suite does) and what it
 played is kept in --out/sound.wav and checked after the run; without
-pulseaudio those programs are skipped, which is not a failure.
+pulseaudio those programs are skipped, which is not a failure.  When a
+program plays with a game pad (App(pad=KIND)), NovaOS boots with one
+plugged in: tools/padpeer.py behind a QEMU usb-redir device on an xHCI
+controller (as tools/selftest.py's gamepad boot has), which the
+program's interaction moves through pad() (the peer's control port).
 
 The exit status is the number of programs that failed.  --summary appends
 a Markdown pass/fail table, one row per program (the nightly workflow,
@@ -46,6 +50,7 @@ REFERENCES = os.path.join(ROOT, 'tests', 'reference')
 DRIVE_LABEL = 'NOVACORPUS'
 ANSI = re.compile(r'\x1b\[[0-9;]*m')
 SAMPLE = 'NovaOS app corpus\na needle in a haystack\nthe end\n'
+PAD_PORT = 10720                    # the game pad's peer (tools/padpeer.py); its control port is PAD_PORT + 100
 ECHO_PORT = 2323                    # the echo server PuTTY connects to (on the host)
 HTTPS_PORT = 8443                   # the HTTPS server Firefox loads a page from (on the host)
 STORE_C = os.path.join(ROOT, 'kernel', 'apps', 'store.c')
@@ -81,16 +86,33 @@ class App:
     processes the browser ends itself), so only a crash fails it before
     the screenshot.  @runtimes: names of App Store runtimes (such as
     "Mesa 3D") whose downloads are put in C:\\Downloads the same way, for
-    the program's tests to install first with Test(store=NAME)."""
+    the program's tests to install first with Test(store=NAME).  @pad: a
+    game pad of that kind (tools/padpeer.py --kind: xbox360, xboxone or
+    hid) is plugged in before NovaOS boots; the interaction moves it with
+    pad("buttons=0x1000 lx=32767") (padpeer's control lines)."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
                  gui=False, net=False, interact=None, https=False, store=None, processes=False,
-                 mic=False, sound=None, runtimes=()):
+                 mic=False, sound=None, runtimes=(), pad=None):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
         self.https, self.store, self.ca, self.processes = https, store, None, processes
         self.mic, self.sound = mic, sound
         self.runtimes = list(runtimes)
+        self.pad = pad
+
+
+def pad(line):
+    """Set the game pad's buttons and sticks (App(pad=KIND)): one of
+    tools/padpeer.py's control lines, such as "buttons=0x1000 lx=32767";
+    why it failed, or None"""
+    try:
+        with socket.create_connection(('127.0.0.1', PAD_PORT + 100), timeout=10) as s:
+            s.sendall((line + '\n').encode())
+            reply = s.makefile().readline().strip()
+        return None if reply == 'ok' else f'the game pad answered "{reply}"'
+    except OSError as e:
+        return f'the game pad: {e}'
 
 
 A = r'C:\Apps'
@@ -106,7 +128,7 @@ def load_apps():
     apps = []
     for f in sorted(glob.glob(os.path.join(ROOT, 'tests', 'appcorpus', '*.py'))):
         ns = {'App': App, 'Test': Test, 'A': A, 'DRIVE_LABEL': DRIVE_LABEL, 'ROOT': ROOT, 'ECHO_PORT': ECHO_PORT,
-              'HTTPS_PORT': HTTPS_PORT, '__file__': f}
+              'HTTPS_PORT': HTTPS_PORT, 'pad': pad, '__file__': f}
         exec(compile(open(f).read(), f, 'exec'), ns)
         if not isinstance(ns.get('APP'), App):
             sys.exit(f'{f}: APP must be an App')
@@ -115,6 +137,20 @@ def load_apps():
 
 
 APPS = load_apps()
+
+
+def pad_boot(kind, work):
+    """tools/padpeer.py as a game pad of @kind on an xHCI controller: QEMU's
+    arguments and the peer"""
+    log = os.path.join(work, 'padpeer.log')
+    p = subprocess.Popen([sys.executable, '-u', os.path.join(ROOT, 'tools', 'padpeer.py'), '--port', str(PAD_PORT),
+                          '--kind', kind], stdout=open(log, 'w'), stderr=subprocess.STDOUT)
+    for _ in range(100):
+        if 'listening' in open(log).read() or p.poll() is not None:
+            break
+        time.sleep(0.05)
+    return ['-device', 'qemu-xhci,id=padxhci', '-chardev', f'socket,id=pad,host=127.0.0.1,port={PAD_PORT}',
+            '-device', 'usb-redir,id=pad,chardev=pad,bus=padxhci.0'], p
 
 
 def fetch(url, cache):
@@ -429,6 +465,10 @@ def main():
             staged = [x for x in staged if not (x.mic or x.sound)]
     puts = [(apps_dir, A)] + [(os.path.join(work, d), 'C:\\' + d) for d in ('Downloads', 'Programs')
                               if os.path.isdir(os.path.join(work, d))]
+    pads = sorted({x.pad for x in staged if x.pad})
+    extra, padpeer = (pad_boot(pads[0], work) if pads else ([], None))
+    if ntfs:
+        extra += ['-drive', f'format=raw,file={ntfs}']
     t_boot = time.time()
     try:
         # Drive C: gets about 2.3 GB of programs before the first one starts,
@@ -437,10 +477,12 @@ def main():
         # memory runs short and read back from the data disk when wanted, so
         # 6 GB is room enough; the data disk needs room for all of C:
         nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=6144, data_mb=12288,
-                    extra_args=['-drive', f'format=raw,file={ntfs}'] if ntfs else [],
+                    extra_args=extra,
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
         print(e)
+        if padpeer:
+            padpeer.kill()
         for app in staged:
             results[app.name] = ('NovaOS did not boot', 0, [])
         report(a, apps, results)
@@ -495,6 +537,8 @@ def main():
             echo.close()
         if https:
             https.close()
+        if padpeer:
+            padpeer.kill()
         with open(os.path.join(a.out, 'serial.log'), 'w') as f:
             f.write(log + nova.sr.read_new())
         shutil.rmtree(work, ignore_errors=True)

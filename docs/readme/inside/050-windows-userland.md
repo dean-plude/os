@@ -18,7 +18,8 @@
   as setup programs' licence pages need), `shell32`, `ole32`/`oleaut32` (COM and OLE Automation with
   type libraries, and calls between processes over named pipes with the standard marshaler and the `IDispatch` proxy; the Windows Runtime's strings and the few runtime classes Win32 programs ask for, such as `UISettings` for the user's colours), `rpcrt4` (the NDR engine COM proxy/stub DLLs run on:
   stubless proxies, `NdrStubCall2`, `CStdStubBuffer`, the `NdrDll*` entry points), `advapi32`, `ws2_32`, `oleacc`,
-  `winmm` and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
+  `winmm` (joysticks too: `joyGetPosEx` and `joyGetDevCaps` over NovaOS's
+  game controllers, as SDL 1.2 games read pads) and `mmdevapi` (sound: `waveOut`, `waveIn`, `PlaySound`, MIDI,
   WASAPI playback and capture, a device ID or endpoint for each sound
   device, device 0 being the default as on Windows, each with its own
   endpoint volume; sound plays at its own rate and is converted once, by
@@ -48,7 +49,9 @@
   MIT-licensed cnc-ddraw, every surface in memory and the screen drawn
   with Direct3D 9, OpenGL or GDI, in a display mode switched for the
   program), `dinput` (DirectInput 3 to 7, over the same devices as
-  `dinput8`), and
+  `dinput8`), `shfolder` (the old
+  `SHGetFolderPath` DLL setup programs look for), `crtdll` (the NT 3
+  C runtime, forwarding to `msvcrt`), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`, `d3dcompiler_47`), the ones Qt WebEngine imports
   (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12
