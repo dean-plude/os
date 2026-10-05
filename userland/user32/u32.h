@@ -44,7 +44,9 @@ enum { CTL_GET_RECT = 1, CTL_SET_RECT, CTL_CAPTURE, CTL_CURSOR, CTL_ACTIVATE, CT
        CTL_DISPLAY_MODE, CTL_SET_DISPLAY, CTL_DROP_DONE, CTL_DROP_STATUS, CTL_SET_CURSOR, CTL_CURSOR_SHAPE,
        CTL_HWND_TAG, CTL_SET_HWND, CTL_FOREIGN, CTL_MONITOR, CTL_HEAD_MODE, CTL_SET_HEAD,
        CTL_SET_SYSCURSOR, CTL_SYSCURSOR_IMAGE, CTL_TOUCH, CTL_TABLET, CTL_SET_DPI, CTL_SET_SCALE, CTL_GAMEPAD,
-       CTL_SET_CURSOR_POS, CTL_CLIP_CURSOR, CTL_SET_FRAME };
+       CTL_SET_CURSOR_POS, CTL_CLIP_CURSOR, CTL_SET_FRAME,
+       /* windows of different processes (xproc.c; um_gui.c says what each does) */
+       CTL_XSEND = 48, CTL_XFETCH, CTL_XREPLY, CTL_XRESULT, CTL_EMBED, CTL_EMBED_INFO, CTL_XBLIT, CTL_SET_BACK };
 /* display.c: the monitors (GetSystemMetrics' virtual screen) */
 int  u32_monitor_count(void);
 void u32_virtual_screen(RECT *r);
@@ -87,6 +89,7 @@ int  dpi_len_to_wnd(Wnd *w, int v);
 void dlg_dpi_changed(Wnd *w, int ok, int nk);   /* dialog.c: a per-monitor v2 dialog's controls and font */
 BOOL adjust_window_rect(LPRECT r, DWORD style, BOOL menu, DWORD ex, int k);   /* win.c */
 #define WM_NOVA_DROP 0x03FE                     /* from the desktop: a drop from another program (drop.c) */
+#define WM_NOVA_EMBED 0x03F4                    /* from the desktop: another process embedded the window (wParam: the parent) or let it go (0) */
 #define FRAME_TITLE 32                          /* the desktop's title bar */
 #define FRAME_BORDER 1
 
@@ -168,6 +171,8 @@ struct Wnd {
     int       kframe;               /* top-level: the frame the desktop draws (frame_flags; -1 a popup) */
     HANDLE    dpi_ctx;              /* the thread's DPI awareness context when it was made */
     INT32     klog[4];              /* DPI-aware: the bitmap rectangle last given the desktop */
+    HWND      foreign_parent;       /* top-level: another process's window holds it (SetParent there; xproc.c) */
+    void     *kback;                /* top-level: the back buffer the desktop was told of (CTL_SET_BACK) */
 };
 enum {
     WF_DESTROYING = 1, WF_DESTROYED = 2, WF_CREATED = 4, WF_DIALOG = 8, WF_MENU_TRACK = 16,
@@ -351,6 +356,29 @@ HICON  load_icon_res(HINSTANCE inst, LPCWSTR name, int cx, int cy, int cursor);
 HBITMAP load_bitmap_res(HINSTANCE inst, LPCWSTR name, UINT flags);
 HICON  sys_icon(int which);          /* IDI_* */
 const void *find_res(HINSTANCE inst, LPCWSTR name, LPCWSTR type, DWORD *size);
+
+/* Windows of other processes (xproc.c).  Calls on another process's
+ * window run in that process, in the thread that owns the window, as a
+ * message would; a window can be embedded in another process's (SetParent) */
+int     x_claim(void);                      /* take what other processes sent us; 1 if any */
+BOOL    x_post(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+LRESULT x_send(HWND h, UINT msg, WPARAM wp, LPARAM lp, int wide, DWORD timeout, int *failed);
+BOOL    x_set_pos(HWND h, HWND after, int x, int y, int cx, int cy, UINT flags);
+BOOL    x_show(HWND h, int cmd);
+LONG_PTR x_get_long(HWND h, int index, int *failed);
+LONG_PTR x_set_long(HWND h, int index, LONG_PTR v, int *failed);
+HWND    x_set_focus(HWND h);
+BOOL    x_enable(HWND h, BOOL on);
+DWORD   x_thread(HWND h);
+int     x_get_text(HWND h, WCHAR *buf, int n);       /* -1: failed */
+int     x_class_name(HWND h, WCHAR *buf, int n);     /* 0: failed */
+HWND    x_set_parent(HWND h, Wnd *parent);           /* embed another process's window (parent NULL: let it go) */
+HWND    x_embed_parent(HWND h);                      /* the window of ours that holds it (0: none) */
+void    embeds_follow(void);                         /* our windows moved: the embedded ones follow */
+void    embed_notified(Wnd *top, HWND parent);       /* WM_NOVA_EMBED */
+int     embed_origin(Wnd *top, POINT *p, HWND *root); /* where its foreign parent's client area is (thread coordinates) */
+void    x_send_queue(DWORD tid, void (*fn)(void *), void *arg);   /* msg.c: run fn in thread tid's message loop */
+int     ensure_kernel_window(Wnd *w);                /* win.c */
 
 /* drop.c */
 void drop_from_kernel(Wnd *top, const MSG *km);

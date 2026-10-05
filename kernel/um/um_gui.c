@@ -125,6 +125,24 @@ typedef struct {
     void       *drop;               /* a drop delivered and not yet fetched (kmalloc) */
     UINT32      drop_len;
     UINT32      drop_seq;           /* the drop delivered here that the source waits on (0: none) */
+    /* Embedded in another process's window (CTL_EMBED: WebView2's host
+     * parents the browser process's window in its own, as SetParent does
+     * across processes on Windows).  The WND stays this process's own,
+     * frameless, owned by the host's and kept over the parent's client area */
+    UINT32      host;               /* the host's window id (0: a top-level window) */
+    UINT32      parent_hwnd;        /* the host's user32 handle of the parent window */
+    INT32       pox, poy;           /* the parent's client origin in the host's client area */
+    INT32       clip[4];            /* the parent's visible client area (left, top, right, bottom), host client coordinates */
+    bool        parent_vis;         /* the parent and its ancestors show */
+    bool        want_vis;           /* the program's own ShowWindow */
+    INT32       rx, ry;             /* its client origin in the parent's client area */
+    INT32       src_x, src_y;       /* the part clipped off at the left and the top (logical px) */
+    UINT32      saved_style;        /* the WND's own frame and flags, for when it is let go */
+    bool        saved_fixed, saved_noact, saved_popup;
+    int         saved_owner;
+    UINT32      key_embed;          /* (a host) the embedded window that has the keyboard */
+    UINT64      back;               /* user32's back buffer (CTL_SET_BACK): CTL_XBLIT writes it with the bitmap */
+    int         back_stride;        /* its pixels per row */
 } GuiWin;
 
 /* The table's slots (used, proc, id), the message queues, the quit flags
@@ -206,6 +224,137 @@ static void enqueue(GuiWin *g, UINT32 msg, UINT64 wp, UINT64 lp, int x, int y)
 
 static UINT64 packxy(int x, int y) { return ((UINT64)(UINT16)y << 16) | (UINT16)x; }
 
+static GuiWin *win_by_id(UINT32 id)             /* any process's; under g_gui_lock */
+{
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++)
+        if (g_win[i].used && g_win[i].id == id) return &g_win[i];
+    return NULL;
+}
+
+/* -----------------------------------------------------------------------
+ * Windows embedded in another process's window (CTL_EMBED).  DesktopLock
+ * held throughout: it keeps the slots from being freed
+ * ----------------------------------------------------------------------- */
+#define WM_NOVA_EMBED   0x03F4  /* user32's u32.h: the window was embedded (wParam: the parent) or let go (0) */
+#define EMBED_PENDING   16
+
+/* Embeds asked for before the window had a desktop window: they take
+ * effect at its CTL_SET_HWND (a hidden window gets one when first shown) */
+static struct { UINT32 hwnd, host; INT32 in[8]; } g_embed_pending[EMBED_PENDING];
+
+static GdiRect frame_for(UINT32 style, GdiRect c);
+
+static GuiWin *embed_host(GuiWin *g)
+{
+    if (!g->host) return NULL;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    GuiWin *h = win_by_id(g->host);
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    return h && h->wnd && h->proc && !h->proc->exited ? h : NULL;
+}
+
+/* Where the client area is on screen: an embedded window's whole client
+ * area (its WND shows only the part inside the parent) */
+static void client_pos(GuiWin *g, int *x, int *y)
+{
+    GuiWin *h = embed_host(g);
+    if (h) {
+        GdiRect hc = WmClientRect(h->wnd);
+        *x = hc.x + g->pox + g->rx; *y = hc.y + g->poy + g->ry;
+        return;
+    }
+    GdiRect c = WmClientRect(g->wnd);
+    *x = c.x; *y = c.y;
+}
+
+/* Put an embedded window where its host has it: over the parent's client
+ * area and clipped to it, shown while the program, the parent and the
+ * host's window all show it */
+static void embed_place(GuiWin *g)
+{
+    WND *w = g->wnd;
+    GuiWin *h = embed_host(g);
+    if (!w || !h) return;
+    GdiRect hc = WmClientRect(h->wnd);
+    int x = hc.x + g->pox + g->rx, y = hc.y + g->poy + g->ry;
+    int cl = hc.x + g->clip[0], ct = hc.y + g->clip[1], cr = hc.x + g->clip[2], cb = hc.y + g->clip[3];
+    if (cl < hc.x) cl = hc.x;
+    if (ct < hc.y) ct = hc.y;
+    if (cr > hc.x + hc.w) cr = hc.x + hc.w;
+    if (cb > hc.y + hc.h) cb = hc.y + hc.h;
+    int l = x > cl ? x : cl, t = y > ct ? y : ct;
+    int r = x + g->cw < cr ? x + g->cw : cr, b = y + g->ch < cb ? y + g->ch : cb;
+    bool vis = g->want_vis && g->parent_vis && h->wnd->visible && !h->wnd->minimized && r > l && b > t;
+    if (r <= l) r = l + 1;
+    if (b <= t) b = t + 1;
+    g->src_x = l - x; g->src_y = t - y;
+    GdiRect f = RECT(l, t, r - l, b - t);
+    if (f.x != w->frame.x || f.y != w->frame.y || f.w != w->frame.w || f.h != w->frame.h) WmSetFrame(w, f);
+    if (w->visible != vis) {
+        WmShowWindow(w, vis);
+        if (!vis && WmGetCapture() == w) WmSetCapture(NULL);
+    }
+}
+
+/* Embed @g in @h's window; in: { op, parent's client origin x, y in h's
+ * client area, its visible client area l, t, r, b, it shows } */
+static void embed_apply(GuiWin *g, GuiWin *h, UINT32 parent, const INT32 in[8])
+{
+    WND *w = g->wnd;
+    if (!w || !h->wnd || g == h) return;
+    bool first = !g->host;
+    if (first) {
+        g->saved_style = w->style;
+        g->saved_fixed = w->fixed_size;
+        g->saved_noact = w->no_activate;
+        g->saved_popup = w->popup;
+        g->saved_owner = w->owner;
+        g->want_vis = w->visible;
+        /* the numbers of its window rectangle are its place in the parent
+         * now, as Windows' SetParent keeps them */
+        g->rx = w->frame.x; g->ry = w->frame.y;
+        bool was_active = w->active;
+        w->style = 0;
+        w->fixed_size = true;
+        w->no_activate = true;
+        w->popup = false;                       /* (a tool window's: above every window, not just its host) */
+        w->maximized = w->snapped = false;
+        w->active = false;
+        if (was_active) WmSetActive(h->wnd);
+    }
+    g->host = h->id;
+    g->parent_hwnd = parent;
+    g->pox = in[1]; g->poy = in[2];
+    memcpy(g->clip, in + 3, sizeof(g->clip));
+    g->parent_vis = in[7] != 0;
+    w->owner = h->wnd->id;
+    WmKeepAbove(w, h->wnd);
+    embed_place(g);
+    if (first) enqueue(g, WM_NOVA_EMBED, parent, 0, 0, 0);
+    WmInvalidate();
+}
+
+/* Back to a top-level window of its own, where its numbers say (Windows'
+ * SetParent(NULL) keeps them too) */
+static void embed_release(GuiWin *g)
+{
+    WND *w = g->wnd;
+    GuiWin *h = embed_host(g);
+    if (h && h->key_embed == g->id) h->key_embed = 0;
+    g->host = 0;
+    g->src_x = g->src_y = 0;
+    if (!w) return;
+    w->style = g->saved_style;
+    w->fixed_size = g->saved_fixed;
+    w->no_activate = g->saved_noact;
+    w->popup = g->saved_popup;
+    w->owner = g->saved_owner;
+    WmSetFrame(w, frame_for(w->style, RECT(g->rx, g->ry, g->cw, g->ch)));
+    WmShowWindow(w, g->want_vis);
+    enqueue(g, WM_NOVA_EMBED, 0, 0, 0, 0);
+    WmInvalidate();
+}
+
 /* -----------------------------------------------------------------------
  * WM callbacks (desktop thread, DesktopLock held; the queue side takes
  * g_gui_lock itself)
@@ -216,15 +365,17 @@ static void gui_paint(WND *w)
     if (!g || !g->proc || g->proc->exited) return;
     GdiRect cr = WmClientRect(w);
     int k = g->scale > 1 ? g->scale : 1;
-    int w_px = cr.w < g->cw ? cr.w : g->cw;
-    int h_px = cr.h < g->ch ? cr.h : g->ch;
-    if (w_px * k > g->pmaxw) w_px = g->pmaxw / k;
-    if (h_px * k > g->pmaxh) h_px = g->pmaxh / k;
+    int sx = g->host ? g->src_x : 0, sy = g->host ? g->src_y : 0;   /* (an embedded window clipped by its parent) */
+    int w_px = cr.w < g->cw - sx ? cr.w : g->cw - sx;
+    int h_px = cr.h < g->ch - sy ? cr.h : g->ch - sy;
+    if ((w_px + sx) * k > g->pmaxw) w_px = g->pmaxw / k - sx;
+    if ((h_px + sy) * k > g->pmaxh) h_px = g->pmaxh / k - sy;
     static UINT32 row[GUI_MAX_W * GDI_MAX_SCALE];   /* desktop thread only: k bitmap rows */
     for (int y = 0; y < h_px; y++) {
         bool ok = true;
         for (int j = 0; j < k && ok; j++)
-            ok = um_read(g->proc, g->bitmap + ((UINT64)y * k + j) * g->stride * 4, row + j * w_px * k, (UINT64)w_px * k * 4);
+            ok = um_read(g->proc, g->bitmap + (((UINT64)(y + sy) * k + j) * g->stride + (UINT64)sx * k) * 4,
+                         row + j * w_px * k, (UINT64)w_px * k * 4);
         if (!ok) break;
         GdiBlitBGRAScaled(RECT(cr.x, cr.y + y, w_px, 1), row, w_px * k, k);
     }
@@ -305,6 +456,13 @@ static void gui_key(WND *w, const KeyEvent *k)
 {
     GuiWin *g = w->user;
     if (!g) return;
+    if (g->key_embed) {                         /* a window embedded in this one has the keyboard */
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        GuiWin *e = win_by_id(g->key_embed);
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        if (e && e->host == g->id && e->wnd && e->wnd->visible) g = e;
+        else g->key_embed = 0;
+    }
     UINT32 vk = UmScancodeToVk(k->scancode, k->extended) & 0xFF;
     bool repeat = k->pressed && g_keydown[vk];
     g_keydown[vk] = k->pressed;
@@ -352,6 +510,18 @@ static void gui_mouse(WND *w, WmMouseMsg msg, int x, int y)
 {
     GuiWin *g = w->user;
     if (!g) return;
+    bool press = msg == WM_MOUSE_DOWN || msg == WM_MOUSE_RDOWN || msg == WM_MOUSE_MDOWN || msg == WM_MOUSE_XDOWN ||
+                 msg == WM_MOUSE_DBLCLK;
+    GuiWin *h = embed_host(g);
+    if (h) {
+        x += g->src_x; y += g->src_y;           /* (its client area, of which the WND shows a part) */
+        if (press) {                            /* a click gives it the keyboard, and its host the focus */
+            h->key_embed = g->id;
+            if (!h->wnd->active) WmSetActive(h->wnd);
+        }
+    } else if (press) {
+        g->key_embed = 0;
+    }
     UINT64 lp = packxy(x, y), mk = mk_flags();
     switch (msg) {
     case WM_MOUSE_DOWN:   enqueue(g, WM_LBUTTONDOWN, mk | 1, lp, x, y); break;
@@ -406,8 +576,12 @@ static bool gui_tick(WND *w)
     UINT64 now = sched_ticks();
     bool any = false;
 
+    if (g->host) {                              /* embedded: follow the host's window, or go back to the desktop */
+        if (embed_host(g)) embed_place(g);
+        else embed_release(g);
+    }
     GdiRect cr = WmClientRect(w);
-    if (!w->minimized && (g->flags & GUI_RESIZABLE)) {
+    if (!g->host && !w->minimized && (g->flags & GUI_RESIZABLE)) {
         int nw = cr.w < 1 ? 1 : cr.w > g->maxw ? g->maxw : cr.w;
         int nh = cr.h < 1 ? 1 : cr.h > g->maxh ? g->maxh : cr.h;
         if (nw != g->cw || nh != g->ch || w->maximized != g->was_max) {
@@ -422,12 +596,18 @@ static bool gui_tick(WND *w)
         enqueue(g, WM_SIZE, w->minimized ? 1 : w->maximized ? 2 : 0, packxy(g->cw, g->ch), 0, 0);
         any = true;
     }
-    if (cr.x != g->last_x || cr.y != g->last_y) {
-        g->last_x = cr.x; g->last_y = cr.y;
-        enqueue(g, WM_MOVE, 0, packxy(cr.x, cr.y), 0, 0);
+    int cx, cy;
+    client_pos(g, &cx, &cy);
+    if (cx != g->last_x || cy != g->last_y) {
+        g->last_x = cx; g->last_y = cy;
+        enqueue(g, WM_MOVE, 0, packxy(cx, cy), 0, 0);
         any = true;
     }
     bool active = w->active && w->visible && !w->minimized;
+    if (g->host) {                              /* embedded: while its host is active and it has the keyboard */
+        GuiWin *h = embed_host(g);
+        active = h && h->wnd->active && h->key_embed == g->id && w->visible;
+    }
     if (active != g->was_active) {
         g->was_active = active;
         enqueue(g, WM_ACTIVATE, active ? 1 : 0, 0, 0, 0);
@@ -678,6 +858,8 @@ static UINT64 sys_gui_create(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     return g->id;
 }
 
+static bool xmsg_waiting(UmProcess *p);
+
 /* Threads whose message wait was woken by another thread (NtNovaGuiCtl
  * CTL_WAKE: user32 posted to the thread's own queue) */
 #define GUI_WAKES 32
@@ -713,8 +895,10 @@ static UINT64 sys_gui_getmessage(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
                 break;
             }
         }
+        bool xmsg = !got && !woken && xmsg_waiting(p);
         spin_unlock_irqrestore(&g_gui_lock, s);
         if (woken) return (UINT64)(INT64)-2;
+        if (xmsg) return (UINT64)(INT64)-3;
         if (got) {
             if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a2, &out, sizeof(GuiMsg)))) return (UINT64)(INT64)-1;
             return 1;
@@ -760,7 +944,10 @@ static UINT64 sys_gui_show(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     UmProcess *p = UmCurrent();
     DesktopLock();
     GuiWin *g = win_lookup(p, a1);
-    if (g && g->wnd) {
+    if (g && g->wnd && g->host) {                   /* embedded: shown with its parent */
+        g->want_vis = a2 != 0;
+        embed_place(g);
+    } else if (g && g->wnd) {
         WmShowWindow(g->wnd, a2 != 0);
         if (a2 && !g->wnd->no_activate) WmSetActive(g->wnd);
         WmInvalidate();
@@ -1025,6 +1212,63 @@ static UINT64 sys_gui_killtimer(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
  *                 Direct3D's and DXGI's adapter identifiers report).
  *                 0: no such adapter */
 #define CTL_ADAPTER        37
+/* Windows of different processes working together, as one HWND does in
+ * every process on Windows (WebView2: its host parents the browser
+ * process's window in its own and sizes it; Chromium's GPU process draws
+ * into it).  Handles are user32's (CTL_SET_HWND); hwnd is 0 unless said:
+ *  48 XSEND     arg: a handle of another process; ptr <- { flags (1: the
+ *               sender waits for an answer), bytes, then the message (user32's
+ *               own layout, at most XMSG_MAX bytes) }: queued for that
+ *               process, whose GUI threads' NtNovaGuiGetMessage returns -3
+ *               until one takes it.  Returns its number, 0 if the handle's
+ *               process is gone (or is the caller)
+ *  49 XFETCH    ptr <-> { number, flags, bytes (out); room (in); then the
+ *               message }: the oldest one queued for this process; returns
+ *               1, 0 if there is none.  One nobody waits on is done with
+ *  50 XREPLY    arg: the number; ptr <- { answer (64 bits), bytes, 0, then
+ *               data (at most XMSG_MAX bytes) }: the answer to one taken
+ *  51 XRESULT   arg: the number; ptr <-> { answer (64 bits), bytes (out);
+ *               room, wait ms, give up (in); then the data }.  Returns 1
+ *               answered, 0 not yet (after waiting up to wait ms; with
+ *               give up the answer is dropped when it comes), 2 never (the
+ *               window's process is gone), 3 not yet, and a message is
+ *               queued for the caller (a sender answers those while it
+ *               waits, so two programs sending to each other never stall)
+ *  52 EMBED     hwnd: the caller's desktop window holding the parent; arg:
+ *               a handle of another process's window; ptr <- { op, the
+ *               parent's client origin x, y in hwnd's client area, the
+ *               parent's visible client area left, top, right, bottom (the
+ *               same coordinates), the parent shows (0/1), the parent's
+ *               handle }.  op 1: embed it (SetParent): its desktop window
+ *               loses its frame and stays over the parent's client area,
+ *               clipped to it, moving, showing and hiding with the host;
+ *               the numbers of its window rectangle become its place in the
+ *               parent; it gets WM_NOVA_EMBED (wParam: the parent).  op 2:
+ *               the parent moved, resized, showed or hid.  op 0: let it go
+ *               (SetParent(NULL)): a top-level window again, WM_NOVA_EMBED 0.
+ *               A window without a desktop window yet is embedded when it
+ *               gets one.  Returns 1, 2 (to be embedded later), 0 no such
+ *               window
+ *  53 EMBED_INFO hwnd: the caller's window; ptr -> { the parent's handle,
+ *               the parent's client origin x, y on screen }; 0 if it is
+ *               not embedded
+ *  54 XBLIT     arg: a handle of another process's desktop window (or an
+ *               embedded one); ptr <- { 0 write / 1 read, x, y, w, h (client
+ *               pixels), the buffer's pixels per row, the buffer (64 bits) }:
+ *               copies between the caller's buffer and the window's bitmap
+ *               (written to user32's back buffer too, CTL_SET_BACK), so a
+ *               GDI DC on another process's window draws (GetDC in
+ *               Chromium's GPU process).  Returns 1, 0 no such window
+ *  55 SET_BACK  hwnd: the caller's window; ptr <- { back buffer (64 bits),
+ *               its pixels per row } (0: none) */
+#define CTL_XSEND          48
+#define CTL_XFETCH         49
+#define CTL_XREPLY         50
+#define CTL_XRESULT        51
+#define CTL_EMBED          52
+#define CTL_EMBED_INFO     53
+#define CTL_XBLIT          54
+#define CTL_SET_BACK       55
 #define GUI_TAGS         2048
 #define GUI_TAG_MIN      4               /* keeps every handle above 0xFFFF */
 #define GUI_TAG_SHIFT    14
@@ -1384,7 +1628,18 @@ static UINT64 hwnd_foreign(UINT32 h, UINT64 ptr)
     if (g) {
         out[0] = (INT32)g->proc->pid; out[1] = (INT32)g->tid;
         WND *w = g->wnd;
-        if (w) {
+        if (w && g->host) {                     /* embedded: its whole rectangle, shown as the program has it */
+            GuiWin *h = NULL;
+            for (int i = 0; i < GUI_MAX_WINDOWS && !h; i++)
+                if (g_win[i].used && g_win[i].id == g->host && g_win[i].wnd) h = &g_win[i];
+            GdiRect hc = h ? WmClientRect(h->wnd) : RECT(0, 0, 0, 0);
+            int x = hc.x + g->pox + g->rx, y = hc.y + g->poy + g->ry;
+            bool vis = g->want_vis && g->parent_vis && h && h->wnd->visible && !h->wnd->minimized;
+            out[2] = (vis ? 1 : 0) | (w->active ? 2 : 0);
+            out[3] = out[7] = x; out[4] = out[8] = y;
+            out[5] = out[9] = g->cw; out[6] = out[10] = g->ch;
+            if (g->uc[2] > 0) { out[3] = x + g->uc[0]; out[4] = y + g->uc[1]; out[5] = g->uc[2]; out[6] = g->uc[3]; }
+        } else if (w) {
             GdiRect c = WmClientRect(w), f = w->frame;
             out[2] = (w->visible ? 1 : 0) | (w->active ? 2 : 0) | (w->minimized ? 4 : 0) | (w->maximized ? 8 : 0);
             out[3] = c.x; out[4] = c.y; out[5] = g->cw; out[6] = g->ch;
@@ -1400,13 +1655,6 @@ static UINT64 hwnd_foreign(UINT32 h, UINT64 ptr)
     DesktopUnlock();
     if (r && ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out)))) return 0;
     return r;
-}
-
-static GuiWin *win_by_id(UINT32 id)             /* any process's; under g_gui_lock */
-{
-    for (int i = 0; i < GUI_MAX_WINDOWS; i++)
-        if (g_win[i].used && g_win[i].id == id) return &g_win[i];
-    return NULL;
 }
 
 /* The process's pointer becomes @c (NULL: the arrow) on all its windows */
@@ -1517,6 +1765,311 @@ static UINT64 syscursor_image(UINT64 arg, UINT64 ptr)
     bool ok = NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, px, (size_t)side * side * 4 + 16));
     kfree(px);
     return ok ? 1 : 0;
+}
+
+/* -----------------------------------------------------------------------
+ * Messages between processes (CTL_XSEND and friends).  The slots are under
+ * g_gui_lock; their data is kmalloc'd
+ * ----------------------------------------------------------------------- */
+#define XMSG_SLOTS 64
+#define XMSG_MAX   (64 * 1024)
+enum { XM_QUEUED = 1, XM_TAKEN, XM_ANSWERED };
+typedef struct {
+    UINT32      seq;                /* 0: free */
+    UmProcess  *to;                 /* the window's process */
+    UINT32      from;               /* the sender's pid */
+    UINT8       state;
+    bool        reply;              /* the sender waits for the answer */
+    bool        dropped;            /* ... gave up: the answer is thrown away */
+    UINT32      flags;
+    UINT64      result;
+    UINT32      len;
+    void       *data;
+} XMsg;
+static XMsg g_xmsg[XMSG_SLOTS];
+static UINT32 g_xmsg_seq = 0x100;
+
+static void xmsg_free_locked(XMsg *m, void **data)
+{
+    *data = m->data;
+    memset(m, 0, sizeof(*m));
+}
+
+/* a message queued for @p that nobody has taken; under g_gui_lock */
+static bool xmsg_waiting(UmProcess *p)
+{
+    for (int i = 0; i < XMSG_SLOTS; i++) if (g_xmsg[i].seq && g_xmsg[i].to == p && g_xmsg[i].state == XM_QUEUED) return true;
+    return false;
+}
+
+static UmProcess *tag_process(UINT32 h)
+{
+    return h >= 0x10000 ? g_tag_proc[(h >> GUI_TAG_SHIFT) % GUI_TAGS] : NULL;
+}
+
+static UINT64 xmsg_send(UmProcess *p, UINT64 hwnd, UINT64 ptr)
+{
+    UINT32 hd[2];
+    if (!NT_SUCCESS(CopyFromUser(hd, (const void *)(uintptr_t)ptr, sizeof(hd)))) return 0;
+    if (hd[1] > XMSG_MAX) return 0;
+    void *data = kmalloc(hd[1] ? hd[1] : 1);
+    if (!data) return 0;
+    if (hd[1] && !NT_SUCCESS(CopyFromUser(data, (const void *)(uintptr_t)(ptr + sizeof(hd)), hd[1]))) { kfree(data); return 0; }
+    UINT32 seq = 0;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    UmProcess *to = tag_process((UINT32)hwnd);
+    if (to && to != p && !to->exited) {
+        for (int i = 0; i < XMSG_SLOTS; i++) {
+            XMsg *m = &g_xmsg[i];
+            if (m->seq) continue;
+            if (++g_xmsg_seq < 0x100) g_xmsg_seq = 0x100;
+            seq = m->seq = g_xmsg_seq;
+            m->to = to; m->from = p->pid; m->state = XM_QUEUED;
+            m->reply = (hd[0] & 1) != 0; m->dropped = false; m->flags = hd[0];
+            m->result = 0; m->len = hd[1]; m->data = data;
+            data = NULL;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    kfree(data);
+    if (seq) gui_wake(0, 0);
+    return seq;
+}
+
+static UINT64 xmsg_fetch(UmProcess *p, UINT64 ptr)
+{
+    UINT32 hd[4];
+    if (!NT_SUCCESS(CopyFromUser(hd, (const void *)(uintptr_t)ptr, sizeof(hd)))) return 0;
+    void *data = NULL;
+    UINT32 seq = 0, len = 0, flags = 0;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    XMsg *best = NULL;
+    for (int i = 0; i < XMSG_SLOTS; i++) {
+        XMsg *m = &g_xmsg[i];
+        if (m->seq && m->to == p && m->state == XM_QUEUED && (!best || (INT32)(m->seq - best->seq) < 0)) best = m;
+    }
+    if (best) {
+        seq = best->seq; len = best->len; flags = best->flags;
+        if (best->reply) {                      /* the answer replaces it */
+            data = best->data;
+            best->data = NULL; best->len = 0;
+            best->state = XM_TAKEN;
+        } else {
+            xmsg_free_locked(best, &data);
+        }
+    }
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    if (!seq) return 0;
+    UINT32 out[3] = { seq, flags, len };
+    bool ok = NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, out, sizeof(out))) &&
+              (!len || len > hd[3] || NT_SUCCESS(CopyToUser((void *)(uintptr_t)(ptr + sizeof(hd)), data, len)));
+    kfree(data);
+    return ok ? 1 : 0;
+}
+
+static UINT64 xmsg_reply(UmProcess *p, UINT64 seq, UINT64 ptr)
+{
+    struct { UINT64 result; UINT32 len, pad; } hd;
+    if (!NT_SUCCESS(CopyFromUser(&hd, (const void *)(uintptr_t)ptr, sizeof(hd)))) return 0;
+    if (hd.len > XMSG_MAX) hd.len = 0;
+    void *data = hd.len ? kmalloc(hd.len) : NULL;
+    if (hd.len && (!data || !NT_SUCCESS(CopyFromUser(data, (const void *)(uintptr_t)(ptr + sizeof(hd)), hd.len)))) {
+        kfree(data);
+        data = NULL;
+        hd.len = 0;
+    }
+    void *old = NULL;
+    bool found = false;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    for (int i = 0; i < XMSG_SLOTS; i++) {
+        XMsg *m = &g_xmsg[i];
+        if (m->seq != (UINT32)seq || m->to != p || m->state != XM_TAKEN) continue;
+        found = true;
+        if (m->dropped) { xmsg_free_locked(m, &old); break; }
+        old = m->data;
+        m->data = data; m->len = hd.len; m->result = hd.result;
+        m->state = XM_ANSWERED;
+        data = NULL;
+        break;
+    }
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    kfree(old);
+    kfree(data);
+    if (found) gui_wake(0, 0);
+    return found ? 1 : 0;
+}
+
+static UINT64 xmsg_result(UmProcess *p, UINT64 seq, UINT64 ptr)
+{
+    struct { UINT64 result; UINT32 len, room, wait, drop; } hd;
+    if (!NT_SUCCESS(CopyFromUser(&hd, (const void *)(uintptr_t)ptr, sizeof(hd)))) return 2;
+    UmThread *t = UmCurrentThread();
+    UINT32 tid = t ? t->tid : 0;
+    UINT64 until = sched_ticks() + (hd.wait + 9) / 10;
+    for (;;) {
+        UINT32 gen = waitq_gen(&g_guiq);
+        void *data = NULL;
+        int r = 0;
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        XMsg *m = NULL;
+        for (int i = 0; i < XMSG_SLOTS && !m; i++) if (g_xmsg[i].seq == (UINT32)seq && g_xmsg[i].from == p->pid) m = &g_xmsg[i];
+        if (!m) r = 2;
+        else if (m->state == XM_ANSWERED) {
+            hd.result = m->result; hd.len = m->len;
+            xmsg_free_locked(m, &data);
+            r = 1;
+        } else if (!m->to || m->to->exited) {
+            xmsg_free_locked(m, &data);
+            r = 2;
+        } else if (hd.drop) {
+            if (m->state == XM_QUEUED) xmsg_free_locked(m, &data);
+            else m->dropped = true;
+            r = 0;
+        } else if (xmsg_waiting(p)) {
+            r = 3;
+        }
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        if (r == 1) {
+            bool ok = NT_SUCCESS(CopyToUser((void *)(uintptr_t)ptr, &hd, 12)) &&
+                      (!hd.len || hd.len > hd.room || NT_SUCCESS(CopyToUser((void *)(uintptr_t)(ptr + sizeof(hd)), data, hd.len)));
+            kfree(data);
+            return ok ? 1 : 2;
+        }
+        kfree(data);
+        if (r || hd.drop || !hd.wait) return (UINT64)r;
+        if (um_stopping()) return 0;
+        UINT64 now = sched_ticks();
+        if (now >= until) return 0;
+        waitq_wait_tag(&g_guiq, gen, (UINT32)(until - now < 10 ? until - now : 10), tid);
+    }
+}
+
+/* A process's windows and messages are gone: the messages it sent and
+ * the ones queued for it go too (the senders hear "never") */
+static void xmsg_process_gone(UmProcess *p)
+{
+    for (int i = 0; i < XMSG_SLOTS; i++) {
+        void *data = NULL;
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        XMsg *m = &g_xmsg[i];
+        if (m->seq && m->to == p) xmsg_free_locked(m, &data);
+        else if (m->seq && m->from == p->pid && m->reply) {     /* (posted ones are still delivered) */
+            if (m->state == XM_TAKEN) m->dropped = true;
+            else xmsg_free_locked(m, &data);
+        }
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        kfree(data);
+    }
+    for (int i = 0; i < EMBED_PENDING; i++) {
+        if (!g_embed_pending[i].hwnd) continue;
+        if (tag_process(g_embed_pending[i].hwnd) == p) g_embed_pending[i].hwnd = 0;
+    }
+}
+
+/* A window of any process by its user32 handle (DesktopLock held) */
+static GuiWin *win_by_hwnd(UINT32 h)
+{
+    GuiWin *g = NULL;
+    IrqState s = spin_lock_irqsave(&g_gui_lock);
+    for (int i = 0; h && i < GUI_MAX_WINDOWS && !g; i++)
+        if (g_win[i].used && g_win[i].hwnd == h && g_win[i].wnd && g_win[i].proc && !g_win[i].proc->exited) g = &g_win[i];
+    spin_unlock_irqrestore(&g_gui_lock, s);
+    return g;
+}
+
+/* CTL_EMBED */
+static UINT64 embed_ctl(UmProcess *p, UINT64 hwnd, UINT64 target, UINT64 ptr)
+{
+    INT32 in[9];
+    if (!NT_SUCCESS(CopyFromUser(in, (const void *)(uintptr_t)ptr, sizeof(in)))) return 0;
+    UINT64 rv = 0;
+    DesktopLock();
+    GuiWin *h = win_lookup(p, hwnd);
+    UmProcess *tp = tag_process((UINT32)target);
+    GuiWin *g = win_by_hwnd((UINT32)target);
+    if (g && g->proc == p) g = NULL;            /* (a window of its own: user32's) */
+    int pend = -1;
+    for (int i = 0; i < EMBED_PENDING; i++) if (g_embed_pending[i].hwnd == (UINT32)target) pend = i;
+    if (in[0] == 0) {                           /* let it go */
+        if (pend >= 0) g_embed_pending[pend].hwnd = 0;
+        if (g && g->host && (!h || g->host == h->id)) embed_release(g);
+        rv = g || pend >= 0;
+    } else if (h && h->wnd && g) {
+        if (in[0] == 1 || g->host == h->id) { embed_apply(g, h, (UINT32)in[8], in); rv = 1; }
+    } else if (h && h->wnd && tp && tp != p && !tp->exited && in[0] == 1) {
+        if (pend < 0) for (int i = 0; i < EMBED_PENDING && pend < 0; i++) if (!g_embed_pending[i].hwnd) pend = i;
+        if (pend >= 0) {
+            g_embed_pending[pend].hwnd = (UINT32)target;
+            g_embed_pending[pend].host = h->id;
+            memcpy(g_embed_pending[pend].in, in, sizeof(g_embed_pending[pend].in));
+            g_embed_pending[pend].in[0] = (INT32)in[8];      /* (op 1 implied; keep the parent's handle) */
+            rv = 2;
+        }
+    } else if (h && pend >= 0 && in[0] == 2 && g_embed_pending[pend].host == h->id) {
+        memcpy(g_embed_pending[pend].in + 1, in + 1, 7 * sizeof(INT32));
+        rv = 2;
+    }
+    DesktopUnlock();
+    return rv;
+}
+
+/* CTL_SET_HWND: an embed waiting for this window takes effect (DesktopLock) */
+static void embed_pending_check(GuiWin *g)
+{
+    for (int i = 0; i < EMBED_PENDING; i++) {
+        if (!g_embed_pending[i].hwnd || g_embed_pending[i].hwnd != g->hwnd) continue;
+        UINT32 host = g_embed_pending[i].host;
+        INT32 in[8];
+        memcpy(in, g_embed_pending[i].in, sizeof(in));
+        g_embed_pending[i].hwnd = 0;
+        IrqState s = spin_lock_irqsave(&g_gui_lock);
+        GuiWin *h = win_by_id(host);
+        spin_unlock_irqrestore(&g_gui_lock, s);
+        UINT32 parent = (UINT32)in[0];
+        in[0] = 1;
+        if (h && h->wnd && h->proc && !h->proc->exited && h->proc != g->proc) embed_apply(g, h, parent, in);
+    }
+}
+
+/* CTL_XBLIT: rows between the caller's buffer and a window's bitmap */
+static UINT64 xblit(UmProcess *p, UINT64 target, UINT64 ptr)
+{
+    struct { INT32 dir, x, y, w, h, stride; UINT64 buf; } b;
+    if (!NT_SUCCESS(CopyFromUser(&b, (const void *)(uintptr_t)ptr, sizeof(b)))) return 0;
+    if (b.w <= 0 || b.h <= 0 || b.stride < b.w || b.w > GUI_MAX_W * GDI_MAX_SCALE) return 0;
+    UINT32 *row = kmalloc((size_t)b.w * 4);
+    if (!row) return 0;
+    UINT64 rv = 0;
+    DesktopLock();
+    GuiWin *g = win_by_hwnd((UINT32)target);
+    if (g && g->proc != p) {
+        int ox = g->uc[2] > 0 ? g->uc[0] : 0, oy = g->uc[2] > 0 ? g->uc[1] : 0;
+        if (ox < 0) ox = 0;
+        if (oy < 0) oy = 0;
+        int x = b.x, y = b.y, w = b.w, h = b.h, sx = 0, sy = 0;
+        if (x < 0) { sx = -x; w += x; x = 0; }
+        if (y < 0) { sy = -y; h += y; y = 0; }
+        if (ox + x + w > g->pmaxw) w = g->pmaxw - ox - x;
+        if (oy + y + h > g->pmaxh) h = g->pmaxh - oy - y;
+        for (int r = 0; r < h && w > 0; r++) {
+            UINT64 src = b.buf + ((UINT64)(sy + r) * (UINT64)b.stride + (UINT64)sx) * 4;
+            UINT64 dst = g->bitmap + ((UINT64)(oy + y + r) * g->stride + (UINT64)(ox + x)) * 4;
+            UINT64 bk = g->back ? g->back + ((UINT64)(oy + y + r) * (UINT64)g->back_stride + (UINT64)(ox + x)) * 4 : 0;
+            if (b.dir == 0) {
+                if (!um_read(p, src, row, (UINT64)w * 4)) break;
+                um_write(g->proc, dst, row, (UINT64)w * 4);
+                if (bk) um_write(g->proc, bk, row, (UINT64)w * 4);
+            } else {
+                if (!um_read(g->proc, bk ? bk : dst, row, (UINT64)w * 4) || !um_write(p, src, row, (UINT64)w * 4)) break;
+            }
+        }
+        rv = 1;
+        if (b.dir == 0) WmInvalidate();
+    }
+    DesktopUnlock();
+    kfree(row);
+    return rv;
 }
 
 static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -1638,6 +2191,33 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         return r;
     }
     if (a2 == CTL_HWND_TAG) return hwnd_tag(p);
+    if (a2 == CTL_XSEND) return xmsg_send(p, a3, a4);
+    if (a2 == CTL_XFETCH) return xmsg_fetch(p, a4);
+    if (a2 == CTL_XREPLY) return xmsg_reply(p, a3, a4);
+    if (a2 == CTL_XRESULT) return xmsg_result(p, a3, a4);
+    if (a2 == CTL_EMBED) return embed_ctl(p, a1, a3, a4);
+    if (a2 == CTL_XBLIT) return xblit(p, a3, a4);
+    if (a2 == CTL_SET_BACK) {
+        UINT64 bk[2] = { 0, 0 };
+        if (a4 && !NT_SUCCESS(CopyFromUser(bk, (const void *)(uintptr_t)a4, sizeof(bk)))) return 0;
+        DesktopLock();
+        GuiWin *g = win_lookup(p, a1);
+        if (g) { g->back = bk[0]; g->back_stride = (int)bk[1]; }
+        DesktopUnlock();
+        return g ? 1 : 0;
+    }
+    if (a2 == CTL_EMBED_INFO) {
+        INT32 out[3] = { 0, 0, 0 };
+        DesktopLock();
+        GuiWin *g = win_lookup(p, a1);
+        GuiWin *h = g ? embed_host(g) : NULL;
+        if (h) {
+            GdiRect hc = WmClientRect(h->wnd);
+            out[0] = (INT32)g->parent_hwnd; out[1] = hc.x + g->pox; out[2] = hc.y + g->poy;
+        }
+        DesktopUnlock();
+        return h && NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, out, sizeof(out))) ? 1 : 0;
+    }
     if (a2 == CTL_TOUCH) return (UINT64)InputTouchContacts();
     if (a2 == CTL_TABLET) return tablet_ctl(p, a3, a4);
     if (a2 == CTL_GAMEPAD) return gamepad_ctl(a3, a4);
@@ -1649,8 +2229,15 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (a4 && !NT_SUCCESS(CopyFromUser(uc, (const void *)(uintptr_t)a4, sizeof(uc)))) return 0;
         IrqState s = spin_lock_irqsave(&g_gui_lock);
         GuiWin *g = win_of_handle(p, a1);
+        bool fresh = g && g->hwnd != (UINT32)a3;
         if (g) { g->hwnd = (UINT32)a3; if (a4) memcpy(g->uc, uc, sizeof(uc)); }
         spin_unlock_irqrestore(&g_gui_lock, s);
+        if (fresh) {                                    /* (an embed may be waiting for it) */
+            DesktopLock();
+            g = win_lookup(p, a1);
+            if (g && g->wnd && !g->host) embed_pending_check(g);
+            DesktopUnlock();
+        }
         return g ? 1 : 0;
     }
     if (a2 == CTL_WAKE) {
@@ -1672,19 +2259,36 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         switch (a2) {
         case CTL_GET_RECT: {
             GdiRect c = WmClientRect(w), f = w->frame;
+            bool vis = w->visible;
+            if (g->host) {                      /* embedded: its whole client area (the WND shows a part) */
+                client_pos(g, &c.x, &c.y);
+                f = RECT(c.x, c.y, g->cw, g->ch);
+                vis = g->want_vis;
+            }
             INT32 out[9] = { c.x, c.y, g->cw, g->ch, f.x, f.y, f.w, f.h,
-                             (w->visible ? 1 : 0) | (w->active ? 2 : 0) | (w->minimized ? 4 : 0) | (w->maximized ? 8 : 0) };
+                             (vis ? 1 : 0) | (w->active ? 2 : 0) | (w->minimized ? 4 : 0) | (w->maximized ? 8 : 0) };
             DesktopUnlock();
             return NT_SUCCESS(CopyToUser((void *)(uintptr_t)a4, out, sizeof(out))) ? 1 : 0;
         }
         case CTL_SET_RECT: {
             GdiRect c = WmClientRect(w);
-            if (a3 & 1) { c.x = in[0]; c.y = in[1]; }
             if (a3 & 2) {
                 c.w = in[2] < 1 ? 1 : in[2] > g->maxw ? g->maxw : in[2];
                 c.h = in[3] < 1 ? 1 : in[3] > g->maxh ? g->maxh : in[3];
                 g->cw = c.w; g->ch = c.h;
             }
+            GuiWin *eh = embed_host(g);
+            if (eh) {                           /* embedded: a place in the parent (the screen position given) */
+                if (a3 & 1) {
+                    GdiRect hc = WmClientRect(eh->wnd);
+                    g->rx = in[0] - hc.x - g->pox; g->ry = in[1] - hc.y - g->poy;
+                }
+                embed_place(g);
+                client_pos(g, &g->last_x, &g->last_y);
+                rv = 1;
+                break;
+            }
+            if (a3 & 1) { c.x = in[0]; c.y = in[1]; }
             if (w->maximized || w->snapped) { w->maximized = w->snapped = false; }
             GdiRect f = frame_for(w->style, c);
             WmSetFrame(w, f);
@@ -1697,7 +2301,13 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             else if (WmGetCapture() == w) WmSetCapture(NULL);
             rv = 1;
             break;
-        case CTL_ACTIVATE: WmSetActive(w); rv = 1; break;
+        case CTL_ACTIVATE: {
+            GuiWin *eh = embed_host(g);
+            if (eh) eh->key_embed = g->id;      /* embedded: it takes its host's keyboard */
+            else WmSetActive(w);
+            rv = 1;
+            break;
+        }
         case CTL_SET_SCALE: {
             int k = a3 >= 2 ? 2 : 1;
             if (k == 2 && !gui_grow_bitmap(g)) k = 1;
@@ -1720,6 +2330,13 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         case CTL_ENABLE:   w->disabled = a3 == 0; rv = 1; break;
         case CTL_SET_FRAME: {
             if (w->popup) break;
+            if (g->host) {                      /* embedded: frameless now; the frame comes back when it is let go */
+                g->saved_style = (a3 & 1) ? WS_TITLEBAR | WS_BORDER | WS_SHADOW | (a3 & 2 ? 0 : WS_CLOSEBTN) |
+                                            (a3 & 4 ? 0 : WS_MINMAXBTN) : WS_SHADOW;
+                g->saved_fixed = !(a3 & 8);
+                rv = 1;
+                break;
+            }
             GdiRect c = WmClientRect(w);
             w->style = (a3 & 1) ? WS_TITLEBAR | WS_BORDER | WS_SHADOW | (a3 & 2 ? 0 : WS_CLOSEBTN) | (a3 & 4 ? 0 : WS_MINMAXBTN)
                                 : WS_SHADOW;
@@ -1729,6 +2346,12 @@ static UINT64 sys_gui_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             break;
         }
         case CTL_SHOW:
+            if (g->host) {                      /* embedded: shown with its parent; never activated */
+                g->want_vis = a3 != 0 && a3 != 2;
+                embed_place(g);
+                rv = 1;
+                break;
+            }
             switch (a3) {
             case 0: WmShowWindow(w, false); if (WmGetCapture() == w) WmSetCapture(NULL); break;
             case 1: WmShowWindow(w, true); if (!w->no_activate) WmSetActive(w); break;
@@ -1803,6 +2426,7 @@ void um_gui_process_gone(UmProcess *p)
             kfree(drop);
         }
     }
+    xmsg_process_gone(p);
     IrqState ts = spin_lock_irqsave(&g_gui_lock);
     for (int i = GUI_TAG_MIN; i < GUI_TAGS; i++) if (g_tag_proc[i] == p) g_tag_proc[i] = NULL;
     spin_unlock_irqrestore(&g_gui_lock, ts);

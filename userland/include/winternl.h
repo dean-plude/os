@@ -218,6 +218,8 @@ NTSYSAPI NTSTATUS NTAPI NtCreateNamedPipeFile(PHANDLE h, ULONG access, POBJECT_A
                                               PLARGE_INTEGER timeout);
 NTSYSAPI NTSTATUS NTAPI NtFsControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
                                         PVOID in, ULONG in_len, PVOID out, ULONG out_len);
+NTSYSAPI NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE h, HANDLE ev, PVOID apc, PVOID ctx, PIO_STATUS_BLOCK io, ULONG code,
+                                              PVOID in, ULONG in_len, PVOID out, ULONG out_len);
 NTSYSAPI NTSTATUS NTAPI NtCancelIoFile(HANDLE h, PIO_STATUS_BLOCK io);
 NTSYSAPI NTSTATUS NTAPI NtCancelIoFileEx(HANDLE h, PIO_STATUS_BLOCK req, PIO_STATUS_BLOCK io);
 NTSYSAPI NTSTATUS NTAPI NtSetInformationObject(HANDLE h, ULONG cls, PVOID info, ULONG len);

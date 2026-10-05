@@ -113,11 +113,12 @@ static void test_others(void)
     Blob *b = 0;
     CHECK("D3DCreateBlob", blob && blob(16, &b) == S_OK && b && b->vtbl->Size(b) == 16 && b->vtbl->Ptr(b));
     if (b) b->vtbl->Release(b);
-    Blob *code = (Blob *)1, *err = 0;
+    Blob *code = 0, *err = 0;
     const char *src = "float4 main() : SV_Target { return 1; }";
-    CHECK("D3DCompile fails with a message",
-          compile && FAILED(compile(src, strlen(src), 0, 0, 0, "main", "ps_4_0", 0, 0, &code, &err)) && !code &&
-          err && strstr((const char *)err->vtbl->Ptr(err), "HLSL"));
+    CHECK("D3DCompile compiles HLSL to DXBC",
+          compile && SUCCEEDED(compile(src, strlen(src), 0, 0, 0, "main", "ps_4_0", 0, 0, &code, &err)) && code &&
+          code->vtbl->Size(code) > 32 && !memcmp(code->vtbl->Ptr(code), "DXBC", 4));
+    if (code) code->vtbl->Release(code);
     if (err) err->vtbl->Release(err);
 
     /* without DXVK installed: no Direct3D 11 adapter, as on a PC with no driver */

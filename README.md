@@ -837,7 +837,8 @@ os/
 ## License
 
 NovaOS is MIT licensed. The operating system (kernel, bootloader, system
-DLLs, C runtime, desktop and apps) contains no GPL code; bundled third-party
+DLLs, C runtime, desktop and apps) contains no GPL code (the one LGPL
+library, the HLSL compiler in `d3dcompiler_47.dll`, is below); bundled third-party
 code keeps its own permissive licence (<!-- BEGIN generated:licenses -->lwIP: BSD 3-clause; Mbed TLS: Apache-2.0; Monocypher: BSD-2-Clause (or CC0); nghttp2: MIT; libxml2: MIT; mujs: ISC; uACPI: MIT; Intel's e1000 shared code (FreeBSD's, for the I219 bring-up in `kernel/drivers/e1000.c`): BSD 3-clause; OpenBSD's `pchgpio(4)` (Intel GPIO controllers' register layout and pad groups, in `kernel/hal/gpio.c`): ISC; musl's libm and complex functions: MIT; ICU: Unicode License v3 (`third_party/icu/LICENSE`); kernel32's locale table, from .NET: MIT; the time zone table (`kernel/ke/tzdata.inc`): zone names from Unicode CLDR's windowsZones, Unicode License v3; rules from the IANA tz database, public domain; HarfBuzz: MIT; the keyboard layouts (`userland/include/kbdlayouts.h`): xkeyboard-config, MIT/X11 licence, compiled by libxkbcommon (MIT); FreeType: the FreeType License (BSD-style; portions of this software are copyright © 2024 The FreeType Project (www.freetype.org), all rights reserved); Boost.Math (the C++17 special math functions in `msvcp140_2.dll`): Boost Software License 1.0; Microsoft's C++ standard library (STL): Apache-2.0 WITH LLVM-exception; plutovg: MIT (with FreeType-licensed rasteriser and stroker files); Mesa's Venus and virgl (`third_party/mesa-venus`, the App Store's Venus): MIT; Inter and Cascadia Mono: SIL OFL 1.1; Noto Sans Arabic and Devanagari: SIL OFL 1.1; DejaVu Sans Mono: Bitstream Vera licence; stb_truetype/stb_image: public domain or MIT; FAudio: zlib; TinySoundFont: MIT; Sound Open Firmware (Intel's signed audio DSP firmware, built in only when tools/fetch_sof_firmware.py fetched it): BSD 3-clause with Intel's firmware licence<!-- END generated:licenses -->).  All Win32 API implementations are clean-room, based on public
 Microsoft documentation, the ReactOS reference and study of Wine's source,
 but independently written.
@@ -849,6 +850,14 @@ the NovaOS glue in `userland/netsurf` (MIT, GPL-compatible), is a separate
 program distributed under the GPL-2.0, with its complete source in this
 repository; the kernel image merely carries it as a file for drive C:.
 Build with `NOVA_NO_NETSURF=1` for an image without it.
+
+**vkd3d-shader** (`third_party/vkd3d-shader`), Wine's HLSL compiler, is
+licensed under the **GNU LGPL version 2.1** (or later).  It is compiled
+into `d3dcompiler_47.dll` alone, a separate DLL whose own sources
+(`userland/d3dcompiler_47`, MIT) call it only through its public API; its
+complete source is in this repository, and a changed copy can be rebuilt
+into that DLL and put in its place (see
+`third_party/vkd3d-shader/NOVA-VENDOR.txt`).
 
 **7-Zip** (`third_party/7z2603-x64.exe`) is Igor Pavlov's unmodified
 installer, kept as a test case under 7-Zip's own licence

@@ -9,9 +9,12 @@
   `wer.dll`~~ Done (`wvsetuptest`); ~~the setup's permissions on its
   install folder~~ Done (`acltest`); ~~starting the runtime's browser
   process~~ Done (`wvstarttest`, `unwindtest`); ~~the browser keeping
-  its host's connection (pipe process ids)~~ Done (`pipetest`).  Still
-  to do: the controller and a page (windows of one process inside
-  another's: the host's `SetParent` and `SetWindowPos` on the browser's
-  window; then the browser's drawing, in software without a Direct3D 11
-  adapter), and Windows' `WOW6432Node` registry view for machine-wide
-  installs.
+  its host's connection (pipe process ids)~~ Done (`pipetest`); ~~windows
+  of one process inside another's (the host's `SetParent` and
+  `SetWindowPos` on the browser's window, another process drawing into
+  it; the controller, a page and a script)~~ Done (`xpwin`,
+  `chrometest`).  Still to do: drawing the page (a DXGI factory with
+  Windows' software adapter when there is no GPU, for Chromium's
+  software output; for ANGLE, the GPU process's child window inside the
+  browser's and a DXGI swap chain presenting to it), and Windows'
+  `WOW6432Node` registry view for machine-wide installs.

@@ -51,9 +51,12 @@
   program), `dinput` (DirectInput 3 to 7, over the same devices as
   `dinput8`), `shfolder` (the old
   `SHGetFolderPath` DLL setup programs look for), `crtdll` (the NT 3
-  C runtime, forwarding to `msvcrt`), and
+  C runtime, forwarding to `msvcrt`), `d3dcompiler_47` (the HLSL compiler: Wine's vkd3d-shader,
+  LGPL-2.1, turns HLSL into Direct3D 9, 10 and 11 bytecode for Chromium's
+  ANGLE and for games, with `D3DReflect`, `D3DDisassemble` and the shader
+  container parts), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
-  `dhcpcsvc`, `d3dcompiler_47`), the ones Qt WebEngine imports
+  `dhcpcsvc`), the ones Qt WebEngine imports
   (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12
   device or WinUSB device, as on a PC without them, with Bluetooth's SDP
   record parsers working in full), and more.

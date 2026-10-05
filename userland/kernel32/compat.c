@@ -156,16 +156,29 @@ K32 BOOLEAN WINAPI CreateSymbolicLinkW(LPCWSTR link, LPCWSTR target, DWORD flags
 K32 BOOLEAN WINAPI CreateSymbolicLinkA(LPCSTR link, LPCSTR target, DWORD flags)
 { (void)link; (void)target; (void)flags; SetLastError(ERROR_PRIVILEGE_NOT_HELD); return FALSE; }
 
-/* Device I/O: no device answers control codes; a disk-like reply for the
- * common "is this a volume?" probes */
+/* Device I/O.  Video control codes go to the kernel: a shared GPU
+ * resource's handle (a section, see userland/vulkan-1) answers the two
+ * DXVK keeps a shared texture's description with.  No other device
+ * answers control codes. */
 K32 BOOL WINAPI DeviceIoControl(HANDLE h, DWORD code, LPVOID in, DWORD in_n, LPVOID out, DWORD out_n,
                                 LPDWORD ret, LPOVERLAPPED ov)
 {
-    (void)h; (void)in; (void)in_n; (void)out; (void)out_n; (void)ov;
     if (ret) *ret = 0;
-    (void)code;
-    SetLastError(ERROR_INVALID_FUNCTION);
-    return FALSE;
+    if ((code >> 16) != 0x23 /* FILE_DEVICE_VIDEO */) {
+        SetLastError(ERROR_INVALID_FUNCTION);
+        return FALSE;
+    }
+    IO_STATUS_BLOCK io = { 0 };
+    NTSTATUS s = NtDeviceIoControlFile(h, 0, 0, 0, &io, code, in, in_n, out, out_n);
+    DWORD n = NT_SUCCESS(s) ? (DWORD)io.Information : 0;
+    if (ret) *ret = n;
+    if (ov) {                                       /* (finished at once) */
+        ov->Internal = (ULONG_PTR)s;
+        ov->InternalHigh = n;
+        if (ov->hEvent) SetEvent((HANDLE)((ULONG_PTR)ov->hEvent & ~(ULONG_PTR)1));
+    }
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
 }
 
 K32 BOOL WINAPI MoveFileWithProgressW(LPCWSTR from, LPCWSTR to, LPVOID progress, LPVOID data, DWORD flags)

@@ -148,6 +148,8 @@ void WmSetTitle(WND *w, const char *title);
 
 /* Focus and raise (also restores a minimized window). */
 void WmSetActive(WND *w);
+/* Stack @w (a window @owner owns) above @owner, without activating either */
+void WmKeepAbove(WND *w, const WND *owner);
 WND *WmActiveWindow(void);
 
 void WmMinimize(WND *w);

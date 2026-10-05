@@ -12,6 +12,9 @@
  * Venus (the App Store's "Venus", Vulkan on the host's GPU through a QEMU
  * virtio-gpu; it declines to load without one) before lavapipe (the App
  * Store's Mesa 3D).  There are no layers, and one driver at a time.
+ * For a driver without VK_KHR_external_memory_win32 that can use host
+ * memory (lavapipe), the loader provides that extension itself
+ * (shared.c), so Direct3D textures can be shared between devices.
  *
  * The exports are the Khronos loader's (vk_exports.h): each is a jump
  * through a pointer filled from the driver when the program creates its
@@ -50,6 +53,10 @@ typedef struct {                       /* VkInstanceCreateInfo */
 static PFN_gipa  g_gipa;               /* the driver's vk_icdGetInstanceProcAddr */
 static void     *g_instance;           /* the instance the exports were filled from */
 static PFN_vkVoidFunction g_gdpa;      /* the driver's vkGetDeviceProcAddr */
+
+/* shared.c */
+void shared_init(void *instance, PFN_gipa gipa);
+PFN_vkVoidFunction shared_proc(const char *name);
 
 /* ---- the exports that go straight to the driver ------------------------- */
 #define VK(n) void *p_##n;
@@ -218,6 +225,7 @@ VKAPI VkResult WINAPI vkCreateInstance(const InstanceInfo *info, const void *all
         for (UINT i = 0; i < sizeof(g_slots) / sizeof(g_slots[0]); i++)
             *g_slots[i].slot = (void *)g_gipa(*instance, g_slots[i].name);
         g_gdpa = g_gipa(*instance, "vkGetDeviceProcAddr");
+        shared_init(*instance, g_gipa);
         g_instance = *instance;
     }
     return r;
@@ -262,7 +270,10 @@ VKAPI VkResult WINAPI vkEnumerateInstanceVersion(UINT32 *version)
 
 VKAPI PFN_vkVoidFunction WINAPI vkGetDeviceProcAddr(void *device, const char *name)
 {
-    if (!g_gdpa) return NULL;
+    if (!g_gdpa || !name) return NULL;
+    if (streq(name, "vkGetDeviceProcAddr")) return (PFN_vkVoidFunction)vkGetDeviceProcAddr;
+    PFN_vkVoidFunction own = shared_proc(name);
+    if (own) return own;
     return ((PFN_vkVoidFunction (WINAPI *)(void *, const char *))g_gdpa)(device, name);
 }
 
@@ -277,9 +288,12 @@ VKAPI PFN_vkVoidFunction WINAPI vkGetInstanceProcAddr(void *instance, const char
         { "vkEnumerateInstanceLayerProperties",     (PFN_vkVoidFunction)vkEnumerateInstanceLayerProperties },
         { "vkEnumerateDeviceLayerProperties",       (PFN_vkVoidFunction)vkEnumerateDeviceLayerProperties },
         { "vkEnumerateInstanceVersion",             (PFN_vkVoidFunction)vkEnumerateInstanceVersion },
+        { "vkGetDeviceProcAddr",                    (PFN_vkVoidFunction)vkGetDeviceProcAddr },
     };
     for (UINT i = 0; i < sizeof(own) / sizeof(own[0]); i++)
         if (streq(name, own[i].name)) return own[i].fn;
     if (!driver()) return NULL;
-    return g_gipa(instance, name);
+    PFN_vkVoidFunction fn = g_gipa(instance, name);
+    PFN_vkVoidFunction loader = instance ? shared_proc(name) : NULL;
+    return loader ? loader : fn;
 }

@@ -920,3 +920,14 @@ SHSTDAPI_(HRESULT) SHOpenFolderAndSelectItems(const void *folder, UINT n, const 
     (void)folder; (void)n; (void)items; (void)flags;
     return E_NOTIMPL;
 }
+
+/* The default-programs registration object (IApplicationAssociationRegistration):
+ * Windows makes CLSID_ApplicationAssociationRegistration, which NovaOS has no
+ * server for, so the class is not registered, as on a Windows without it */
+SHSTDAPI_(HRESULT) SHCreateAssociationRegistration(REFIID iid, void **out)
+{
+    (void)iid;
+    if (!out) return E_POINTER;
+    *out = 0;
+    return (HRESULT)0x80040154L;                        /* REGDB_E_CLASSNOTREG */
+}
