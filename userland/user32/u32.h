@@ -375,6 +375,7 @@ HWND    x_set_parent(HWND h, Wnd *parent);           /* embed another process's 
 HWND    x_embed_parent(HWND h);                      /* the window of ours that holds it (0: none) */
 void    embeds_follow(void);                         /* our windows moved: the embedded ones follow */
 void    embed_notified(Wnd *top, HWND parent);       /* WM_NOVA_EMBED */
+void    wnd_embed_child(HWND h, HWND fp);            /* win.c: our child window parented by another process (XOP_EMBEDDED) */
 int     embed_origin(Wnd *top, POINT *p, HWND *root); /* where its foreign parent's client area is (thread coordinates) */
 void    x_send_queue(DWORD tid, void (*fn)(void *), void *arg);   /* msg.c: run fn in thread tid's message loop */
 int     ensure_kernel_window(Wnd *w);                /* win.c */

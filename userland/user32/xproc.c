@@ -21,7 +21,7 @@
 
 /* What travels: user32's own layout, the same in 32- and 64-bit processes */
 enum { XOP_POST = 1, XOP_SEND, XOP_SETPOS, XOP_SHOW, XOP_GETLONG, XOP_SETLONG, XOP_FOCUS, XOP_ENABLE,
-       XOP_CLASS, XOP_TEXT, XOP_THREAD };
+       XOP_CLASS, XOP_TEXT, XOP_THREAD, XOP_EMBEDDED };
 typedef struct {
     UINT32 op, msg;
     UINT64 hwnd, wp, lp;
@@ -243,7 +243,7 @@ int x_class_name(HWND h, WCHAR *buf, int n) { int k = x_string(h, XOP_CLASS, buf
 /* -----------------------------------------------------------------------
  * Answering: other processes' calls on our windows
  * ----------------------------------------------------------------------- */
-typedef struct { UINT32 seq; XHdr hd; BYTE data[]; } XJob;
+typedef struct { UINT32 seq, noreply; XHdr hd; BYTE data[]; } XJob;
 
 static void x_reply(UINT32 seq, LRESULT r, const void *data, UINT32 n)
 {
@@ -302,6 +302,7 @@ static void x_run(void *arg)
     case XOP_FOCUS: r = (LRESULT)SetFocus(h); break;
     case XOP_ENABLE: r = EnableWindow(h, hd->a[0]); break;
     case XOP_THREAD: r = GetWindowThreadProcessId(h, NULL); break;
+    case XOP_EMBEDDED: wnd_embed_child(h, (HWND)(ULONG_PTR)hd->lp); break;
     case XOP_CLASS: case XOP_TEXT: {
         int n = hd->a[0] > 0 && hd->a[0] <= 16384 ? hd->a[0] : 256;
         out = malloc(2 * (size_t)n);
@@ -312,7 +313,7 @@ static void x_run(void *arg)
         break;
     }
     }
-    x_reply(j->seq, r, out, outn);
+    if (!j->noreply) x_reply(j->seq, r, out, outn);
     free(out);
     free(j);
 }
@@ -336,10 +337,11 @@ int x_claim(void)
             if (w) post_msg(w, h, hd->msg, (WPARAM)hd->wp, (LPARAM)hd->lp);
             continue;
         }
-        if (!w || !(flags & 1)) { if (flags & 1) x_reply(seq, 0, NULL, 0); continue; }
+        if (!w || (!(flags & 1) && hd->op != XOP_EMBEDDED)) { if (flags & 1) x_reply(seq, 0, NULL, 0); continue; }
         XJob *j = malloc(sizeof(XJob) + hd->n + 2);
         if (!j) { x_reply(seq, 0, NULL, 0); continue; }
         j->seq = seq;
+        j->noreply = !(flags & 1);
         j->hd = *hd;
         memcpy(j->data, hd + 1, hd->n);
         j->data[hd->n] = j->data[hd->n + 1] = 0;
@@ -410,6 +412,12 @@ HWND x_set_parent(HWND h, Wnd *parent)
     in[0] = 1;
     in[8] = (INT32)(ULONG_PTR)parent->h;
     if (!NtNovaGuiCtl(t->kid, CTL_EMBED, (ULONG_PTR)h, in)) { SetLastError(ERROR_INVALID_WINDOW_HANDLE); return 0; }
+    if (!e) {                                               /* (a child window there becomes a desktop window: it is told, without waiting) */
+        XHdr hd;
+        hdr(&hd, XOP_EMBEDDED, h);
+        hd.lp = (UINT64)(ULONG_PTR)parent->h;
+        x_queue(h, 0, &hd, NULL);
+    }
     LOCK();
     if (!e) for (int i = 0; i < MAX_EMBEDS && !e; i++) if (!g_embeds[i].child) { e = &g_embeds[i]; g_nembeds++; }
     if (e) { e->child = h; e->parent = parent->h; e->kid = t->kid; memcpy(e->last, in, sizeof(e->last)); }

@@ -51,7 +51,10 @@
   `dinput8`), `d3dcompiler_47` (the HLSL compiler: Wine's vkd3d-shader,
   LGPL-2.1, turns HLSL into Direct3D 9, 10 and 11 bytecode for Chromium's
   ANGLE and for games, with `D3DReflect`, `D3DDisassemble` and the shader
-  container parts), and
+  container parts), `dxgi`, `d3d11` and `dcomp` without a GPU (Windows'
+  Microsoft Basic Render Driver adapter, a WARP device whose textures
+  the CPU maps and copies, and DirectComposition showing its swap chains:
+  what Chromium's software compositor draws WebView2's pages with), and
   the DLLs Firefox delay-loads (`d3d11`, `credui`, `winspool.drv`,
   `dhcpcsvc`), the ones Qt WebEngine imports
   (`bthprops.cpl`, `d3d12`, `winusb`: no Bluetooth radio, Direct3D 12
