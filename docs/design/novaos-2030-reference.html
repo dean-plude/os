@@ -1,0 +1,1886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NovaOS 2030</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Tone.js for futuristic UI sounds & ambient music -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+  <!-- Phosphor Icons for authentic futuristic system iconography -->
+  <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            nova: {
+              base: '#0c0f18',
+              card: 'rgba(23, 28, 44, 0.65)',
+              glass: 'rgba(255, 255, 255, 0.07)',
+              border: 'rgba(255, 255, 255, 0.12)',
+              borderHover: 'rgba(255, 255, 255, 0.25)',
+              accent: '#38bdf8',
+              glow: 'rgba(56, 189, 248, 0.35)',
+              purple: '#818cf8',
+              rose: '#f43f5e',
+              emerald: '#10b981',
+              amber: '#f59e0b'
+            }
+          },
+          backdropBlur: {
+            '2xl': '36px',
+            '3xl': '50px'
+          },
+          boxShadow: {
+            'glass': '0 20px 50px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.15)',
+            'glow-cyan': '0 0 25px rgba(56, 189, 248, 0.25)',
+            'glow-purple': '0 0 25px rgba(129, 140, 248, 0.25)',
+            'toast': '0 10px 40px -10px rgba(0,0,0,0.7), inset 0 1px 1px rgba(255,255,255,0.1)'
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+    * {
+      user-select: none;
+      -webkit-user-drag: none;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      overflow: hidden;
+      margin: 0;
+      padding: 0;
+      background-color: #060913;
+      color: #f1f5f9;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    /* Custom Glassmorphism Surface */
+    .glass-surface {
+      background: linear-gradient(135deg, rgba(25, 32, 54, 0.72) 0%, rgba(13, 17, 30, 0.82) 100%);
+      backdrop-filter: blur(28px) saturate(160%);
+      -webkit-backdrop-filter: blur(28px) saturate(160%);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), inset 0 1px 1px rgba(255, 255, 255, 0.12);
+    }
+
+    .glass-pill {
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .glass-pill:hover {
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+
+    .glass-input {
+      background: rgba(10, 14, 25, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .glass-input:focus {
+      border-color: rgba(56, 189, 248, 0.6);
+      box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+    }
+
+    /* Custom scrollbars */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.18);
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.35);
+    }
+
+    /* Dock icon spring hover effect */
+    .dock-icon {
+      transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.22s ease;
+    }
+    .dock-icon:hover {
+      transform: translateY(-8px) scale(1.15);
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Circular progress gauge styles */
+    .gauge-circle {
+      transition: stroke-dashoffset 0.8s ease;
+      transform: rotate(-90deg);
+      transform-origin: 50% 50%;
+    }
+
+    /* Sci-fi background layered glow */
+    .scifi-city-bg {
+      background-image:
+        radial-gradient(circle at 75% 20%, rgba(244, 114, 182, 0.18) 0%, transparent 40%),
+        radial-gradient(circle at 65% 55%, rgba(251, 146, 60, 0.25) 0%, transparent 50%),
+        radial-gradient(circle at 20% 80%, rgba(56, 189, 248, 0.15) 0%, transparent 45%),
+        url('https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=2560&auto=format&fit=crop');
+      background-size: cover;
+      background-position: center bottom;
+      background-repeat: no-repeat;
+    }
+
+    /* Animated audio visualizer bars */
+    @keyframes bounceWave {
+      0%, 100% { height: 4px; }
+      50% { height: 16px; }
+    }
+    .wave-bar-1 { animation: bounceWave 0.7s infinite ease-in-out; }
+    .wave-bar-2 { animation: bounceWave 0.9s infinite ease-in-out 0.15s; }
+    .wave-bar-3 { animation: bounceWave 0.6s infinite ease-in-out 0.3s; }
+    .wave-bar-4 { animation: bounceWave 0.8s infinite ease-in-out 0.1s; }
+
+    /* Window active glow */
+    .active-window {
+      box-shadow: 0 25px 60px -10px rgba(0, 0, 0, 0.65), 0 0 25px rgba(56, 189, 248, 0.18), inset 0 1px 1px rgba(255, 255, 255, 0.25) !important;
+      border-color: rgba(255, 255, 255, 0.24) !important;
+    }
+
+    .window-header {
+      cursor: grab;
+    }
+    .window-header:active {
+      cursor: grabbing;
+    }
+  </style>
+</head>
+
+<body class="relative overflow-hidden select-none bg-black">
+
+  <!-- Sci-fi City Wallpaper with Celestial Planet Overlay -->
+  <div class="absolute inset-0 scifi-city-bg z-0 overflow-hidden pointer-events-none">
+    <!-- Huge Moon / Ringed Planet in upper sky -->
+    <div class="absolute -top-32 right-1/4 w-[480px] h-[480px] rounded-full border border-sky-200/20 bg-gradient-to-b from-sky-100/10 via-slate-800/30 to-transparent backdrop-blur-[2px] opacity-40 pointer-events-none shadow-[0_0_80px_rgba(56,189,248,0.15)]">
+      <div class="absolute inset-4 rounded-full border border-sky-400/10 opacity-30"></div>
+    </div>
+
+    <!-- Distant Flying Vehicles / Traffic Lights -->
+    <div class="absolute top-[35%] left-[10%] w-1.5 h-1.5 rounded-full bg-cyan-300 blur-[0.5px] animate-pulse"></div>
+    <div class="absolute top-[38%] left-[18%] w-1 h-1 rounded-full bg-amber-400 blur-[0.5px]"></div>
+    <div class="absolute top-[48%] right-[32%] w-1.5 h-1.5 rounded-full bg-cyan-200 blur-[0.5px] animate-pulse"></div>
+
+    <!-- Soft Darkening Gradient for Contrast -->
+    <div class="absolute inset-0 bg-gradient-to-t from-[#050711]/90 via-[#070b18]/40 to-[#070a16]/60 pointer-events-none"></div>
+  </div>
+
+  <!-- Global Top Bar -->
+  <header class="relative z-30 flex items-center justify-between px-6 py-2.5 h-12 w-full text-xs font-medium text-slate-300">
+    <!-- Top Left: NovaOS Branding -->
+    <div class="flex items-center gap-2 cursor-pointer group" onclick="toggleApp('systemInfo')">
+      <div class="w-6 h-6 rounded-lg bg-gradient-to-br from-cyan-400 to-blue-600 flex items-center justify-center text-white shadow-sm shadow-cyan-500/30 group-hover:scale-105 transition-transform">
+        <i class="ph-bold ph-planet text-sm"></i>
+      </div>
+      <span class="font-bold tracking-widest text-white text-sm">NOVAOS</span>
+      <span class="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-cyan-300 border border-white/10 ml-1 font-mono">2030.1</span>
+    </div>
+
+    <!-- Top Center: Global Omnibar / Search -->
+    <div class="w-full max-w-xl mx-4">
+      <div onclick="openOmnibar()" class="glass-pill rounded-full py-1.5 px-4 flex items-center justify-between text-slate-400 hover:text-slate-200 cursor-pointer shadow-sm group transition-all">
+        <div class="flex items-center gap-2.5 truncate">
+          <i class="ph ph-magnifying-glass text-cyan-400 group-hover:scale-110 transition-transform"></i>
+          <span class="text-xs truncate">Search anything... files, apps, web, or just ask NovaOS</span>
+        </div>
+        <div class="flex items-center gap-1">
+          <kbd class="px-1.5 py-0.5 rounded text-[10px] bg-white/10 text-slate-300 border border-white/10 font-mono">Ctrl</kbd>
+          <kbd class="px-1.5 py-0.5 rounded text-[10px] bg-white/10 text-slate-300 border border-white/10 font-mono">K</kbd>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top Right Quick Controls -->
+    <div class="flex items-center gap-3">
+      <button onclick="toggleAudio()" id="ambientAudioBtn" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full glass-pill hover:text-cyan-300 transition-colors" title="Toggle Chill Ambient Audio">
+        <i class="ph-fill ph-speaker-high" id="ambientAudioIcon"></i>
+        <span class="text-[11px]" id="ambientAudioLabel">Audio On</span>
+      </button>
+
+      <button onclick="openToast('NovaOS Update', 'All neural engines and system drivers are running on optimal efficiency.')" class="w-8 h-8 rounded-full glass-pill flex items-center justify-center hover:text-white transition-colors relative">
+        <i class="ph ph-bell text-sm"></i>
+        <span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+        <span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-cyan-400"></span>
+      </button>
+
+      <div class="flex items-center gap-2 pl-2 border-l border-white/10">
+        <div class="w-7 h-7 rounded-full overflow-hidden border border-white/20 cursor-pointer hover:border-cyan-400 transition-colors" onclick="toggleApp('systemInfo')">
+          <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=200&auto=format&fit=crop" class="w-full h-full object-cover" alt="Elian Profile" onerror="this.src='https://placehold.co/100x100/171c2c/38bdf8?text=E'">
+        </div>
+        <span class="text-xs text-slate-200 hidden sm:inline">Elian</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN DESKTOP AREA -->
+  <main id="desktop" class="relative z-10 w-full h-[calc(100vh-3rem)] overflow-hidden p-6 flex flex-col justify-between">
+
+    <!-- DESKTOP BACKGROUND WIDGETS & SIDEBAR -->
+    <div class="grid grid-cols-12 gap-6 h-full pointer-events-none">
+
+      <!-- LEFT DESKTOP COLUMN: Clock, Inspiration & Left Dock Navigation -->
+      <div class="col-span-3 flex flex-col justify-between pointer-events-auto max-w-[280px]">
+
+        <!-- Large Clock & Greeting -->
+        <div class="space-y-1">
+          <div id="liveClock" class="text-5xl font-light tracking-tight text-white drop-shadow-md">07:24 AM</div>
+          <div id="liveDate" class="text-sm font-medium text-slate-300">Tue, Apr 16, 2030</div>
+          <p class="text-xs text-slate-400/80 italic pt-1 leading-relaxed max-w-[220px]">
+            "A brighter tomorrow lives in your next idea."
+          </p>
+        </div>
+
+        <!-- Left Vertical Navigation Bar (exact match to screenshot) -->
+        <div class="glass-surface rounded-2xl p-2.5 my-auto w-full space-y-4 shadow-glass">
+          <!-- Primary Navigation -->
+          <div class="space-y-1">
+            <button onclick="setActiveNav(this); openApp('files')" class="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-white bg-white/15 border border-white/10 transition-all nav-btn">
+              <i class="ph-bold ph-house text-cyan-400 text-sm"></i>
+              <span>Home</span>
+            </button>
+            <button onclick="setActiveNav(this); toggleApp('launcher')" class="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-white/10 transition-all nav-btn">
+              <i class="ph ph-squares-four text-sm"></i>
+              <span>Apps</span>
+            </button>
+            <button onclick="setActiveNav(this); openToast('Spaces Activated', 'Switched to Workspace 2: Neural Canvas')" class="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-white/10 transition-all nav-btn">
+              <i class="ph ph-intersect text-sm"></i>
+              <span>Spaces</span>
+            </button>
+            <button onclick="setActiveNav(this); openApp('notes')" class="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-white/10 transition-all nav-btn">
+              <i class="ph ph-paint-brush-broad text-sm"></i>
+              <span>Create</span>
+            </button>
+            <button onclick="setActiveNav(this); openApp('aiAssistant')" class="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-white/10 transition-all nav-btn">
+              <i class="ph ph-compass text-sm"></i>
+              <span>Explore</span>
+            </button>
+          </div>
+
+          <!-- Pinned Section -->
+          <div class="pt-2 border-t border-white/10 space-y-1">
+            <div class="px-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Pinned</div>
+            <div class="grid grid-cols-1 gap-0.5 text-xs text-slate-300">
+              <div onclick="openApp('notes')" class="flex items-center gap-3 px-3 py-1.5 rounded-lg hover:bg-white/10 hover:text-white cursor-pointer transition-colors">
+                <i class="ph-fill ph-note-pencil text-amber-400"></i>
+                <span>Notes</span>
+              </div>
+              <div onclick="openToast('Canvas Studio', 'Canvas initialized on High-Performance WebGL.')" class="flex items-center gap-3 px-3 py-1.5 rounded-lg hover:bg-white/10 hover:text-white cursor-pointer transition-colors">
+                <i class="ph-fill ph-palette text-purple-400"></i>
+                <span>Canvas</span>
+              </div>
+              <div onclick="openToast('Mailbox Synchronized', '3 new unread neural messages from Nexus Core.')" class="flex items-center gap-3 px-3 py-1.5 rounded-lg hover:bg-white/10 hover:text-white cursor-pointer transition-colors">
+                <i class="ph-fill ph-envelope-simple text-blue-400"></i>
+                <span>Mail</span>
+              </div>
+              <div onclick="openToast('Calendar Event', 'Next up: 2:00 PM - AI Architecture Sync')" class="flex items-center gap-3 px-3 py-1.5 rounded-lg hover:bg-white/10 hover:text-white cursor-pointer transition-colors">
+                <i class="ph-fill ph-calendar text-rose-400"></i>
+                <span>Calendar</span>
+              </div>
+              <div onclick="openApp('files')" class="flex items-center gap-3 px-3 py-1.5 rounded-lg hover:bg-white/10 hover:text-white cursor-pointer transition-colors">
+                <i class="ph-fill ph-image text-emerald-400"></i>
+                <span>Photos</span>
+              </div>
+              <div onclick="openApp('terminal')" class="flex items-center gap-3 px-3 py-1.5 rounded-lg hover:bg-white/10 hover:text-white cursor-pointer transition-colors">
+                <i class="ph-bold ph-terminal-window text-cyan-400"></i>
+                <span>Terminal</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bottom User & Settings -->
+          <div class="pt-2 border-t border-white/10 flex items-center justify-between px-2">
+            <div class="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity" onclick="toggleApp('systemInfo')">
+              <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=150&auto=format&fit=crop" class="w-7 h-7 rounded-full object-cover border border-white/20" alt="Avatar">
+              <span class="text-xs font-medium text-slate-200">Elian</span>
+            </div>
+            <button onclick="toggleApp('systemInfo')" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 transition-colors">
+              <i class="ph ph-gear text-sm"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Spacer for Bottom dock clearance -->
+        <div class="h-16"></div>
+      </div>
+
+      <!-- CENTER WORKSPACE: Reserved for Movable / Stackable Windows (Rendered dynamically below) -->
+      <div class="col-span-6 h-full relative" id="windowCanvas">
+        <!-- Windows will float here -->
+      </div>
+
+      <!-- RIGHT DESKTOP COLUMN: Widgets (Weather, Calendar, Telemetry Gauges) -->
+      <div class="col-span-3 flex flex-col items-end gap-3 pointer-events-auto h-full overflow-y-auto no-scrollbar pb-20">
+
+        <!-- Top Row: Weather + Calendar Widgets -->
+        <div class="flex gap-3 w-full">
+          <!-- Weather Widget -->
+          <div class="flex-1 glass-surface rounded-2xl p-3 shadow-glass flex flex-col justify-between">
+            <div class="flex items-center justify-between text-xs text-slate-300">
+              <span class="flex items-center gap-1 font-medium"><i class="ph-fill ph-map-pin text-rose-400"></i> Solaris City</span>
+              <i class="ph ph-dots-three text-slate-400 cursor-pointer"></i>
+            </div>
+            <div class="flex items-center gap-2 my-2">
+              <i class="ph-fill ph-sun text-3xl text-amber-400 animate-spin" style="animation-duration: 40s;"></i>
+              <div>
+                <div class="text-2xl font-semibold text-white">18°</div>
+                <div class="text-[10px] text-slate-300 leading-tight">Mostly clear<br><span class="text-slate-400">H: 24° L: 12°</span></div>
+              </div>
+            </div>
+            <!-- Hourly mini forecast -->
+            <div class="grid grid-cols-5 text-center text-[9px] text-slate-400 pt-2 border-t border-white/10">
+              <div><div>8AM</div><i class="ph-fill ph-sun text-amber-400 text-xs my-0.5"></i><div>20°</div></div>
+              <div><div>11AM</div><i class="ph-fill ph-sun text-amber-400 text-xs my-0.5"></i><div>23°</div></div>
+              <div><div>2PM</div><i class="ph-fill ph-cloud-sun text-amber-300 text-xs my-0.5"></i><div>24°</div></div>
+              <div><div>5PM</div><i class="ph-fill ph-cloud-sun text-amber-300 text-xs my-0.5"></i><div>24°</div></div>
+              <div><div>8PM</div><i class="ph-fill ph-moon-stars text-indigo-300 text-xs my-0.5"></i><div>22°</div></div>
+            </div>
+          </div>
+
+          <!-- Calendar Widget -->
+          <div class="w-36 glass-surface rounded-2xl p-3 shadow-glass flex flex-col justify-between">
+            <div class="flex items-center justify-between text-xs font-semibold text-slate-200">
+              <span>April 2030</span>
+              <i class="ph ph-caret-right text-slate-400 cursor-pointer hover:text-white"></i>
+            </div>
+            <div class="grid grid-cols-7 gap-1 text-center text-[9px] text-slate-400 mt-2 font-mono">
+              <span class="text-rose-400">S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+              <span class="text-slate-600">30</span><span class="text-slate-600">31</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span>
+              <span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span>
+              <span>13</span><span>14</span><span>15</span><span class="rounded-full bg-cyan-500 text-black font-bold">16</span><span>17</span><span>18</span><span>19</span>
+              <span>20</span><span>21</span><span>22</span><span>23</span><span>24</span><span>25</span><span>26</span>
+              <span>27</span><span>28</span><span>29</span><span>30</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Telemetry System Stats (Circular Gauges) -->
+        <div class="glass-surface rounded-2xl p-3 w-full shadow-glass grid grid-cols-4 gap-2 text-center">
+          <!-- CPU -->
+          <div class="flex flex-col items-center">
+            <div class="relative w-12 h-12 flex items-center justify-center">
+              <svg class="w-12 h-12">
+                <circle cx="24" cy="24" r="18" stroke="rgba(255,255,255,0.1)" stroke-width="3" fill="none" />
+                <circle id="gaugeCpuCircle" class="gauge-circle" cx="24" cy="24" r="18" stroke="#38bdf8" stroke-width="3.5" stroke-dasharray="113" stroke-dashoffset="97" stroke-linecap="round" fill="none" />
+              </svg>
+              <span id="gaugeCpuVal" class="absolute text-[11px] font-semibold text-slate-200">14%</span>
+            </div>
+            <span class="text-[10px] text-slate-400 font-medium mt-1">CPU</span>
+          </div>
+
+          <!-- GPU -->
+          <div class="flex flex-col items-center">
+            <div class="relative w-12 h-12 flex items-center justify-center">
+              <svg class="w-12 h-12">
+                <circle cx="24" cy="24" r="18" stroke="rgba(255,255,255,0.1)" stroke-width="3" fill="none" />
+                <circle id="gaugeGpuCircle" class="gauge-circle" cx="24" cy="24" r="18" stroke="#34d399" stroke-width="3.5" stroke-dasharray="113" stroke-dashoffset="81" stroke-linecap="round" fill="none" />
+              </svg>
+              <span id="gaugeGpuVal" class="absolute text-[11px] font-semibold text-slate-200">28%</span>
+            </div>
+            <span class="text-[10px] text-slate-400 font-medium mt-1">GPU</span>
+          </div>
+
+          <!-- Memory -->
+          <div class="flex flex-col items-center">
+            <div class="relative w-12 h-12 flex items-center justify-center">
+              <svg class="w-12 h-12">
+                <circle cx="24" cy="24" r="18" stroke="rgba(255,255,255,0.1)" stroke-width="3" fill="none" />
+                <circle id="gaugeMemCircle" class="gauge-circle" cx="24" cy="24" r="18" stroke="#818cf8" stroke-width="3.5" stroke-dasharray="113" stroke-dashoffset="43" stroke-linecap="round" fill="none" />
+              </svg>
+              <span id="gaugeMemVal" class="absolute text-[11px] font-semibold text-slate-200">62%</span>
+            </div>
+            <span class="text-[10px] text-slate-400 font-medium mt-1">Memory</span>
+          </div>
+
+          <!-- Storage -->
+          <div class="flex flex-col items-center">
+            <div class="relative w-12 h-12 flex items-center justify-center">
+              <svg class="w-12 h-12">
+                <circle cx="24" cy="24" r="18" stroke="rgba(255,255,255,0.1)" stroke-width="3" fill="none" />
+                <circle id="gaugeStorageCircle" class="gauge-circle" cx="24" cy="24" r="18" stroke="#f59e0b" stroke-width="3.5" stroke-dasharray="113" stroke-dashoffset="70" stroke-linecap="round" fill="none" />
+              </svg>
+              <span id="gaugeStorageVal" class="absolute text-[11px] font-semibold text-slate-200">38%</span>
+            </div>
+            <span class="text-[10px] text-slate-400 font-medium mt-1">Storage</span>
+          </div>
+        </div>
+
+        <!-- RIGHT WIDGET: NovaOS AI Quick Panel (Can also be popped into floating window) -->
+        <div id="aiSidebarCard" class="glass-surface rounded-2xl p-4 w-full shadow-glass flex flex-col space-y-3.5 border border-white/15">
+          <!-- AI Header & Mode Selector -->
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <div class="w-6 h-6 rounded-lg bg-gradient-to-tr from-cyan-400 to-indigo-600 flex items-center justify-center text-white text-xs shadow-sm shadow-cyan-500/30">
+                <i class="ph-bold ph-sparkle"></i>
+              </div>
+              <span class="text-xs font-bold text-white tracking-wide">NovaOS AI</span>
+            </div>
+            <div class="flex items-center gap-1.5 text-slate-400">
+              <button onclick="popAiWindow()" class="hover:text-white p-1 rounded hover:bg-white/10 transition-colors" title="Expand to window">
+                <i class="ph ph-arrow-square-out text-xs"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Mode Pills -->
+          <div class="flex items-center justify-between text-[11px] font-medium text-slate-400 bg-black/30 p-1 rounded-xl border border-white/10">
+            <button onclick="setAiMode(this, 'chat')" class="flex-1 py-1 rounded-lg text-white bg-white/15 shadow-sm transition-all ai-mode-btn">Chat</button>
+            <button onclick="setAiMode(this, 'create')" class="flex-1 py-1 rounded-lg hover:text-white transition-all ai-mode-btn">Create</button>
+            <button onclick="setAiMode(this, 'analyze')" class="flex-1 py-1 rounded-lg hover:text-white transition-all ai-mode-btn">Analyze</button>
+            <button onclick="setAiMode(this, 'automate')" class="flex-1 py-1 rounded-lg hover:text-white transition-all ai-mode-btn">Automate</button>
+          </div>
+
+          <!-- Greeting -->
+          <div class="text-center py-1">
+            <div class="text-sm font-semibold text-white">Good morning, Elian.</div>
+            <div class="text-xs text-slate-300">What would you like to do today?</div>
+          </div>
+
+          <!-- Input Box -->
+          <div class="relative">
+            <input type="text" id="aiCardInput" onkeydown="handleAiCardKey(event)" placeholder="Ask anything or set a task..." class="w-full glass-input rounded-xl py-2 px-3 pl-8 pr-8 text-xs text-white placeholder-slate-400 focus:outline-none transition-all">
+            <i class="ph ph-chat-circle-dots absolute left-2.5 top-2.5 text-slate-400 text-xs"></i>
+            <button onclick="submitAiCard()" class="absolute right-2 top-2 text-cyan-400 hover:text-cyan-300">
+              <i class="ph-bold ph-paper-plane-right text-xs"></i>
+            </button>
+          </div>
+
+          <!-- Quick Action Buttons -->
+          <div class="grid grid-cols-2 gap-2">
+            <button onclick="triggerAiPrompt('Summarize my recent files')" class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-left transition-all group">
+              <div class="flex items-center gap-2 text-emerald-400 text-xs font-medium">
+                <i class="ph-fill ph-file-text"></i>
+                <span class="text-white text-[11px] group-hover:text-cyan-300 transition-colors">Summarize</span>
+              </div>
+              <div class="text-[9px] text-slate-400 truncate mt-0.5">my recent files</div>
+            </button>
+
+            <button onclick="triggerAiPrompt('Plan my week from my calendar')" class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-left transition-all group">
+              <div class="flex items-center gap-2 text-purple-400 text-xs font-medium">
+                <i class="ph-fill ph-calendar-check"></i>
+                <span class="text-white text-[11px] group-hover:text-cyan-300 transition-colors">Plan my week</span>
+              </div>
+              <div class="text-[9px] text-slate-400 truncate mt-0.5">from my calendar</div>
+            </button>
+
+            <button onclick="triggerAiPrompt('Analyze the City_Render_Final.exr image')" class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-left transition-all group">
+              <div class="flex items-center gap-2 text-blue-400 text-xs font-medium">
+                <i class="ph-fill ph-cpu"></i>
+                <span class="text-white text-[11px] group-hover:text-cyan-300 transition-colors">Analyze</span>
+              </div>
+              <div class="text-[9px] text-slate-400 truncate mt-0.5">this document</div>
+            </button>
+
+            <button onclick="triggerAiPrompt('Generate a sci-fi presentation slide concept')" class="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-left transition-all group">
+              <div class="flex items-center gap-2 text-amber-400 text-xs font-medium">
+                <i class="ph-fill ph-sparkle"></i>
+                <span class="text-white text-[11px] group-hover:text-cyan-300 transition-colors">Create an image</span>
+              </div>
+              <div class="text-[9px] text-slate-400 truncate mt-0.5">for my presentation</div>
+            </button>
+          </div>
+
+          <!-- Today's Focus Card -->
+          <div class="rounded-xl bg-black/25 p-2.5 border border-white/10">
+            <div class="flex items-center justify-between text-xs text-slate-300">
+              <span class="flex items-center gap-1.5 font-medium"><i class="ph-fill ph-check-square text-rose-400"></i> Today's focus</span>
+              <span class="text-[10px] text-cyan-400 cursor-pointer hover:underline" onclick="toggleTaskExpand()">Show ▾</span>
+            </div>
+            <div id="taskListContent" class="text-[10px] text-slate-400 mt-1.5 space-y-1">
+              <div class="flex items-center gap-2"><input type="checkbox" checked class="rounded accent-cyan-500"> <span>Neural Interface v4 sign-off</span></div>
+              <div class="flex items-center gap-2"><input type="checkbox" class="rounded accent-cyan-500"> <span>Prepare Q2 Market Deck</span></div>
+              <div class="flex items-center gap-2"><input type="checkbox" class="rounded accent-cyan-500"> <span>Sync with Orbital Core team</span></div>
+            </div>
+          </div>
+
+          <div class="text-[10px] text-center text-slate-400/80 italic pt-1">
+            "Progress feels real when your environment understands you."
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- FLOATING BOTTOM DOCK & MUSIC PLAYER & SYSTEM TRAY -->
+    <div class="relative z-40 w-full flex items-end justify-between pointer-events-auto">
+
+      <!-- Bottom Left: Mini Music Player (Exact replica of "Golden Horizon - Lume") -->
+      <div class="glass-surface rounded-2xl p-2.5 flex items-center gap-3 shadow-glass border border-white/15 w-64">
+        <div class="relative w-11 h-11 rounded-xl overflow-hidden shadow-md flex-shrink-0 group cursor-pointer" onclick="toggleTrackPlayback()">
+          <img src="https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=200&auto=format&fit=crop" class="w-full h-full object-cover" alt="Album Cover">
+          <div class="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+            <i class="ph-fill ph-play text-white text-sm" id="miniPlayIcon"></i>
+          </div>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center justify-between">
+            <div class="text-xs font-semibold text-white truncate" id="trackTitle">Golden Horizon</div>
+            <button onclick="toggleTrackFavorite()" class="text-rose-400 hover:scale-110 transition-transform">
+              <i class="ph-fill ph-heart text-xs" id="trackFavIcon"></i>
+            </button>
+          </div>
+          <div class="text-[10px] text-slate-400 truncate">Lume • Synthwave Ambient</div>
+          <!-- Equalizer Bar Visualization -->
+          <div class="flex items-end gap-1 h-3 mt-1" id="equalizerContainer">
+            <span class="w-1 bg-cyan-400 rounded-full wave-bar-1"></span>
+            <span class="w-1 bg-cyan-300 rounded-full wave-bar-2"></span>
+            <span class="w-1 bg-purple-400 rounded-full wave-bar-3"></span>
+            <span class="w-1 bg-pink-400 rounded-full wave-bar-4"></span>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5 text-slate-300 text-sm">
+          <button onclick="prevTrack()" class="hover:text-white p-1"><i class="ph-fill ph-skip-back"></i></button>
+          <button onclick="toggleTrackPlayback()" class="hover:text-white p-1 text-base text-cyan-400"><i class="ph-fill ph-play" id="mainPlayBtn"></i></button>
+          <button onclick="nextTrack()" class="hover:text-white p-1"><i class="ph-fill ph-skip-forward"></i></button>
+        </div>
+      </div>
+
+      <!-- CENTER FLOATING APP DOCK -->
+      <div class="glass-surface rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-2xl border border-white/20 mb-1">
+
+        <!-- NovaOS Launcher button -->
+        <button onclick="toggleApp('launcher')" class="dock-icon w-11 h-11 rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 flex items-center justify-center text-white text-xl shadow-lg shadow-cyan-500/30 relative">
+          <i class="ph-bold ph-planet"></i>
+        </button>
+
+        <div class="w-px h-6 bg-white/15 mx-1"></div>
+
+        <!-- Files App -->
+        <button onclick="openApp('files')" class="dock-icon w-11 h-11 rounded-xl bg-blue-500/20 hover:bg-blue-500/30 border border-blue-400/30 flex items-center justify-center text-blue-300 text-xl relative group">
+          <i class="ph-fill ph-folder"></i>
+          <span class="w-1 h-1 rounded-full bg-cyan-400 absolute bottom-1" id="dockIndicator-files"></span>
+          <!-- Tooltip -->
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Files</span>
+        </button>
+
+        <!-- Media / Music Disc -->
+        <button onclick="toggleTrackPlayback()" class="dock-icon w-11 h-11 rounded-xl bg-purple-500/20 hover:bg-purple-500/30 border border-purple-400/30 flex items-center justify-center text-purple-300 text-xl relative group">
+          <i class="ph-fill ph-disc"></i>
+          <span class="w-1 h-1 rounded-full bg-purple-400 absolute bottom-1" id="dockIndicator-music"></span>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Music</span>
+        </button>
+
+        <!-- Mail -->
+        <button onclick="openToast('Nova Mail', 'Syncing encrypted neural inbox. 0 new spam.')" class="dock-icon w-11 h-11 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 flex items-center justify-center text-sky-300 text-xl relative group">
+          <i class="ph-fill ph-envelope"></i>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Mail</span>
+        </button>
+
+        <!-- Calendar -->
+        <button onclick="openToast('Nova Calendar', '3 meetings scheduled for this week.')" class="dock-icon w-11 h-11 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/30 flex items-center justify-center text-rose-300 text-xl relative group">
+          <div class="flex flex-col items-center">
+            <span class="text-[8px] font-bold uppercase leading-none text-rose-400">Tue</span>
+            <span class="text-sm font-extrabold leading-none text-white">16</span>
+          </div>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Calendar</span>
+        </button>
+
+        <!-- Creative Spark / AI Studio -->
+        <button onclick="openApp('aiAssistant')" class="dock-icon w-11 h-11 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-400/30 flex items-center justify-center text-violet-300 text-xl relative group">
+          <i class="ph-fill ph-sparkle"></i>
+          <span class="w-1 h-1 rounded-full bg-violet-400 absolute bottom-1" id="dockIndicator-ai"></span>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Nova AI</span>
+        </button>
+
+        <!-- Analytics / Telemetry -->
+        <button onclick="openToast('System Telemetry', 'Quantum neural load is 24% lower than baseline.')" class="dock-icon w-11 h-11 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/30 flex items-center justify-center text-emerald-300 text-xl relative group">
+          <i class="ph-fill ph-chart-bar"></i>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Stats</span>
+        </button>
+
+        <!-- Photo Gallery -->
+        <button onclick="previewFileModal('City_Render_Final.exr', '3D Image • 245 MB')" class="dock-icon w-11 h-11 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 flex items-center justify-center text-cyan-300 text-xl relative group">
+          <i class="ph-fill ph-image"></i>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Gallery</span>
+        </button>
+
+        <!-- Notes / Pen -->
+        <button onclick="openApp('notes')" class="dock-icon w-11 h-11 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/30 flex items-center justify-center text-amber-300 text-xl relative group">
+          <i class="ph-fill ph-pencil-simple"></i>
+          <span class="w-1 h-1 rounded-full bg-amber-400 absolute bottom-1" id="dockIndicator-notes"></span>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Notes</span>
+        </button>
+
+        <!-- Terminal -->
+        <button onclick="openApp('terminal')" class="dock-icon w-11 h-11 rounded-xl bg-zinc-500/20 hover:bg-zinc-500/30 border border-zinc-400/30 flex items-center justify-center text-zinc-300 text-xl relative group">
+          <i class="ph-bold ph-terminal"></i>
+          <span class="w-1 h-1 rounded-full bg-cyan-400 absolute bottom-1" id="dockIndicator-terminal"></span>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Terminal</span>
+        </button>
+
+        <!-- Settings -->
+        <button onclick="toggleApp('systemInfo')" class="dock-icon w-11 h-11 rounded-xl bg-slate-500/20 hover:bg-slate-500/30 border border-slate-400/30 flex items-center justify-center text-slate-300 text-xl relative group">
+          <i class="ph-fill ph-gear"></i>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Settings</span>
+        </button>
+
+        <!-- Trash -->
+        <button onclick="openToast('Recycle Bin', 'Trash is clean. 0 items awaiting shredding.')" class="dock-icon w-11 h-11 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-400/30 flex items-center justify-center text-red-300 text-xl relative group">
+          <i class="ph-fill ph-trash"></i>
+          <span class="absolute -top-8 bg-slate-900/90 text-white text-[10px] px-2 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">Trash</span>
+        </button>
+      </div>
+
+      <!-- Bottom Right: Status Tray (Volume, WiFi, Battery, Date/Time) -->
+      <div class="glass-surface rounded-2xl px-4 py-2 flex items-center gap-3 shadow-glass text-slate-300 text-xs font-medium">
+        <button onclick="openToast('Audio System', 'Neural DSP output: Spatial Atmos Active')" class="hover:text-white transition-colors"><i class="ph-fill ph-speaker-high text-sm"></i></button>
+        <button onclick="openToast('Network Connectivity', 'Sub-Orbital 10G connected: 4.8 Gbps')" class="hover:text-white transition-colors"><i class="ph-bold ph-wifi-high text-sm"></i></button>
+        <button onclick="openToast('Power Status', 'Micro-fusion Cell at 98% charge')" class="hover:text-white transition-colors"><i class="ph-fill ph-battery-charging text-sm text-emerald-400"></i></button>
+        <div class="h-4 w-px bg-white/15"></div>
+        <div class="text-right leading-none cursor-pointer" onclick="openToast('Calendar', 'Tue, Apr 16, 2030 • Standard Planetary Time')">
+          <div class="font-semibold text-white text-xs">7:24 AM</div>
+          <div class="text-[9px] text-slate-400">Tue, Apr 16, 2030</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- UPDATE NOTIFICATION TOAST (Exact match from bottom left in screenshot) -->
+    <div id="systemToast" class="fixed bottom-24 left-6 z-50 glass-surface rounded-2xl p-4 w-80 shadow-toast border border-white/20 transition-all duration-300 transform translate-y-0 opacity-100">
+      <div class="flex items-start gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-400 to-blue-600 flex items-center justify-center text-white text-lg flex-shrink-0 shadow-md shadow-cyan-500/20">
+          <i class="ph-bold ph-planet"></i>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold text-white tracking-wide" id="toastTitle">NovaOS 2030.1 is available</h4>
+            <button onclick="closeToast()" class="text-slate-400 hover:text-white text-sm"><i class="ph ph-x"></i></button>
+          </div>
+          <p class="text-[11px] text-slate-300 mt-1 leading-snug" id="toastMessage">
+            NovaOS 2030.1 is available!<br>New AI tools, performance improvements, and visual enhancements.
+          </p>
+          <div class="flex items-center gap-2 mt-3">
+            <button onclick="handleToastAction('view')" class="px-3 py-1 rounded-lg text-xs font-medium text-white bg-white/15 hover:bg-white/25 border border-white/10 transition-colors">
+              View Details
+            </button>
+            <button onclick="closeToast()" class="px-3 py-1 rounded-lg text-xs font-medium text-slate-400 hover:text-white transition-colors">
+              Install Later
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ==================== WINDOW 1: FILES EXPLORER ==================== -->
+  <div id="win-files" class="absolute z-20 top-16 left-1/2 -translate-x-[55%] w-[880px] h-[560px] glass-surface rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-150 active-window">
+
+    <!-- Titlebar & Tabs -->
+    <div class="window-header h-11 bg-white/5 border-b border-white/10 px-4 flex items-center justify-between" onmousedown="startDrag(event, 'win-files')">
+      <!-- Left: Navigation Arrows & Tab -->
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-1 text-slate-400 text-xs">
+          <button onclick="navFolderBack()" class="p-1 hover:text-white rounded hover:bg-white/10"><i class="ph-bold ph-arrow-left"></i></button>
+          <button class="p-1 text-slate-600 rounded"><i class="ph-bold ph-arrow-right"></i></button>
+          <button onclick="refreshFiles()" class="p-1 hover:text-white rounded hover:bg-white/10"><i class="ph-bold ph-arrow-clockwise"></i></button>
+        </div>
+
+        <!-- Open Tab -->
+        <div class="flex items-center gap-2 px-3 py-1 bg-white/10 border border-white/10 rounded-lg text-xs text-white">
+          <i class="ph-bold ph-house text-cyan-400"></i>
+          <span id="fileTabTitle">Home</span>
+          <i class="ph ph-x text-[10px] text-slate-400 hover:text-white cursor-pointer" onclick="closeApp('files')"></i>
+        </div>
+        <button onclick="openToast('New Tab', 'Created blank explorer tab')" class="p-1 text-slate-400 hover:text-white"><i class="ph-bold ph-plus"></i></button>
+      </div>
+
+      <!-- Center: Folder Search -->
+      <div class="relative w-64">
+        <input type="text" id="fileSearchInput" oninput="filterFiles()" placeholder="Search in Home..." class="w-full glass-input rounded-full py-1 pl-7 pr-3 text-xs text-white placeholder-slate-400 focus:outline-none">
+        <i class="ph ph-magnifying-glass absolute left-2.5 top-1.5 text-slate-400 text-xs"></i>
+      </div>
+
+      <!-- Right: Window Controls -->
+      <div class="flex items-center gap-2">
+        <button onclick="minimizeApp('files')" class="w-3 h-3 rounded-full bg-amber-500/80 hover:bg-amber-400 transition-colors" title="Minimize"></button>
+        <button onclick="maximizeApp('files')" class="w-3 h-3 rounded-full bg-emerald-500/80 hover:bg-emerald-400 transition-colors" title="Maximize"></button>
+        <button onclick="closeApp('files')" class="w-3 h-3 rounded-full bg-rose-500/80 hover:bg-rose-400 transition-colors" title="Close"></button>
+      </div>
+    </div>
+
+    <!-- Explorer Body: Sidebar + Main Content + Preview Pane -->
+    <div class="flex-1 flex overflow-hidden">
+
+      <!-- Explorer Left Sidebar -->
+      <div class="w-48 bg-black/25 border-r border-white/10 p-3 flex flex-col justify-between overflow-y-auto text-xs text-slate-300">
+
+        <div class="space-y-4">
+          <!-- Library Links -->
+          <div class="space-y-1">
+            <button onclick="switchDirectory('Home')" class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-white bg-white/15 border border-white/10 dir-btn">
+              <i class="ph-bold ph-house text-cyan-400"></i>
+              <span>Home</span>
+            </button>
+            <button onclick="switchDirectory('Recents')" class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-white dir-btn">
+              <i class="ph ph-clock-counter-clockwise"></i>
+              <span>Recents</span>
+            </button>
+            <button onclick="switchDirectory('Favorites')" class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-white dir-btn">
+              <i class="ph ph-star"></i>
+              <span>Favorites</span>
+            </button>
+            <button onclick="switchDirectory('Shared')" class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-white dir-btn">
+              <i class="ph ph-users"></i>
+              <span>Shared</span>
+            </button>
+            <button onclick="switchDirectory('All Library')" class="w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-white dir-btn">
+              <i class="ph ph-squares-four"></i>
+              <span>All Library</span>
+            </button>
+          </div>
+
+          <!-- Locations -->
+          <div class="space-y-1.5 pt-2 border-t border-white/10">
+            <div class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-2">Locations</div>
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-white/10 cursor-pointer">
+              <div class="flex items-center gap-2"><i class="ph ph-hard-drive text-slate-400"></i><span>Local Drive</span></div>
+              <span class="text-[10px] text-slate-400 font-mono">712 GB free</span>
+            </div>
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-white/10 cursor-pointer">
+              <div class="flex items-center gap-2"><i class="ph ph-cloud text-cyan-400"></i><span>Cloud Drive</span></div>
+              <span class="text-[10px] text-slate-400 font-mono">2.1 TB free</span>
+            </div>
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-white/10 cursor-pointer">
+              <div class="flex items-center gap-2"><i class="ph ph-shield-check text-purple-400"></i><span>Project Vault</span></div>
+            </div>
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-white/10 cursor-pointer">
+              <div class="flex items-center gap-2"><i class="ph ph-devices text-slate-400"></i><span>Devices</span></div>
+            </div>
+            <div class="flex items-center justify-between px-2 py-1 rounded hover:bg-white/10 cursor-pointer">
+              <div class="flex items-center gap-2"><i class="ph ph-globe text-slate-400"></i><span>Network</span></div>
+            </div>
+          </div>
+
+          <!-- Tags -->
+          <div class="space-y-1 pt-2 border-t border-white/10">
+            <div class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-2">Tags</div>
+            <div onclick="filterByTag('Work')" class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/10 cursor-pointer text-[11px]"><span class="w-2 h-2 rounded-full bg-amber-400"></span><span>Work</span></div>
+            <div onclick="filterByTag('Personal')" class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/10 cursor-pointer text-[11px]"><span class="w-2 h-2 rounded-full bg-indigo-400"></span><span>Personal</span></div>
+            <div onclick="filterByTag('Research')" class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/10 cursor-pointer text-[11px]"><span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>Research</span></div>
+            <div onclick="filterByTag('Media')" class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/10 cursor-pointer text-[11px]"><span class="w-2 h-2 rounded-full bg-rose-400"></span><span>Media</span></div>
+            <div onclick="filterByTag('Archive')" class="flex items-center gap-2 px-2 py-1 rounded hover:bg-white/10 cursor-pointer text-[11px]"><span class="w-2 h-2 rounded-full bg-slate-400"></span><span>Archive</span></div>
+          </div>
+        </div>
+
+        <div class="pt-3 border-t border-white/10 text-[10px] text-slate-400 flex items-center justify-between">
+          <span>Synced with Cloud</span>
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+        </div>
+      </div>
+
+      <!-- Explorer Center View: Folders & Recent Files -->
+      <div class="flex-1 p-5 overflow-y-auto flex flex-col space-y-5">
+
+        <!-- Folders Header & Sort -->
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-xs font-semibold text-slate-200 uppercase tracking-wider">Folders</h3>
+            <div class="flex items-center gap-2 text-slate-400 text-xs">
+              <button class="p-1 rounded hover:bg-white/10 text-white"><i class="ph ph-squares-four"></i></button>
+              <button class="p-1 rounded hover:bg-white/10"><i class="ph ph-list"></i></button>
+              <button class="p-1 rounded hover:bg-white/10"><i class="ph ph-sort-ascending"></i></button>
+              <span class="text-[11px]">Sort: Name ▾</span>
+            </div>
+          </div>
+
+          <!-- Folders 4x2 Grid (Exact replica of screenshot) -->
+          <div class="grid grid-cols-4 gap-3" id="foldersContainer">
+            <!-- Rendered by JavaScript -->
+          </div>
+        </div>
+
+        <!-- Recent Files Section -->
+        <div class="flex-1 flex flex-col">
+          <div class="flex items-center justify-between mb-2">
+            <h3 class="text-xs font-semibold text-slate-200 uppercase tracking-wider">Recent Files</h3>
+            <button onclick="openToast('File Vault', 'Displaying all 148 indexed project assets.')" class="text-xs text-cyan-400 hover:underline">See all &gt;</button>
+          </div>
+
+          <div class="flex-1 flex gap-4">
+            <!-- Files List Table -->
+            <div class="flex-1 space-y-1" id="recentFilesContainer">
+              <!-- Populated by JavaScript -->
+            </div>
+
+            <!-- Preview Card (Exact copy of City_Render_Final.exr preview) -->
+            <div id="filePreviewCard" class="w-56 glass-pill rounded-xl p-3 border border-white/15 flex flex-col justify-between">
+              <div>
+                <div class="h-28 rounded-lg overflow-hidden bg-black/50 border border-white/10 relative group">
+                  <img id="previewImg" src="https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=600&auto=format&fit=crop" class="w-full h-full object-cover" alt="Preview">
+                  <div class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/70 text-[9px] text-cyan-300 font-mono">HDR EXR</div>
+                </div>
+                <div class="mt-2.5">
+                  <div class="text-xs font-semibold text-white truncate" id="previewTitle">City_Render_Final.exr</div>
+                  <div class="text-[10px] text-slate-400" id="previewMeta">EXR Image • 245 MB</div>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-400 space-y-0.5 border-t border-white/10 pt-2 font-mono">
+                  <div class="flex justify-between"><span>Created:</span> <span class="text-slate-300">Apr 15, 2030</span></div>
+                  <div class="flex justify-between"><span>Modified:</span> <span class="text-slate-300">Apr 16, 2030</span></div>
+                  <div class="flex justify-between"><span>Dimensions:</span> <span class="text-slate-300">7680 × 4320</span></div>
+                </div>
+              </div>
+
+              <div class="pt-3 border-t border-white/10 flex items-center gap-2">
+                <button onclick="openSelectedPreview()" class="flex-1 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-semibold text-xs transition-colors text-center">
+                  Open
+                </button>
+                <button onclick="shareSelectedPreview()" class="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs transition-colors flex items-center gap-1">
+                  <i class="ph ph-share-network"></i>
+                  <span>Share</span>
+                </button>
+                <button onclick="openToast('File Actions', 'Exported metadata payload to clipboard')" class="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white">
+                  <i class="ph ph-dots-three"></i>
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- ==================== WINDOW 2: NOVAOS AI ASSISTANT ==================== -->
+  <div id="win-ai" class="absolute z-20 top-20 right-16 w-[480px] h-[600px] glass-surface rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-150 hidden">
+    <!-- AI Header -->
+    <div class="window-header h-12 bg-white/5 border-b border-white/10 px-4 flex items-center justify-between" onmousedown="startDrag(event, 'win-ai')">
+      <div class="flex items-center gap-2">
+        <div class="w-6 h-6 rounded-lg bg-gradient-to-tr from-cyan-400 to-indigo-600 flex items-center justify-center text-white text-xs shadow-sm">
+          <i class="ph-bold ph-sparkle"></i>
+        </div>
+        <span class="text-xs font-bold text-white tracking-wide">NovaOS AI • Neural Model 3.0</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="minimizeApp('aiAssistant')" class="w-3 h-3 rounded-full bg-amber-500/80 hover:bg-amber-400"></button>
+        <button onclick="closeApp('aiAssistant')" class="w-3 h-3 rounded-full bg-rose-500/80 hover:bg-rose-400"></button>
+      </div>
+    </div>
+
+    <!-- AI Messages Thread -->
+    <div class="flex-1 p-4 overflow-y-auto space-y-3" id="aiChatThread">
+      <div class="flex items-start gap-2.5">
+        <div class="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0 text-xs">
+          <i class="ph-bold ph-sparkle"></i>
+        </div>
+        <div class="glass-pill rounded-2xl rounded-tl-sm p-3 text-xs text-slate-200 max-w-[85%] leading-relaxed">
+          Good morning, Elian. All subsystem telemetry is nominal. What can I calculate, compose, or organize for you today?
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Input Box with Gemini Integration -->
+    <div class="p-3 border-t border-white/10 bg-black/30">
+      <div class="relative flex items-center">
+        <input type="text" id="aiWindowInput" onkeydown="handleAiWindowKey(event)" placeholder="Ask Gemini 3 Flash / NovaOS AI..." class="w-full glass-input rounded-xl py-2 pl-3 pr-20 text-xs text-white placeholder-slate-400 focus:outline-none">
+        <div class="absolute right-2 flex items-center gap-1.5">
+          <button onclick="voiceMock()" class="p-1 text-slate-400 hover:text-white" title="Voice Input"><i class="ph ph-microphone text-xs"></i></button>
+          <button onclick="sendAiWindowMessage()" class="px-2.5 py-1 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-semibold text-xs flex items-center gap-1 transition-colors">
+            <span>Send</span>
+            <i class="ph-bold ph-paper-plane-right text-[10px]"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== WINDOW 3: TERMINAL ==================== -->
+  <div id="win-terminal" class="absolute z-20 top-24 left-24 w-[620px] h-[400px] bg-[#0c101d]/95 backdrop-blur-2xl rounded-2xl border border-white/15 shadow-2xl flex flex-col overflow-hidden transition-all duration-150 hidden">
+    <div class="window-header h-10 bg-white/5 border-b border-white/10 px-4 flex items-center justify-between" onmousedown="startDrag(event, 'win-terminal')">
+      <div class="flex items-center gap-2 text-xs font-mono text-cyan-300">
+        <i class="ph-bold ph-terminal-window"></i>
+        <span>elian@novaos-quantum-core:~</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="closeApp('terminal')" class="w-3 h-3 rounded-full bg-rose-500/80 hover:bg-rose-400"></button>
+      </div>
+    </div>
+    <div class="flex-1 p-4 font-mono text-xs text-slate-300 overflow-y-auto space-y-2 select-text" id="terminalOutput">
+      <div class="text-cyan-400">NovaOS Terminal [Version 2030.1.0-alpha.4]</div>
+      <div class="text-slate-400">Type <span class="text-amber-300 font-bold">'help'</span> to see available system commands.</div>
+    </div>
+    <div class="p-3 bg-black/40 border-t border-white/10 flex items-center gap-2 font-mono text-xs">
+      <span class="text-cyan-400">elian@novaos:~$</span>
+      <input type="text" id="terminalInput" onkeydown="handleTerminalKey(event)" class="flex-1 bg-transparent text-white focus:outline-none font-mono text-xs" autofocus>
+    </div>
+  </div>
+
+  <!-- ==================== WINDOW 4: NOTES EDITOR ==================== -->
+  <div id="win-notes" class="absolute z-20 top-20 left-1/3 w-[550px] h-[440px] glass-surface rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-150 hidden">
+    <div class="window-header h-10 bg-white/5 border-b border-white/10 px-4 flex items-center justify-between" onmousedown="startDrag(event, 'win-notes')">
+      <div class="flex items-center gap-2 text-xs font-medium text-amber-300">
+        <i class="ph-fill ph-note-pencil"></i>
+        <span>Quick Note • Neural Project Strategy</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="saveNote()" class="text-xs text-cyan-400 hover:text-white px-2 py-0.5 rounded bg-white/10">Save</button>
+        <button onclick="closeApp('notes')" class="w-3 h-3 rounded-full bg-rose-500/80 hover:bg-rose-400"></button>
+      </div>
+    </div>
+    <div class="p-2 border-b border-white/10 bg-black/20 flex items-center gap-2 text-xs text-slate-400">
+      <button class="px-2 py-0.5 rounded hover:bg-white/10 hover:text-white font-bold">B</button>
+      <button class="px-2 py-0.5 rounded hover:bg-white/10 hover:text-white italic">I</button>
+      <button class="px-2 py-0.5 rounded hover:bg-white/10 hover:text-white underline">U</button>
+      <div class="h-3 w-px bg-white/10"></div>
+      <button onclick="insertAiSuggestion()" class="px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 hover:bg-cyan-500/30 flex items-center gap-1">
+        <i class="ph ph-sparkle text-xs"></i> AI Polish
+      </button>
+    </div>
+    <textarea id="notesTextarea" class="flex-1 p-4 bg-transparent text-slate-100 text-xs font-mono resize-none focus:outline-none leading-relaxed select-text" placeholder="Type thoughts, notes, and mission objectives..."># Project Horizon 2030
+- Neural Interface v4 spec validation.
+- Sub-orbital downlink synchronization at 2:00 PM.
+- Verify City_Render_Final.exr dynamic range with optics engine.
+- Update solar colony telemetry parameters before dusk.
+    </textarea>
+  </div>
+
+  <!-- ==================== WINDOW 5: SETTINGS & SYSTEM INFO ==================== -->
+  <div id="win-systemInfo" class="absolute z-20 top-24 left-1/4 w-[500px] h-[460px] glass-surface rounded-2xl shadow-2xl flex flex-col overflow-hidden transition-all duration-150 hidden">
+    <div class="window-header h-10 bg-white/5 border-b border-white/10 px-4 flex items-center justify-between" onmousedown="startDrag(event, 'win-systemInfo')">
+      <div class="flex items-center gap-2 text-xs font-semibold text-white">
+        <i class="ph-bold ph-gear text-cyan-400"></i>
+        <span>NovaOS Control Center & Settings</span>
+      </div>
+      <button onclick="closeApp('systemInfo')" class="w-3 h-3 rounded-full bg-rose-500/80 hover:bg-rose-400"></button>
+    </div>
+    <div class="flex-1 p-5 overflow-y-auto space-y-4 text-xs text-slate-300">
+
+      <!-- User Profile Header -->
+      <div class="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
+        <img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=200&auto=format&fit=crop" class="w-12 h-12 rounded-xl object-cover border border-cyan-400/40" alt="Avatar">
+        <div>
+          <div class="text-sm font-bold text-white">Elian Vance</div>
+          <div class="text-[11px] text-cyan-300 font-mono">Quantum Engineer & System Architect</div>
+          <div class="text-[10px] text-slate-400 mt-0.5">ID: NOVA-9920-SOLARIS</div>
+        </div>
+      </div>
+
+      <!-- Quick Toggles -->
+      <div class="space-y-2">
+        <div class="text-[10px] font-semibold uppercase text-slate-400 tracking-wider">Interface Settings</div>
+        <div class="flex items-center justify-between p-2 rounded-lg bg-black/20">
+          <span>Aero Glassmorphism Level</span>
+          <span class="text-cyan-400 font-semibold">Maximum (36px Blur)</span>
+        </div>
+        <div class="flex items-center justify-between p-2 rounded-lg bg-black/20">
+          <span>Synthesizer UI Sound Effects</span>
+          <input type="checkbox" id="soundToggleCheckbox" checked onchange="toggleSoundFx(this.checked)" class="accent-cyan-400 w-4 h-4 rounded">
+        </div>
+        <div class="flex items-center justify-between p-2 rounded-lg bg-black/20">
+          <span>AI Model Backend</span>
+          <span class="text-purple-300 font-mono">Gemini 3 Flash Preview</span>
+        </div>
+      </div>
+
+      <!-- System Specifications -->
+      <div class="space-y-1.5 border-t border-white/10 pt-3">
+        <div class="text-[10px] font-semibold uppercase text-slate-400 tracking-wider">Neural Hardware Specifications</div>
+        <div class="grid grid-cols-2 gap-2 text-[11px] font-mono">
+          <div class="p-2 rounded bg-black/20"><span class="text-slate-500">Core:</span> Quantum Silicon X12</div>
+          <div class="p-2 rounded bg-black/20"><span class="text-slate-500">RAM:</span> 128 GB Unified LPDDR7</div>
+          <div class="p-2 rounded bg-black/20"><span class="text-slate-500">OS Build:</span> NovaOS 2030.1.0</div>
+          <div class="p-2 rounded bg-black/20"><span class="text-slate-500">Uptime:</span> 14 days, 6 hours</div>
+        </div>
+      </div>
+
+      <div class="pt-2 flex justify-end">
+        <button onclick="openToast('Configuration Saved', 'All system settings applied immediately.')" class="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-semibold text-xs">
+          Apply & Save
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== SPOTLIGHT / OMNIBAR MODAL ==================== -->
+  <div id="omnibarModal" class="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-start justify-center pt-24 hidden" onclick="closeOmnibarOnBackdrop(event)">
+    <div class="glass-surface w-[600px] rounded-2xl shadow-2xl border border-white/20 overflow-hidden flex flex-col">
+      <div class="p-4 border-b border-white/10 flex items-center gap-3">
+        <i class="ph ph-magnifying-glass text-cyan-400 text-lg"></i>
+        <input type="text" id="omnibarInput" oninput="handleOmnibarSearch()" placeholder="Type a command, launch an app, or search files..." class="w-full bg-transparent text-sm text-white placeholder-slate-400 focus:outline-none">
+        <kbd class="px-2 py-0.5 rounded text-[10px] bg-white/10 text-slate-300 font-mono">ESC</kbd>
+      </div>
+
+      <div class="p-2 max-h-80 overflow-y-auto space-y-1" id="omnibarResults">
+        <!-- Omnibar search items populate here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== IMAGE / ASSET PREVIEW FULL MODAL ==================== -->
+  <div id="fileDetailModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-xl flex items-center justify-center p-8 hidden">
+    <div class="glass-surface max-w-4xl w-full rounded-2xl overflow-hidden border border-white/20 shadow-2xl flex flex-col">
+      <div class="p-3 bg-white/5 border-b border-white/10 flex items-center justify-between">
+        <span class="text-xs font-semibold text-white" id="modalFileName">City_Render_Final.exr</span>
+        <button onclick="closeFileModal()" class="text-slate-400 hover:text-white p-1 text-sm"><i class="ph ph-x"></i></button>
+      </div>
+      <div class="h-[440px] bg-black/60 flex items-center justify-center p-2 relative">
+        <img id="modalPreviewImg" src="https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1200&auto=format&fit=crop" class="max-h-full max-w-full object-contain rounded-lg shadow-2xl" alt="Preview Full">
+      </div>
+      <div class="p-4 bg-black/40 border-t border-white/10 flex items-center justify-between text-xs text-slate-300">
+        <div>Resolution: <span class="font-mono text-cyan-300">7680 × 4320 (8K)</span> • Depth: <span class="font-mono text-purple-300">32-bit Float</span></div>
+        <div class="flex gap-2">
+          <button onclick="openToast('Download', 'Downloaded asset to ~/Downloads/City_Render_Final.exr')" class="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white">Download</button>
+          <button onclick="openToast('AI Engine', 'Upscaling model running on GPU node.')" class="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-semibold">Enhance with Nova AI</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* =========================================================
+       AUDIO ENGINE & SYNTHESIZER (Tone.js)
+       ========================================================= */
+    let synth = null;
+    let ambientSynth = null;
+    let isAmbientPlaying = false;
+    let soundFxEnabled = true;
+
+    function initAudio() {
+      if (!synth && window.Tone) {
+        try {
+          synth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: 'sine' },
+            envelope: { attack: 0.005, decay: 0.1, sustain: 0, release: 0.1 }
+          }).toDestination();
+          synth.volume.value = -12;
+
+          // Ambient synth for the "Golden Horizon" music player
+          ambientSynth = new Tone.PolySynth(Tone.AMSynth, {
+            harmonicity: 1.5,
+            oscillator: { type: 'triangle' },
+            envelope: { attack: 1.5, decay: 2.0, sustain: 0.5, release: 3.0 }
+          }).toDestination();
+          ambientSynth.volume.value = -16;
+        } catch (e) {
+          console.log('Audio init postponed:', e);
+        }
+      }
+    }
+
+    function playUiSound(tone = 'C5') {
+      if (!soundFxEnabled) return;
+      try {
+        if (!synth) initAudio();
+        if (Tone.context.state !== 'running') Tone.start();
+        synth.triggerAttackRelease(tone, '16n');
+      } catch (e) {}
+    }
+
+    function toggleAudio() {
+      toggleTrackPlayback();
+    }
+
+    function toggleTrackPlayback() {
+      try {
+        if (!synth) initAudio();
+        if (Tone.context.state !== 'running') Tone.start();
+
+        const playBtn = document.getElementById('mainPlayBtn');
+        const miniPlayIcon = document.getElementById('miniPlayIcon');
+        const eq = document.getElementById('equalizerContainer');
+        const audioBtnIcon = document.getElementById('ambientAudioIcon');
+        const audioBtnLabel = document.getElementById('ambientAudioLabel');
+
+        if (!isAmbientPlaying) {
+          isAmbientPlaying = true;
+          playBtn.className = 'ph-fill ph-pause';
+          miniPlayIcon.className = 'ph-fill ph-pause text-white text-sm';
+          eq.classList.remove('opacity-25');
+          audioBtnLabel.innerText = "Playing";
+
+          // Play a lush ambient chillwave chord progression
+          const chords = [
+            ['D4', 'F#4', 'A4', 'C#5'],
+            ['B3', 'D4', 'F#4', 'A4'],
+            ['G3', 'B3', 'D4', 'F#4'],
+            ['A3', 'C#4', 'E4', 'G4']
+          ];
+          let chordIndex = 0;
+          window.musicInterval = setInterval(() => {
+            if (isAmbientPlaying && ambientSynth) {
+              ambientSynth.triggerAttackRelease(chords[chordIndex % chords.length], '2n');
+              chordIndex++;
+            }
+          }, 2400);
+
+          playUiSound('E5');
+        } else {
+          isAmbientPlaying = false;
+          playBtn.className = 'ph-fill ph-play';
+          miniPlayIcon.className = 'ph-fill ph-play text-white text-sm';
+          eq.classList.add('opacity-25');
+          audioBtnLabel.innerText = "Audio Paused";
+          if (window.musicInterval) clearInterval(window.musicInterval);
+          playUiSound('C4');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function toggleTrackFavorite() {
+      const fav = document.getElementById('trackFavIcon');
+      if (fav.classList.contains('text-rose-400')) {
+        fav.classList.remove('text-rose-400');
+        fav.classList.add('text-slate-400');
+        openToast('Playlist', 'Removed from Liked Songs');
+      } else {
+        fav.classList.add('text-rose-400');
+        fav.classList.remove('text-slate-400');
+        openToast('Playlist', 'Saved to Liked Songs');
+        playUiSound('A5');
+      }
+    }
+
+    function nextTrack() {
+      document.getElementById('trackTitle').innerText = "Cybernetic Dawn";
+      openToast('Now Playing', 'Cybernetic Dawn • Aethelgard');
+      playUiSound('G5');
+    }
+
+    function prevTrack() {
+      document.getElementById('trackTitle').innerText = "Golden Horizon";
+      openToast('Now Playing', 'Golden Horizon • Lume');
+      playUiSound('E5');
+    }
+
+    function toggleSoundFx(val) {
+      soundFxEnabled = val;
+      openToast('Audio FX', val ? 'Synthesizer UI sounds enabled' : 'Synthesizer UI sounds muted');
+    }
+
+    /* =========================================================
+       DATA MODELS (Explorer Folders & Recent Files matching screenshot)
+       ========================================================= */
+    const foldersData = [
+      { id: 'docs', name: 'Documents', items: '32 items', color: 'text-sky-400', bg: 'bg-sky-400/10' },
+      { id: 'proj', name: 'Projects', items: '26 items', color: 'text-pink-400', bg: 'bg-pink-400/10' },
+      { id: 'media', name: 'Media', items: '146 items', color: 'text-rose-400', bg: 'bg-rose-400/10' },
+      { id: 'ai', name: 'AI Exports', items: '34 items', color: 'text-violet-400', bg: 'bg-violet-400/10' },
+      { id: 'down', name: 'Downloads', items: '52 items', color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
+      { id: 'design', name: 'Design', items: '18 items', color: 'text-blue-400', bg: 'bg-blue-400/10' },
+      { id: 'res', name: 'Research', items: '27 items', color: 'text-purple-400', bg: 'bg-purple-400/10' },
+      { id: 'arch', name: 'Archive', items: '91 items', color: 'text-amber-400', bg: 'bg-amber-400/10' }
+    ];
+
+    const recentFilesData = [
+      {
+        id: 'file1',
+        title: 'Neural_Interfaces_Concept_v4.fig',
+        type: 'Design File',
+        time: '2h ago',
+        icon: 'ph-fill ph-figma-logo',
+        iconColor: 'text-purple-400',
+        meta: 'Figma Canvas • 48 MB',
+        image: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=400&auto=format&fit=crop'
+      },
+      {
+        id: 'file2',
+        title: '2030_Market_Analysis.pdf',
+        type: 'PDF document',
+        time: '5h ago',
+        icon: 'ph-fill ph-file-pdf',
+        iconColor: 'text-rose-400',
+        meta: 'PDF Document • 14 MB',
+        image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?q=80&w=400&auto=format&fit=crop'
+      },
+      {
+        id: 'file3',
+        title: 'City_Render_Final.exr',
+        type: '3D Image',
+        time: '6h ago',
+        icon: 'ph-fill ph-file-image',
+        iconColor: 'text-cyan-400',
+        meta: 'EXR Image • 245 MB',
+        image: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=600&auto=format&fit=crop'
+      },
+      {
+        id: 'file4',
+        title: 'Product_Strategy.key',
+        type: 'Presentation',
+        time: '12h ago',
+        icon: 'ph-fill ph-presentation',
+        iconColor: 'text-blue-400',
+        meta: 'Keynote Presentation • 82 MB',
+        image: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?q=80&w=400&auto=format&fit=crop'
+      },
+      {
+        id: 'file5',
+        title: 'AI_Assistant_Behavior.docx',
+        type: 'Document',
+        time: '1d ago',
+        icon: 'ph-fill ph-file-doc',
+        iconColor: 'text-violet-400',
+        meta: 'Word Document • 4.2 MB',
+        image: 'https://images.unsplash.com/photo-1455390582262-044cdead277a?q=80&w=400&auto=format&fit=crop'
+      }
+    ];
+
+    let currentSelectedFile = recentFilesData[2]; // Default to City_Render_Final.exr
+
+    function renderFolders(folders = foldersData) {
+      const container = document.getElementById('foldersContainer');
+      container.innerHTML = '';
+      folders.forEach(f => {
+        const div = document.createElement('div');
+        div.className = 'glass-pill rounded-xl p-2.5 flex items-center gap-2.5 cursor-pointer hover:border-white/30 hover:scale-[1.02] transition-all group';
+        div.onclick = () => openFolder(f.name);
+        div.innerHTML = `
+          <div class="w-8 h-8 rounded-lg ${f.bg} flex items-center justify-center ${f.color} group-hover:scale-110 transition-transform">
+            <i class="ph-fill ph-folder text-base"></i>
+          </div>
+          <div class="min-w-0">
+            <div class="text-xs font-semibold text-white truncate">${f.name}</div>
+            <div class="text-[10px] text-slate-400">${f.items}</div>
+          </div>
+        `;
+        container.appendChild(div);
+      });
+    }
+
+    function renderRecentFiles(files = recentFilesData) {
+      const container = document.getElementById('recentFilesContainer');
+      container.innerHTML = '';
+      files.forEach(f => {
+        const isSelected = currentSelectedFile.id === f.id;
+        const row = document.createElement('div');
+        row.className = `flex items-center justify-between p-2 rounded-xl cursor-pointer transition-all ${
+          isSelected
+            ? 'bg-white/15 border border-white/20 shadow-sm'
+            : 'hover:bg-white/5 border border-transparent'
+        }`;
+        row.onclick = () => selectFile(f);
+        row.innerHTML = `
+          <div class="flex items-center gap-2.5 min-w-0">
+            <div class="w-7 h-7 rounded-lg bg-black/40 flex items-center justify-center ${f.iconColor}">
+              <i class="${f.icon} text-base"></i>
+            </div>
+            <div class="truncate">
+              <div class="text-xs font-medium text-white truncate">${f.title}</div>
+              <div class="text-[10px] text-slate-400">${f.type} • ${f.time}</div>
+            </div>
+          </div>
+          <i class="ph ph-dots-three-vertical text-slate-500 hover:text-white p-1"></i>
+        `;
+        container.appendChild(row);
+      });
+    }
+
+    function selectFile(file) {
+      currentSelectedFile = file;
+      renderRecentFiles();
+      document.getElementById('previewTitle').innerText = file.title;
+      document.getElementById('previewMeta').innerText = file.meta;
+      document.getElementById('previewImg').src = file.image;
+      playUiSound('D5');
+    }
+
+    function openSelectedPreview() {
+      previewFileModal(currentSelectedFile.title, currentSelectedFile.meta, currentSelectedFile.image);
+    }
+
+    function shareSelectedPreview() {
+      openToast('Share Link Created', `Public neural link for ${currentSelectedFile.title} copied to clipboard!`);
+      playUiSound('G5');
+    }
+
+    function openFolder(folderName) {
+      playUiSound('F5');
+      document.getElementById('fileTabTitle').innerText = folderName;
+      openToast('Directory Changed', `Navigated to ~/${folderName}`);
+    }
+
+    function navFolderBack() {
+      playUiSound('C5');
+      document.getElementById('fileTabTitle').innerText = "Home";
+      renderFolders(foldersData);
+      renderRecentFiles(recentFilesData);
+    }
+
+    function refreshFiles() {
+      playUiSound('G5');
+      openToast('File Indexer', 'File system refreshed. 0 updates pending.');
+    }
+
+    function switchDirectory(name) {
+      playUiSound('E5');
+      document.querySelectorAll('.dir-btn').forEach(btn => {
+        btn.classList.remove('bg-white/15', 'border-white/10', 'text-white');
+      });
+      event.currentTarget.classList.add('bg-white/15', 'border-white/10', 'text-white');
+      document.getElementById('fileTabTitle').innerText = name;
+    }
+
+    function filterByTag(tag) {
+      openToast('Tag Filter', `Filtering file assets tagged with #${tag}`);
+      playUiSound('F5');
+    }
+
+    function filterFiles() {
+      const q = document.getElementById('fileSearchInput').value.toLowerCase();
+      const filtered = recentFilesData.filter(f => f.title.toLowerCase().includes(q) || f.type.toLowerCase().includes(q));
+      renderRecentFiles(filtered);
+    }
+
+    /* =========================================================
+       WINDOW MANAGEMENT SYSTEM (Drag, Bring to Front, Controls)
+       ========================================================= */
+    let zIndexCounter = 30;
+    let dragState = null;
+
+    function bringToFront(winId) {
+      const el = document.getElementById(winId);
+      if (!el) return;
+      zIndexCounter++;
+      el.style.zIndex = zIndexCounter;
+      document.querySelectorAll('.active-window').forEach(w => w.classList.remove('active-window'));
+      el.classList.add('active-window');
+    }
+
+    function startDrag(e, winId) {
+      const win = document.getElementById(winId);
+      bringToFront(winId);
+      dragState = {
+        win: win,
+        startX: e.clientX,
+        startY: e.clientY,
+        startLeft: win.offsetLeft,
+        startTop: win.offsetTop
+      };
+      window.addEventListener('mousemove', onDrag);
+      window.addEventListener('mouseup', endDrag);
+    }
+
+    function onDrag(e) {
+      if (!dragState) return;
+      const dx = e.clientX - dragState.startX;
+      const dy = e.clientY - dragState.startY;
+      dragState.win.style.left = `${dragState.startLeft + dx}px`;
+      dragState.win.style.top = `${Math.max(10, dragState.startTop + dy)}px`;
+    }
+
+    function endDrag() {
+      dragState = null;
+      window.removeEventListener('mousemove', onDrag);
+      window.removeEventListener('mouseup', endDrag);
+    }
+
+    function openApp(appKey) {
+      playUiSound('E5');
+      const winMap = {
+        files: 'win-files',
+        aiAssistant: 'win-ai',
+        terminal: 'win-terminal',
+        notes: 'win-notes',
+        systemInfo: 'win-systemInfo'
+      };
+      const winId = winMap[appKey];
+      if (winId) {
+        const win = document.getElementById(winId);
+        win.classList.remove('hidden');
+        bringToFront(winId);
+        const indicator = document.getElementById(`dockIndicator-${appKey}`);
+        if (indicator) indicator.classList.remove('hidden');
+      }
+    }
+
+    function toggleApp(appKey) {
+      const winMap = {
+        files: 'win-files',
+        aiAssistant: 'win-ai',
+        terminal: 'win-terminal',
+        notes: 'win-notes',
+        systemInfo: 'win-systemInfo',
+        launcher: 'omnibarModal'
+      };
+      if (appKey === 'launcher') {
+        openOmnibar();
+        return;
+      }
+      const winId = winMap[appKey];
+      if (winId) {
+        const win = document.getElementById(winId);
+        if (win.classList.contains('hidden')) {
+          openApp(appKey);
+        } else {
+          closeApp(appKey);
+        }
+      }
+    }
+
+    function closeApp(appKey) {
+      playUiSound('B4');
+      const winMap = {
+        files: 'win-files',
+        aiAssistant: 'win-ai',
+        terminal: 'win-terminal',
+        notes: 'win-notes',
+        systemInfo: 'win-systemInfo'
+      };
+      const winId = winMap[appKey] || appKey;
+      const win = document.getElementById(winId);
+      if (win) win.classList.add('hidden');
+      const indicator = document.getElementById(`dockIndicator-${appKey}`);
+      if (indicator) indicator.classList.add('hidden');
+    }
+
+    function minimizeApp(appKey) {
+      closeApp(appKey);
+      openToast('Window Minimized', `${appKey} minimized to background dock.`);
+    }
+
+    function maximizeApp(winId) {
+      const win = document.getElementById(winId) || document.getElementById(`win-${winId}`);
+      if (!win) return;
+      if (win.dataset.maximized === 'true') {
+        win.style.width = win.dataset.origW;
+        win.style.height = win.dataset.origH;
+        win.style.top = win.dataset.origTop;
+        win.style.left = win.dataset.origLeft;
+        win.dataset.maximized = 'false';
+      } else {
+        win.dataset.origW = win.style.width || '880px';
+        win.dataset.origH = win.style.height || '560px';
+        win.dataset.origTop = win.style.top || '64px';
+        win.dataset.origLeft = win.style.left || '100px';
+        win.style.width = 'calc(100vw - 32px)';
+        win.style.height = 'calc(100vh - 120px)';
+        win.style.top = '54px';
+        win.style.left = '16px';
+        win.dataset.maximized = 'true';
+      }
+      playUiSound('F5');
+    }
+
+    /* =========================================================
+       NOVAOS AI AGENT (Chat, Analyze, Automate with Gemini API)
+       ========================================================= */
+    const apiKey = ""; // Leave as empty string; handled by runtime
+
+    async function callGemini(promptText) {
+      const systemPrompt = "You are NovaOS, an ultra-advanced 2030 operating system intelligence. You speak concisely, helpfully, and with a sleek futuristic persona. You assist with files, schedules, neural rendering, system performance, and creative tasks.";
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+
+      const payload = {
+        contents: [{ parts: [{ text: promptText }] }],
+        systemInstruction: { parts: [{ text: systemPrompt }] }
+      };
+
+      try {
+        const response = await fetch(apiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        const candidate = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (candidate) return candidate;
+        throw new Error('No candidate returned');
+      } catch (err) {
+        // Fallback intelligent response generator if API key is rate-limited or offline
+        return generateMockAiResponse(promptText);
+      }
+    }
+
+    function generateMockAiResponse(prompt) {
+      const p = prompt.toLowerCase();
+      if (p.includes('summarize') || p.includes('recent')) {
+        return "📁 **NovaOS File Synthesis:**\n- **Neural_Interfaces_Concept_v4.fig**: 12 responsive artboards for tactile brainwave feedback.\n- **City_Render_Final.exr**: 8K atmospheric dusk render. Dynamic range calibrated.\n- **2030_Market_Analysis.pdf**: Q1 growth projected +34% in quantum computing.";
+      }
+      if (p.includes('plan') || p.includes('week') || p.includes('calendar')) {
+        return "🗓️ **Automated Schedule Sync:**\n- **Today**: AI Architecture Review @ 2:00 PM\n- **Wednesday**: Sub-orbital downlink sync @ 10:30 AM\n- **Friday**: Neural Framework v4.0 Sign-off with Solaris HQ";
+      }
+      if (p.includes('analyze') || p.includes('city_render')) {
+        return "🔍 **Optical Telemetry Analysis:**\n- Asset: `City_Render_Final.exr`\n- Color Gamut: Rec.2020 High Dynamic Range\n- Lumens: Peak highlights at 1450 nits in dusk atmospheric haze.\n- Neural recommendation: Sharpen planetary ring occlusions by 4%.";
+      }
+      return `✨ **NovaOS Intelligent Core:** Processed command "${prompt}". All subroutines synchronized with your local workspace.`;
+    }
+
+    function triggerAiPrompt(text) {
+      popAiWindow();
+      const input = document.getElementById('aiWindowInput');
+      input.value = text;
+      sendAiWindowMessage();
+    }
+
+    function submitAiCard() {
+      const input = document.getElementById('aiCardInput');
+      if (!input.value.trim()) return;
+      const text = input.value.trim();
+      input.value = '';
+      triggerAiPrompt(text);
+    }
+
+    function handleAiCardKey(e) {
+      if (e.key === 'Enter') submitAiCard();
+    }
+
+    function popAiWindow() {
+      openApp('aiAssistant');
+    }
+
+    function setAiMode(btn, mode) {
+      document.querySelectorAll('.ai-mode-btn').forEach(b => {
+        b.classList.remove('bg-white/15', 'text-white', 'shadow-sm');
+      });
+      btn.classList.add('bg-white/15', 'text-white', 'shadow-sm');
+      openToast('AI Mode', `Switched NovaOS Intelligence mode to [${mode.toUpperCase()}]`);
+      playUiSound('F5');
+    }
+
+    async function sendAiWindowMessage() {
+      const input = document.getElementById('aiWindowInput');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+
+      const thread = document.getElementById('aiChatThread');
+
+      // User message
+      const userBubble = document.createElement('div');
+      userBubble.className = 'flex items-start justify-end gap-2';
+      userBubble.innerHTML = `
+        <div class="bg-cyan-500/20 border border-cyan-400/30 rounded-2xl rounded-tr-sm p-3 text-xs text-white max-w-[85%]">
+          ${escapeHtml(text)}
+        </div>
+      `;
+      thread.appendChild(userBubble);
+      thread.scrollTop = thread.scrollHeight;
+      playUiSound('C5');
+
+      // AI Loading placeholder
+      const loadingBubble = document.createElement('div');
+      loadingBubble.className = 'flex items-start gap-2.5';
+      loadingBubble.innerHTML = `
+        <div class="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0 text-xs">
+          <i class="ph-bold ph-sparkle animate-spin"></i>
+        </div>
+        <div class="glass-pill rounded-2xl rounded-tl-sm p-3 text-xs text-slate-300 max-w-[85%] flex items-center gap-2">
+          <span>Synthesizing neural response...</span>
+        </div>
+      `;
+      thread.appendChild(loadingBubble);
+      thread.scrollTop = thread.scrollHeight;
+
+      // Model response
+      const reply = await callGemini(text);
+      loadingBubble.remove();
+
+      const aiBubble = document.createElement('div');
+      aiBubble.className = 'flex items-start gap-2.5';
+      aiBubble.innerHTML = `
+        <div class="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center flex-shrink-0 text-xs">
+          <i class="ph-bold ph-sparkle"></i>
+        </div>
+        <div class="glass-pill rounded-2xl rounded-tl-sm p-3 text-xs text-slate-100 max-w-[85%] leading-relaxed whitespace-pre-wrap">
+          ${formatMarkdown(reply)}
+        </div>
+      `;
+      thread.appendChild(aiBubble);
+      thread.scrollTop = thread.scrollHeight;
+      playUiSound('G5');
+    }
+
+    function handleAiWindowKey(e) {
+      if (e.key === 'Enter') sendAiWindowMessage();
+    }
+
+    function voiceMock() {
+      openToast('Voice Neural Ingest', 'Listening... [Speak clearly into mic]');
+      playUiSound('A5');
+    }
+
+    function toggleTaskExpand() {
+      const list = document.getElementById('taskListContent');
+      list.classList.toggle('hidden');
+    }
+
+    /* =========================================================
+       TERMINAL CLI EMULATOR
+       ========================================================= */
+    const terminalHistory = [];
+    function handleTerminalKey(e) {
+      if (e.key === 'Enter') {
+        const input = document.getElementById('terminalInput');
+        const cmd = input.value.trim();
+        input.value = '';
+        executeTerminalCommand(cmd);
+      }
+    }
+
+    function executeTerminalCommand(cmd) {
+      const output = document.getElementById('terminalOutput');
+      const line = document.createElement('div');
+      line.innerHTML = `<span class="text-cyan-400">elian@novaos:~$</span> <span class="text-white">${escapeHtml(cmd)}</span>`;
+      output.appendChild(line);
+
+      const parts = cmd.split(' ');
+      const action = parts[0].toLowerCase();
+
+      let res = '';
+      switch (action) {
+        case 'help':
+          res = "Available commands: <br>• <b class='text-cyan-300'>ls</b> - List local files<br>• <b class='text-cyan-300'>neofetch</b> - Print system architecture<br>• <b class='text-cyan-300'>status</b> - Check core quantum telemetry<br>• <b class='text-cyan-300'>clear</b> - Clear console buffer<br>• <b class='text-cyan-300'>date</b> - Show planetary clock<br>• <b class='text-cyan-300'>music</b> - Toggle ambient audio<br>• <b class='text-cyan-300'>ai &lt;query&gt;</b> - Query NovaOS AI from CLI";
+          break;
+        case 'ls':
+          res = "Documents/  Projects/  Media/  AI_Exports/  Downloads/  City_Render_Final.exr  Product_Strategy.key";
+          break;
+        case 'neofetch':
+          res = "<span class='text-cyan-400 font-bold'>OS:</span> NovaOS 2030.1.0 x86_64-quantum<br><span class='text-purple-400 font-bold'>Host:</span> Solaris Sub-Orbital Rig<br><span class='text-pink-400 font-bold'>Kernel:</span> 7.12.0-nova-neural<br><span class='text-emerald-400 font-bold'>Uptime:</span> 14 days, 6 hours<br><span class='text-amber-400 font-bold'>Shell:</span> novash 3.4<br><span class='text-blue-400 font-bold'>Memory:</span> 48128MiB / 131072MiB";
+          break;
+        case 'status':
+          res = "CPU: 14% | GPU: 28% | Memory: 62% | Storage: 38% | Neural Uplink: ACTIVE";
+          break;
+        case 'clear':
+          output.innerHTML = '';
+          return;
+        case 'date':
+          res = "Tue Apr 16 07:24:00 SOL 2030";
+          break;
+        case 'music':
+          toggleTrackPlayback();
+          res = "Toggled ambient audio synthesis.";
+          break;
+        case 'ai':
+          const q = parts.slice(1).join(' ');
+          res = `Synthesizing task for: "${q}"... [Forwarded to AI workspace]`;
+          triggerAiPrompt(q);
+          break;
+        case '':
+          res = '';
+          break;
+        default:
+          res = `Command not recognized: "${action}". Type <span class='text-amber-300'>'help'</span> for instructions.`;
+      }
+
+      if (res) {
+        const responseDiv = document.createElement('div');
+        responseDiv.className = 'text-slate-300 pl-2 border-l border-cyan-500/40 my-1';
+        responseDiv.innerHTML = res;
+        output.appendChild(responseDiv);
+      }
+
+      output.scrollTop = output.scrollHeight;
+      playUiSound('F4');
+    }
+
+    /* =========================================================
+       NOTES APP HELPERS
+       ========================================================= */
+    function saveNote() {
+      openToast('Note Saved', 'Quick note synced with Neural Vault.');
+      playUiSound('G5');
+    }
+
+    function insertAiSuggestion() {
+      const area = document.getElementById('notesTextarea');
+      area.value += "\n\n[AI Enhancement]: Prioritize bandwidth allocation for HDR render stream during solar peak hours.";
+      playUiSound('E5');
+    }
+
+    /* =========================================================
+       OMNIBAR (SPOTLIGHT / CTRL+K)
+       ========================================================= */
+    const omniDatabase = [
+      { name: 'Files Explorer', desc: 'Browse folders, documents, and 3D assets', icon: 'ph-folder text-blue-400', action: () => openApp('files') },
+      { name: 'NovaOS AI Assistant', desc: 'Chat, analyze files, and automate tasks', icon: 'ph-sparkle text-violet-400', action: () => openApp('aiAssistant') },
+      { name: 'System Terminal', desc: 'Low-level CLI quantum control environment', icon: 'ph-terminal text-cyan-400', action: () => openApp('terminal') },
+      { name: 'Quick Notes', desc: 'Draft ideas and scratchpads', icon: 'ph-note-pencil text-amber-400', action: () => openApp('notes') },
+      { name: 'System Settings', desc: 'Hardware telemetry, appearance, and accounts', icon: 'ph-gear text-slate-400', action: () => openApp('systemInfo') },
+      { name: 'City_Render_Final.exr', desc: 'Open HDR file in optical viewer', icon: 'ph-file-image text-cyan-400', action: () => previewFileModal('City_Render_Final.exr', '3D Image • 245 MB') },
+      { name: 'Toggle Music Playback', desc: 'Play / Pause "Golden Horizon - Lume"', icon: 'ph-disc text-purple-400', action: () => toggleTrackPlayback() }
+    ];
+
+    function openOmnibar() {
+      playUiSound('C5');
+      const m = document.getElementById('omnibarModal');
+      m.classList.remove('hidden');
+      const input = document.getElementById('omnibarInput');
+      input.value = '';
+      input.focus();
+      handleOmnibarSearch();
+    }
+
+    function closeOmnibar() {
+      document.getElementById('omnibarModal').classList.add('hidden');
+    }
+
+    function closeOmnibarOnBackdrop(e) {
+      if (e.target.id === 'omnibarModal') closeOmnibar();
+    }
+
+    function handleOmnibarSearch() {
+      const q = document.getElementById('omnibarInput').value.toLowerCase();
+      const resultsContainer = document.getElementById('omnibarResults');
+      resultsContainer.innerHTML = '';
+
+      const matched = omniDatabase.filter(item =>
+        item.name.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q)
+      );
+
+      if (matched.length === 0) {
+        resultsContainer.innerHTML = `
+          <div onclick="triggerAiPrompt('${escapeHtml(q)}'); closeOmnibar();" class="p-3 text-xs text-slate-300 hover:bg-white/10 rounded-xl cursor-pointer flex items-center justify-between">
+            <span class="flex items-center gap-2"><i class="ph-bold ph-sparkle text-cyan-400"></i> Ask NovaOS AI: "${escapeHtml(q)}"</span>
+            <span class="text-cyan-400 font-semibold">Enter ↵</span>
+          </div>
+        `;
+        return;
+      }
+
+      matched.forEach((item, index) => {
+        const div = document.createElement('div');
+        div.className = 'p-2.5 rounded-xl hover:bg-white/10 flex items-center justify-between cursor-pointer transition-colors';
+        div.onclick = () => {
+          closeOmnibar();
+          item.action();
+        };
+        div.innerHTML = `
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-black/40 flex items-center justify-center text-lg">
+              <i class="ph-fill ${item.icon}"></i>
+            </div>
+            <div>
+              <div class="text-xs font-semibold text-white">${item.name}</div>
+              <div class="text-[10px] text-slate-400">${item.desc}</div>
+            </div>
+          </div>
+          <kbd class="text-[10px] text-slate-400 px-1.5 py-0.5 rounded bg-white/5 border border-white/10 font-mono">Launch</kbd>
+        `;
+        resultsContainer.appendChild(div);
+      });
+    }
+
+    /* Keyboard listener for Ctrl+K and Escape */
+    window.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        openOmnibar();
+      }
+      if (e.key === 'Escape') {
+        closeOmnibar();
+        closeFileModal();
+      }
+    });
+
+    /* =========================================================
+       MODAL & TOAST NOTIFICATION HELPERS
+       ========================================================= */
+    function openToast(title, msg) {
+      const toast = document.getElementById('systemToast');
+      document.getElementById('toastTitle').innerText = title;
+      document.getElementById('toastMessage').innerText = msg;
+      toast.classList.remove('translate-y-24', 'opacity-0');
+      playUiSound('C5');
+    }
+
+    function closeToast() {
+      const toast = document.getElementById('systemToast');
+      toast.classList.add('translate-y-24', 'opacity-0');
+    }
+
+    function handleToastAction(action) {
+      closeToast();
+      openApp('systemInfo');
+    }
+
+    function previewFileModal(title, meta, imgUrl) {
+      document.getElementById('modalFileName').innerText = title;
+      if (imgUrl) document.getElementById('modalPreviewImg').src = imgUrl;
+      document.getElementById('fileDetailModal').classList.remove('hidden');
+      playUiSound('E5');
+    }
+
+    function closeFileModal() {
+      document.getElementById('fileDetailModal').classList.add('hidden');
+    }
+
+    function setActiveNav(btn) {
+      document.querySelectorAll('.nav-btn').forEach(b => {
+        b.classList.remove('bg-white/15', 'border-white/10', 'text-white');
+        b.classList.add('text-slate-300');
+      });
+      btn.classList.add('bg-white/15', 'border-white/10', 'text-white');
+      playUiSound('E5');
+    }
+
+    /* =========================================================
+       TELEMETRY FLUCTUATIONS & REAL-TIME DYNAMICS
+       ========================================================= */
+    function updateTelemetry() {
+      // Natural subtle telemetry shifts
+      const cpu = Math.floor(12 + Math.random() * 8);
+      const gpu = Math.floor(26 + Math.random() * 7);
+      const mem = 62;
+      const storage = 38;
+
+      document.getElementById('gaugeCpuVal').innerText = `${cpu}%`;
+      document.getElementById('gaugeGpuVal').innerText = `${gpu}%`;
+
+      // Circumference = 2 * PI * 18 = 113.1
+      const cpuOffset = 113 - (113 * (cpu / 100));
+      const gpuOffset = 113 - (113 * (gpu / 100));
+
+      document.getElementById('gaugeCpuCircle').style.strokeDashoffset = cpuOffset;
+      document.getElementById('gaugeGpuCircle').style.strokeDashoffset = gpuOffset;
+    }
+
+    function updateClocks() {
+      const now = new Date();
+      // Set to 2030 ambient setting with live dynamic minutes/seconds
+      const hours = String(now.getHours()).padStart(2, '0');
+      const mins = String(now.getMinutes()).padStart(2, '0');
+      const ampm = now.getHours() >= 12 ? 'PM' : 'AM';
+      const formatted = `${hours}:${mins} ${ampm}`;
+
+      const clockEl = document.getElementById('liveClock');
+      if (clockEl) clockEl.innerText = formatted;
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/[&<>"']/g, function(m) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m];
+      });
+    }
+
+    function formatMarkdown(str) {
+      return str
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/`([^`]+)`/g, '<code class="bg-black/30 px-1 py-0.5 rounded text-cyan-300 font-mono">$1</code>');
+    }
+
+    // Window load bootstrap
+    window.onload = function() {
+      renderFolders();
+      renderRecentFiles();
+      updateClocks();
+      setInterval(updateClocks, 10000);
+      setInterval(updateTelemetry, 3500);
+
+      // Bring Files explorer forward on boot
+      bringToFront('win-files');
+    };
+  </script>
+</body>
+</html>

@@ -21,6 +21,7 @@
 #include "../mm/vmm.h"
 #include "../ke/printf.h"
 #include "../wm/clipboard.h"
+#include "../wm/desktop.h"
 
 #define TB_H     48          /* command bar */
 #define SIDE_W   184
@@ -34,6 +35,7 @@
 #define COLS_W   250         /* the Size and Type columns, at the right */
 #define LIST_MIN_W (48 + 200 + COLS_W)   /* narrower than this, the list scrolls sideways */
 #define WHEEL_ROWS 3         /* rows a wheel notch scrolls (Windows' default) */
+#define PREVIEW_W 220
 
 typedef struct {
     RamNode *dir;            /* NULL: This PC */
@@ -72,8 +74,15 @@ static GdiRect r_newfile(GdiRect c) { return RECT(c.w - 98, 8, 88, 32); }
 static GdiRect r_copy(GdiRect c)    { return RECT(c.w - 372, 8, 84, 32); }
 static GdiRect r_paste(GdiRect c)   { return RECT(c.w - 284, 8, 84, 32); }
 static GdiRect r_crumbs(GdiRect c)  { return RECT(84, 8, c.w - 84 - 382, 32); }
-static GdiRect r_list(GdiRect c) { return RECT(SIDE_W, TB_H + HDR_H, c.w - SIDE_W, c.h - TB_H - HDR_H - STATUS_H); }
+static int preview_width(GdiRect c)
+{
+    return DesktopAurora() && c.w >= SIDE_W + LIST_MIN_W + PREVIEW_W && c.h >= 400 ? PREVIEW_W : 0;
+}
+static GdiRect r_list(GdiRect c) { return RECT(SIDE_W, TB_H + HDR_H, c.w - SIDE_W - preview_width(c), c.h - TB_H - HDR_H - STATUS_H); }
 static GdiRect r_side(GdiRect c) { return RECT(0, TB_H, SIDE_W - 1, c.h - TB_H); }
+static GdiRect r_preview(GdiRect c) { return RECT(c.w - PREVIEW_W, TB_H, PREVIEW_W, c.h - TB_H - STATUS_H); }
+static GdiRect r_preview_open(GdiRect c) { return RECT(c.w - PREVIEW_W + 16, c.h - STATUS_H - 48, 76, 32); }
+static GdiRect r_preview_copy(GdiRect c) { return RECT(c.w - PREVIEW_W + 100, c.h - STATUS_H - 48, 104, 32); }
 
 /* "USB DRIVE (E:)": a drive's name, from its root */
 static void drive_name(RamNode *root, char *buf, int cap)
@@ -425,6 +434,8 @@ static void row_icon(RamNode *f, int x, int y)
 
 static GdiRect off(GdiRect r, GdiRect c) { return RECT(r.x + c.x, r.y + c.y, r.w, r.h); }
 
+#include "explorer_preview.h"
+
 static void exp_paint(WND *w)
 {
     Explorer *e = w->user;
@@ -436,7 +447,10 @@ static void exp_paint(WND *w)
     }
 
     /* Command bar */
-    GdiFillRect(RECT(c.x, c.y, c.w, TB_H), UI_PANEL);
+    if (DesktopAurora()) {
+        GdiAlphaFill(c, GDI_C(12, 15, 24), 90);
+        GdiAlphaFill(RECT(c.x, c.y, c.w, TB_H), GDI_C(23, 28, 44), 160);
+    } else GdiFillRect(RECT(c.x, c.y, c.w, TB_H), UI_PANEL);
     GdiFillRect(RECT(c.x, c.y + TB_H - 1, c.w, 1), UI_LINE);
     cmd_button(off(r_back(), c), GL_BACK, NULL, e->back_n > 0);
     cmd_button(off(r_up(), c), GL_UP, NULL, e->dir != NULL);
@@ -452,7 +466,8 @@ static void exp_paint(WND *w)
      * when they and the drives don't fit */
     GdiRect sv = off(r_side(c), c);
     int sw = SIDE_W - (UiScrollNeeded(&e->sbar) ? UI_SB_W : 0);   /* its items' room */
-    GdiFillRect(RECT(c.x, c.y + TB_H, SIDE_W, c.h - TB_H), UI_PANEL);
+    if (DesktopAurora()) GdiAlphaFill(RECT(c.x, c.y + TB_H, SIDE_W, c.h - TB_H), GDI_C(13, 17, 30), 150);
+    else GdiFillRect(RECT(c.x, c.y + TB_H, SIDE_W, c.h - TB_H), UI_PANEL);
     GdiFillRect(RECT(c.x + SIDE_W - 1, c.y + TB_H, 1, c.h - TB_H), UI_LINE);
     GdiSetClip(sv);
     int sy = c.y + TB_H - e->sbar.pos;
@@ -554,6 +569,8 @@ static void exp_paint(WND *w)
     if (UiScrollNeeded(&e->vbar) && UiScrollNeeded(&e->hbar))
         GdiFillRect(RECT(c.x + full.x + L.list.w, c.y + full.y + L.list.h, UI_SB_W, UI_SB_W), UI_PANEL);
 
+    if (preview_width(c)) draw_preview(w, e, c);
+
     /* Status bar */
     GdiFillRect(RECT(c.x + SIDE_W, c.y + c.h - STATUS_H, c.w - SIDE_W, STATUS_H), UI_PANEL);
     GdiFillRect(RECT(c.x + SIDE_W, c.y + c.h - STATUS_H, c.w - SIDE_W, 1), UI_LINE);
@@ -589,6 +606,7 @@ static void exp_mouse(WND *w, WmMouseMsg msg, int x, int y)
     }
 
     if (msg == WM_MOUSE_UP) {
+        if (preview_action(w, e, c, x, y)) return;
         if (UiHit(r_back(), x, y))        go_back(w, e);
         else if (UiHit(r_up(), x, y))     { if (e->dir) navigate(w, e, e->dir->parent); }
         else if (UiHit(r_copy(c), x, y))    clip_copy(e, false);
@@ -688,9 +706,11 @@ void ExplorerOpen(RamNode *dir)
 {
     Explorer *e = kzalloc(sizeof(Explorer));
     if (!e) return;
-    WND *w = AppCreateWindow(APP_EXPLORER, "File Explorer", 820, 500, UI_BG);
+    WND *w = AppCreateWindow(APP_EXPLORER, "File Explorer", DesktopAurora() ? 1080 : 820,
+                              DesktopAurora() ? 560 : 500, UI_BG);
     if (!w) { kfree(e); return; }
     w->user     = e;
+    w->acrylic  = true;
     w->on_paint = exp_paint;
     w->on_mouse = exp_mouse;
     w->on_key   = exp_key;

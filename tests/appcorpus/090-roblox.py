@@ -32,4 +32,4 @@ APP = App('Roblox', 'current', 'https://www.roblox.com/download/client?os=win', 
           [Test('install the client', rf'cmd.exe /c "{PROXY}start /wait {A}\Roblox\{INSTALLER} & '
                 r'dir /s /b C:\AppData\Local\Roblox\Versions\RobloxPlayerBeta.exe"',
                 [r'Versions\\version-[0-9a-f]+\\RobloxPlayerBeta\.exe'], timeout=1500)],
-          unpack=unpack, net=True)
+          unpack=unpack, net=True, mutable=True)
