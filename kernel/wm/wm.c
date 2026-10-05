@@ -13,6 +13,7 @@
 
 #include "../ke/smp.h"
 #include "wm.h"
+#include "desktop.h"
 #include "../um/um.h"
 #include "../gdi/gdi.h"
 #include "../gdi/syscursor.h"
@@ -785,6 +786,7 @@ bool WmKey(const KeyEvent *k)
 static void draw_button(const WND *w, int part, GdiColor title_bg, GdiColor fg)
 {
     GdiRect b = button_rect(w, part);
+    int rad = w->acrylic && DesktopAurora() ? 16 : CORNER;
     bool hot = (g_hover == w && g_hover_part == part);
     GdiColor bg = title_bg;
     if (hot) {
@@ -792,9 +794,9 @@ static void draw_button(const WND *w, int part, GdiColor title_bg, GdiColor fg)
         GdiRect hr = b;
         if (part == HT_CLOSE && !w->maximized) {
             /* follow the window's rounded top-right corner */
-            GdiRoundRect(RECT(hr.x, hr.y, hr.w, hr.h + CORNER), CORNER, bg, GDI_TRANSPARENT);
-            GdiFillRect(RECT(hr.x, hr.y + CORNER, CORNER, hr.h - CORNER), bg);
-            GdiFillRect(RECT(hr.x, hr.y, CORNER, CORNER), bg);
+            GdiRoundRect(RECT(hr.x, hr.y, hr.w, hr.h + rad), rad, bg, GDI_TRANSPARENT);
+            GdiFillRect(RECT(hr.x, hr.y + rad, rad, hr.h - rad), bg);
+            GdiFillRect(RECT(hr.x, hr.y, rad, rad), bg);
         } else {
             GdiFillRect(hr, bg);
         }
@@ -825,16 +827,19 @@ static void draw_button(const WND *w, int part, GdiColor title_bg, GdiColor fg)
 static void draw_window(WND *w)
 {
     GdiRect f   = w->frame;
-    int     rad = w->maximized || w->popup ? 0 : CORNER;
+    bool acrylic = w->acrylic && DesktopAurora();
+    int     rad = w->maximized || w->popup ? 0 : acrylic ? 16 : CORNER;
     GdiColor title_bg = w->active ? TITLE_ACTIVE : TITLE_INACTIVE;
     GdiColor title_fg = w->active ? TEXT_ACTIVE  : TEXT_INACTIVE;
+    if (acrylic) title_bg = w->active ? GDI_C(25, 32, 54) : GDI_C(19, 25, 42);
 
     if ((w->style & WS_SHADOW) && !w->maximized)       /* under the frame, drawn next */
         GdiDropShadowAround(RECT(f.x, f.y + 3, f.w, f.h), rad,
                             w->active ? 18 : 10, w->active ? 90 : 45,
                             w->client_bg == GDI_TRANSPARENT ? RECT(0, 0, 0, 0) : f, rad);
 
-    GdiRoundRect(f, rad, w->client_bg, GDI_TRANSPARENT);
+    if (acrylic) GdiBackdrop(f, rad, 28, GDI_C(19, 25, 42), 194);
+    else GdiRoundRect(f, rad, w->client_bg, GDI_TRANSPARENT);
 
     if (w->style & WS_TITLEBAR) {
         /* Title strip with rounded top corners and a square bottom */
