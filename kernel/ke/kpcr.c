@@ -25,7 +25,13 @@ void KiInitializeKpcr(PKPCR kpcr, UINT32 cpu)
 
 void *KiGetCurrentThread(void)
 {
-    return KiGetCurrentKpcr()->CurrentThread;
+    /* A preempted caller can resume on another CPU. Reading the KPCR
+     * self-pointer and then dereferencing it could return the old CPU's
+     * new thread (including its idle thread). Read the current thread
+     * from the live GS base in one instruction instead. */
+    void *thread;
+    __asm__ volatile ("mov %%gs:%c1, %0" : "=r"(thread) : "i"(KPCR_CURRENT_THREAD) : "memory");
+    return thread;
 }
 
 void KiSetCurrentThread(void *Thread)

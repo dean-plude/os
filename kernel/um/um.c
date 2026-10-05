@@ -2114,6 +2114,8 @@ static void um_thread_start(void *arg)
     __builtin_unreachable();
 }
 
+static int reap_threads(UmProcess *p);
+
 UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_size,
                            bool suspended, UINT32 *status)
 {
@@ -2138,6 +2140,10 @@ UmThread *um_create_thread(UmProcess *p, UINT64 start, UINT64 arg, UINT64 stack_
     t->stack_size = stack_size;
 
     um_lock_excl(&p->lock);
+    /* A burst of short-lived threads can fill the table before UmPoll
+     * gets CPU time. Reuse only exited threads already off every CPU,
+     * under the same process lock used by the background reaper. */
+    reap_threads(p);
     int slot = -1;
     for (int i = 0; i < p->lay.max_threads; i++) if (!p->threads[i]) { slot = i; break; }
     if (slot < 0 || p->kill_pending) {
