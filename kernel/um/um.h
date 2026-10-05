@@ -135,6 +135,7 @@ void       UmConsoleKey(UmConsole *c, UINT16 vk, UINT16 scan, UINT16 ch, UINT32 
 UINT32     UmConsoleInputMode(UmConsole *c);
 UINT32     UmConsoleOutputMode(UmConsole *c);
 /* The Terminal's size in character cells */
+UINT32     UmConsoleCursorStyle(UmConsole *c);
 void       UmConsoleSetSize(UmConsole *c, int cols, int rows);
 /* Windows virtual-key code for a set-1 scan code (E0-prefixed: @ext) */
 UINT32     UmScancodeToVk(UINT8 sc, bool ext);

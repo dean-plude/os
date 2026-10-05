@@ -353,6 +353,7 @@ int        um_console_records(UmConsole *c, UmConInput *out, int max, bool remov
 int        um_console_count(UmConsole *c);
 void       um_console_flush(UmConsole *c);
 void       um_console_set_mode(UmConsole *c, bool input, UINT32 mode);
+UINT32     um_console_cursor(UmConsole *c, UINT32 op, UINT32 value, UINT32 *result);
 void       um_console_size(UmConsole *c, int *cols, int *rows);
 int        um_console_pids(UmConsole *c, UINT32 *out, int max);   /* running processes on @c (count; up to @max ids) */
 
