@@ -1,11 +1,45 @@
 /* One-shot thread-pool callbacks: correct context and x86 calling
  * convention, no handle leak across more than 4096 submissions. */
 #include <windows.h>
+#include <winternl.h>
 #include <stdio.h>
 
 typedef VOID (WINAPI *SimpleFn)(PVOID instance, PVOID ctx);
 WINBASEAPI BOOL WINAPI TrySubmitThreadpoolCallback(SimpleFn fn, PVOID ctx, PVOID env);
 WINBASEAPI BOOL WINAPI GetProcessHandleCount(HANDLE process, PDWORD count);
+
+__declspec(dllimport) NTSTATUS NTAPI LdrLockLoaderLock(ULONG flags, PULONG state, PULONG_PTR cookie);
+__declspec(dllimport) NTSTATUS NTAPI LdrUnlockLoaderLock(ULONG flags, ULONG_PTR cookie);
+
+static DWORD WINAPI warm_thread(PVOID unused)
+{
+    (void)unused;
+    return 0;
+}
+
+/* The loader lazily creates one process-wide contention event. Force
+ * that initialization and join the warm-up thread before taking the
+ * leak baseline; retain exact handle checks for every measured batch. */
+static BOOL warm_loader_lock(void)
+{
+    PEB *peb = *(PEB **)(NtCurrentTebBytes() + TEB_PEB);
+    PRTL_CRITICAL_SECTION lock = peb->LoaderLock;
+    ULONG state = 0;
+    ULONG_PTR cookie = 0;
+    if (!lock || LdrLockLoaderLock(0, &state, &cookie) != 0 || !cookie) return FALSE;
+    HANDLE thread = CreateThread(NULL, 0, warm_thread, NULL, 0, NULL);
+    BOOL initialized = FALSE;
+    if (thread) {
+        DWORD start = GetTickCount();
+        while (!*(HANDLE volatile *)&lock->LockSemaphore && GetTickCount() - start < 5000) Sleep(1);
+        initialized = *(HANDLE volatile *)&lock->LockSemaphore != NULL;
+    }
+    NTSTATUS unlocked = LdrUnlockLoaderLock(0, cookie);
+    if (!thread) return FALSE;
+    DWORD done = WaitForSingleObject(thread, 10000);
+    CloseHandle(thread);
+    return initialized && unlocked == 0 && done == WAIT_OBJECT_0;
+}
 
 #define BATCH 32
 #define ROUNDS 160
@@ -21,6 +55,10 @@ static VOID WINAPI callback(PVOID instance, PVOID ctx)
 
 int main(void)
 {
+    if (!warm_loader_lock()) {
+        printf("FAIL loader-lock warm-up (%lu)\n", (unsigned long)GetLastError());
+        return 1;
+    }
     g_done = CreateEventW(NULL, FALSE, FALSE, NULL);
     DWORD before = 0, after = 0;
     if (!g_done || !GetProcessHandleCount(GetCurrentProcess(), &before)) {

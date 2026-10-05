@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT, accel_args
 from selftest import Test, verdict, store_verdict, PANIC, REC_HZ
 import wavcheck
+from download_cache import DownloadCache
 
 REFERENCES = os.path.join(ROOT, 'tests', 'reference')
 DRIVE_LABEL = 'NOVACORPUS'
@@ -75,6 +76,7 @@ class App:
     ends; @sound=(None, ms): it must play some sound (music, effects) for
     @ms in all, between its first test starting and its last one ending.
 
+    @mutable: the primary URL serves changing bytes (24-hour refresh by default).
     @store: the program's name in the App Store's catalog
     (kernel/apps/store.c), whose download @url must be.  The download is
     put in C:\\Downloads under the catalog's file name and 7-Zip in
@@ -92,14 +94,14 @@ class App:
     pad("buttons=0x1000 lx=32767") (padpeer's control lines)."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
                  gui=False, net=False, interact=None, https=False, store=None, processes=False,
-                 mic=False, sound=None, runtimes=(), pad=None):
+                 mic=False, sound=None, runtimes=(), pad=None, mutable=False):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
         self.https, self.store, self.ca, self.processes = https, store, None, processes
         self.mic, self.sound = mic, sound
         self.runtimes = list(runtimes)
-        self.pad = pad
+        self.pad, self.mutable = pad, mutable
 
 
 def pad(line):
@@ -153,14 +155,10 @@ def pad_boot(kind, work):
             '-device', 'usb-redir,id=pad,chardev=pad,bus=padxhci.0'], p
 
 
-def fetch(url, cache):
-    if not url:
-        return None
-    f = os.path.join(cache, os.path.basename(url))
-    if not os.path.exists(f) or not os.path.getsize(f):
-        subprocess.run(['curl', '-sSLf', '--retry', '4', '-o', f + '.part', url], check=True)
-        os.replace(f + '.part', f)
-    return f
+def fetch(url, cache, mutable=False, version=None):
+    if not isinstance(cache, DownloadCache):
+        cache = DownloadCache(cache)
+    return cache.fetch(url, mutable=mutable, version=version)
 
 
 def stage(app, archive, dest):
@@ -420,6 +418,9 @@ def main():
     ap.add_argument('--cache', default=os.path.join(ROOT, 'build', 'appcorpus-cache'))
     ap.add_argument('--out', default='appcorpus-out')
     ap.add_argument('--only')
+    ap.add_argument('--mutable-max-age', type=float, default=86400,
+                    help='mutable download lifetime in seconds (default: 24 hours; 0: refresh each run)')
+    ap.add_argument('--download-lock', help='replay hashes from a previous downloads.json; reject changed/missing inputs')
     ap.add_argument('--summary')
     ap.add_argument('--update-reference', action='store_true')
     ap.add_argument('--max-diff', type=float, default=0.03, help='share of differing pixels allowed')
@@ -427,7 +428,8 @@ def main():
 
     apps = [x for x in APPS if not a.only or x.name in a.only.split(',')]
     os.makedirs(a.out, exist_ok=True)
-    os.makedirs(a.cache, exist_ok=True)
+    a.cache = DownloadCache(a.cache, a.mutable_max_age, a.download_lock,
+                            os.path.join(a.out, 'downloads.json'))
     work = tempfile.mkdtemp(prefix='appcorpus')
     apps_dir = os.path.join(work, 'Apps')
     results = {}                    # app name -> (why it failed or None, seconds, [(test, why)])
@@ -439,12 +441,14 @@ def main():
             if app.runtimes:
                 stage_runtimes(app, a.cache, work)
             if app.store:
-                stage_store(app, [fetch(u, a.cache) for u in [app.url] + app.extra + [SEVENZIP]], work)
+                stage_store(app, [fetch(u, a.cache, mutable=app.mutable if u == app.url else False,
+                                                   version=app.version if u == app.url else None) for u in [app.url] + app.extra + [SEVENZIP]], work)
             elif callable(app.unpack):
-                app.unpack(app, [fetch(u, a.cache) for u in [app.url] + app.extra],
+                app.unpack(app, [fetch(u, a.cache, mutable=app.mutable if u == app.url else False,
+                                                   version=app.version if u == app.url else None) for u in [app.url] + app.extra],
                            os.path.join(apps_dir, app.dir))
             else:
-                stage(app, fetch(app.url, a.cache), os.path.join(apps_dir, app.dir))
+                stage(app, fetch(app.url, a.cache, app.mutable, app.version), os.path.join(apps_dir, app.dir))
             staged.append(app)
         except Exception as e:
             results[app.name] = (f'download or unpack failed: {e}', 0, [])
@@ -510,6 +514,15 @@ def main():
                     out = ANSI.sub('', out)          # rg and fd colour their output in a console
                     exe = re.split(r'[\\/]', t.cmd.split()[0])[-1]
                     w = verdict(t, out, ok, exe)
+                if app.name == 'WebView2':
+                    version = re.search(r'wv2host: runtime ([0-9]+(?:\.[0-9]+)+)', out)
+                    if version:
+                        a.cache.observe_version(app.url, version.group(1), 'wv2host runtime discovery')
+                elif app.name == 'Roblox':
+                    version = re.search(r'Versions\\(version-[0-9a-f]+)\\RobloxPlayerBeta\.exe', out)
+                    if version:
+                        a.cache.observe_version(app.url, version.group(1), 'installer output directory')
+
                 if PANIC.search(out):
                     w = stopped = 'kernel panic'
                 log += out
