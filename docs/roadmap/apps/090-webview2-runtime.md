@@ -13,8 +13,8 @@
   of one process inside another's (the host's `SetParent` and
   `SetWindowPos` on the browser's window, another process drawing into
   it; the controller, a page and a script)~~ Done (`xpwin`,
-  `chrometest`).  Still to do: drawing the page (a DXGI factory with
-  Windows' software adapter when there is no GPU, for Chromium's
-  software output; for ANGLE, the GPU process's child window inside the
-  browser's and a DXGI swap chain presenting to it), and Windows'
-  `WOW6432Node` registry view for machine-wide installs.
+  `chrometest`); ~~drawing the page without a GPU (the Basic Render
+  Driver adapter, a WARP device, DirectComposition, the GPU process's
+  window inside the browser's)~~ Done (`dcomptest`).  Still to do:
+  Windows' `WOW6432Node` registry view for machine-wide installs, and
+  drawing with ANGLE on DXVK when a GPU is there.

@@ -1631,6 +1631,31 @@ USERAPI HWND SetParent(HWND h, HWND hp)
     return old;
 }
 
+/* Another process parents our child window @h in its window @fp (Chromium's
+ * browser process takes the window its GPU process composites into, made
+ * as a child of a hidden window of the GPU process's own): the window
+ * becomes a desktop window of ours, which the desktop then keeps in the
+ * foreign parent's client area (CTL_EMBED, asked for by the other process
+ * and applied once the window has its desktop window).  It stays WS_CHILD,
+ * at its place, and GetParent gives @fp. */
+void wnd_embed_child(HWND h, HWND fp)
+{
+    Wnd *w = W_quiet(h);
+    if (!w || !w->parent || !fp) return;                    /* (a top-level window: the desktop embeds it as it is) */
+    int vis = (w->style & WS_VISIBLE) != 0;
+    if (vis) ShowWindow(h, SW_HIDE);
+    RECT r = w->rect;                                       /* (its place in the old parent: its place in the new one) */
+    LOCK();
+    unlink_wnd(w);
+    w->parent = NULL;
+    link_wnd(w, NULL);
+    UNLOCK();
+    w->foreign_parent = fp;
+    w->rect = r;
+    wnd_calc_client(w);
+    if (vis) ShowWindow(h, SW_SHOWNA);
+}
+
 typedef BOOL (CALLBACK *ENUMPROC_)(HWND, LPARAM);
 
 static BOOL enum_children(Wnd *p, WNDENUMPROC fn, LPARAM lp)

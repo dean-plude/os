@@ -215,13 +215,16 @@ on a window, `SetParent` of another process's window and drawing into
 it, checked by `xpwin`), so the controller is made, the page loads and
 a script runs in it (`wv2host: script "NovaOS WebView2 / 42"`), with
 the event log functions the browser calls afterwards (`EvtSubscribe`,
-bookmarks, logs).  The page is not drawn yet: the browser's window stays
-black.  The GPU
-process finds no Direct3D 11 adapter for ANGLE (none without DXVK) and
-draws in software, but Chromium's software output also asks for a DXGI
-factory (`CreateDXGIFactory1`), which Windows gives even with no GPU
-(its Basic Render Driver) and NovaOS does not, so the GPU process stops
-on it; after three tries the browser gives up too.
+bookmarks, logs).  The page is drawn: the GPU process finds no
+Direct3D 11 renderer for ANGLE (none without DXVK; NovaOS's WARP device
+does not rasterize, so ANGLE refuses it) and falls back to Chromium's
+software compositor, which draws through a DXGI 1.2 swap chain on a WARP
+device shown by DirectComposition in a window the GPU process makes and
+the browser parents in its own.  NovaOS's `dxgi.dll` now lists Windows'
+Basic Render Driver, `d3d11.dll` gives that WARP device, `dcomp.dll`
+draws a visual's swap chain into its window, and a child window parented
+by another process becomes a window of its own kept inside the new
+parent (`dcomptest`).
 64-bit programs that look for a machine-wide
 runtime under Windows' `WOW6432Node` registry view also need that view
 (the per-user install records itself under `HKEY_CURRENT_USER`, which

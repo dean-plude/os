@@ -20,7 +20,7 @@
 # its GPU, network and storage processes start, and the browser accepts
 # the host's connection; the test passes when the WebView2 environment is
 # made (the host then puts the browser's window inside its own and a
-# page loads, but it is not drawn yet, docs/compatibility.md), or when
+# page loads and is drawn, docs/compatibility.md), or when
 # no runtime was installed (drive C:
 # full in a full corpus run, as above) and so none could start.
 DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which installs the runtime; a host program starts the runtime\'s browser process)'
