@@ -4,26 +4,11 @@
 # runtime's own setup.  Edge Update starts, reads its manifests with MSXML
 # 6, installs itself, registers its COM servers and proxy/stub DLLs and
 # runs its install step, which it logs to %TEMP%\MicrosoftEdgeUpdate.log;
-# the test passes when that log shows the install step ran (whether the
-# package is cached also depends on drive C:'s free space, which the
-# programs before it in a full corpus run use up).  The install
-# then unpacks the runtime's package, accepts Microsoft's signature on it
-# and starts the runtime's own setup (Chromium's mini_installer and
-# setup.exe), which maps and unpacks its 728 MB archive, copies the
-# runtime in, adds an entry to its folder's permissions and installs the
-# runtime; the installer then deletes its temporary files on close, which
-# must not loop (docs/compatibility.md).  Then wv2host (a WebView2 host
-# NovaOS builds, userland/programs/wv2host.c) starts the runtime through
-# WebView2Loader.dll from Microsoft's WebView2 SDK (its NuGet package,
-# BSD-licensed, the DLL copied next to the installer): the loader finds
-# the installed runtime and the browser process (msedgewebview2.exe) and
-# its GPU, network and storage processes start, and the browser accepts
-# the host's connection; the test passes when the WebView2 environment is
-# made (the host then puts the browser's window inside its own and a
-# page loads and is drawn, docs/compatibility.md), or when
-# no runtime was installed (drive C:
-# full in a full corpus run, as above) and so none could start.
-DOC = 'Microsoft Edge WebView2 runtime (its updater installs itself, runs the install, accepts the runtime\'s signature and starts the runtime\'s setup, which installs the runtime; a host program starts the runtime\'s browser process)'
+# the test requires a successful runtime installation, then wv2host must
+# find the runtime, create an environment and controller, load its page,
+# execute JavaScript with the expected result and finish. Missing runtimes
+# and full disks are failures, not evidence of compatibility.
+DOC = 'Microsoft Edge WebView2 runtime (installs; a host creates a controller, loads a page and executes JavaScript)'
 import os, shutil, zipfile
 
 SDK = 'https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.4258.31'
@@ -44,8 +29,10 @@ APP = App('WebView2', 'evergreen', 'https://go.microsoft.com/fwlink/?linkid=2124
           [Test('run Edge Update\'s install step',
                 rf'cmd.exe /c "start /wait {A}\WebView2\{INSTALLER} /silent /install & '
                 r'type C:\AppData\Local\Temp\MicrosoftEdgeUpdate.log"',
-                [r'\[GoopdateImpl::DoInstall\]'], timeout=600),
-           Test('start the runtime\'s browser process',
+                [r'\[GoopdateImpl::DoInstall\]', r'InstallApp returned 0x0\b'], timeout=600),
+           Test('load a page and execute JavaScript',
                 rf'cmd.exe /c "cd /d {A}\WebView2 & wv2host"',
-                [r'wv2host: (environment\r?\n|no runtime found)'], timeout=600)],
+                [r'wv2host: runtime [^\r\n]+', r'wv2host: environment\r?\n',
+                 r'wv2host: controller \(browser process \d+\)', r'wv2host: navigation ok\r?\n',
+                 r'wv2host: script "NovaOS WebView2 / 42"\r?\n', r'wv2host: done\r?\n'], timeout=600)],
           unpack=unpack, extra=[SDK])

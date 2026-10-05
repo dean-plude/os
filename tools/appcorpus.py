@@ -35,7 +35,7 @@ plugged in: tools/padpeer.py behind a QEMU usb-redir device on an xHCI
 controller (as tools/selftest.py's gamepad boot has), which the
 program's interaction moves through pad() (the peer's control port).
 
-The exit status is the number of programs that failed.  --summary appends
+The exit status counts failed and unrun programs; skips do not fail the run.  --summary appends
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
@@ -484,7 +484,7 @@ def main():
         if padpeer:
             padpeer.kill()
         for app in staged:
-            results[app.name] = ('NovaOS did not boot', 0, [])
+            results[app.name] = (NOT_RUN + ': NovaOS did not boot', 0, [])
         report(a, apps, results)
         return len(apps)
     print(f'booted in {time.time() - t_boot:.0f} s', flush=True)
@@ -493,7 +493,7 @@ def main():
     try:
         for app in staged:
             if stopped:
-                results[app.name] = (stopped, 0, [])
+                results[app.name] = (NOT_RUN + ': ' + stopped, 0, [])
                 continue
             t0, steps, why = time.time(), [], None
             for t in app.tests:
@@ -519,18 +519,22 @@ def main():
                     print('    ' + '\n    '.join(l for l in out.splitlines() if not l.startswith('[SCHED]'))[-3000:])
                     why = why or f'{t.name}: {w}'
                     break
-            if app.store:                    # the App Store window stays out of the next screenshots
+            if app.store and not stopped:    # the App Store window stays out of the next screenshots
                 log += nova.run('store close', 15)[0]
             results[app.name] = (why, time.time() - t0, steps)
             app.window = (t0 - t_boot, time.time() - t_boot)    # (where its sound is in the recording)
             print(f'{"PASS" if not why else "FAIL"}  {app.name:10s} {time.time() - t0:6.1f} s', flush=True)
-            if nova.q.poll() is None:        # drive C: lives in memory: what each program's files leave taken
+            if not stopped and nova.q.poll() is None:  # drive C: lives in memory: what each program's files leave taken
                 out, _ = nova.run('mem', 15)
                 log += out
+                if PANIC.search(out):
+                    stopped = 'kernel panic during memory diagnostics'
+                    why = why or stopped
+                    results[app.name] = (why, time.time() - t0, steps + [('memory diagnostics', stopped)])
                 for m in re.finditer(r'(Physical memory: .*?MB free|Drive C: \d+ files.*?taking \d+ MB|The rest is read .*?MB\))', out):
                     print(f'      {m.group(1)}', flush=True)
-            if nova.q.poll() is not None:
-                stopped = 'not run (NovaOS stopped)'
+            if nova.q.poll() is not None and not stopped:
+                stopped = 'NovaOS stopped'
     finally:
         nova.close()
         if echo:
@@ -562,10 +566,22 @@ def main():
             else:
                 results[app.name] = (why, secs, steps + [('sound', None)])
     report(a, apps, results)
-    return sum(1 for r in results.values() if r[0] and not r[0].startswith(SKIPPED))
+    return sum(result_status(r[0]) in ('failed', 'not run') for r in results.values())
 
 
 SKIPPED = 'skipped'
+NOT_RUN = 'not run'
+
+
+def result_status(why):
+    if not why:
+        return 'passed'
+    if why.startswith(SKIPPED + ':'):
+        return 'skipped'
+    if why.startswith(NOT_RUN + ':'):
+        return 'not run'
+    return 'failed'
+
 
 
 def make_tone(path):
@@ -730,19 +746,23 @@ screen.free = {}
 
 
 def report(a, apps, results):
-    failed = sum(1 for r in results.values() if r[0])
-    print(f'\n{len(results) - failed} of {len(results)} programs passed')
+    counts = dict.fromkeys(('passed', 'failed', 'skipped', 'not run'), 0)
+    for app in apps:
+        why = results.get(app.name, (NOT_RUN + ': no result recorded', 0, []))[0]
+        counts[result_status(why)] += 1
+    summary = (f'{counts["passed"]} passed, {counts["failed"]} failed, '
+               f'{counts["skipped"]} skipped, {counts["not run"]} not run '
+               f'({len(apps)} programs selected)')
+    print('\n' + summary)
     if a.summary:
         with open(a.summary, 'a') as f:
-            f.write(f'### NovaOS app corpus: {len(results) - failed} of {len(results)} programs passed\n\n')
+            f.write(f'### NovaOS app corpus: {summary}\n\n')
             f.write(f'Test VMs ran under {accel_args()[1].upper()}.\n\n')
             f.write('| Program | Version | Result | Checks | Time |\n|---|---|---|---|---|\n')
             for app in apps:
-                if app.name not in results:
-                    continue
-                why, secs, steps = results[app.name]
+                why, secs, steps = results.get(app.name, (NOT_RUN + ': no result recorded', 0, []))
                 checks = ', '.join(f'`{n}`' + ('' if not w else ' ❌') for n, w in steps)
-                mark = '✅ pass' if not why else ('⏭ ' if why.startswith(SKIPPED) else '❌ ') + why.replace('|', '/')
+                mark = '✅ pass' if not why else ('⏭ ' if result_status(why) in ('skipped', 'not run') else '❌ ') + why.replace('|', '/')
                 f.write(f'| {app.name} | {app.version} | {mark} '
                         f'| {checks} | {secs:.0f} s |\n')
             f.write('\n')

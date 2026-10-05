@@ -22,7 +22,7 @@ on:
         type: boolean
         default: false
   pull_request:                 # a change to the corpus itself runs it too (no issue comment)
-    paths: [tools/appcorpus.py, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
+    paths: [tools/appcorpus.py, tests/tools/**, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
 
 permissions:
   contents: read
@@ -70,6 +70,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check corpus assertions and reporting
+        run: python3 -m unittest discover -s tests/tools -v
 
       - name: Enable KVM (fails without /dev/kvm unless allow_tcg)
         env:
