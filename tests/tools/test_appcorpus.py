@@ -1,6 +1,7 @@
 """Host-side corpus assertion/reporting regressions; no VM or downloads required."""
 import contextlib
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -20,11 +21,15 @@ class CorpusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             summary = Path(d) / 'summary.md'
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                appcorpus.report(SimpleNamespace(summary=str(summary)), apps, results)
+                appcorpus.report(SimpleNamespace(summary=str(summary), out=d), apps, results)
             self.assertIn('1 passed, 1 failed, 1 skipped, 2 not run (5 programs selected)', out.getvalue())
             text = summary.read_text()
             self.assertIn('| missing | 1 | ⏭ not run: no result recorded', text)
             self.assertIn('| fail | 1 | ❌ kernel panic', text)
+            report = json.loads((Path(d) / 'results.json').read_text())
+            self.assertEqual(report['counts'], {'passed': 1, 'failed': 1, 'skipped': 1, 'not run': 2})
+            self.assertEqual([p['outcome'] for p in report['programs']],
+                             ['passed', 'failed', 'skipped', 'not run', 'not run'])
 
     def test_webview_requires_install_success(self):
         t = next(a for a in appcorpus.APPS if a.name == 'WebView2').tests[0]
