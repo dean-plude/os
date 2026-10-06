@@ -1,324 +1,237 @@
-# Boot CI: every pull request builds NovaOS, boots it in QEMU and runs the
-# self-tests (tools/selftest.py): the core suite, the network suite (IPv4,
-# IPv6 and winhttp's HTTP/2 over virtio-net) and the graphics suite (Mesa,
-# DXVK and Venus from the App Store, then tools/gltest and tools/d3dtest on
-# a 3D virtio-gpu: a QEMU built with Venus, on Xvfb, whose Vulkan and OpenGL
-# are the runner's lavapipe and llvmpipe).
-# A failing test fails its check; make both required status checks on main
-# to block the merge.
-#
-# The boot-test job also builds the bootable ISO (scripts/create-iso.sh) and
-# keeps it as the "nova-iso" run artifact, so every pull request has a
-# downloadable nova.iso.  After a push to main passes, the publish-iso job
-# puts that ISO on the rolling "latest" release, with the graphics job's
-# venus.7z (tools/build_venus.py), which the App Store's "Venus" downloads:
-#   https://github.com/dean-plude/os/releases/latest/download/nova.iso
-# nova.iso is not committed to the repository.  Once a tagged release
-# exists (.github/workflows/release.yml), "latest" is marked a pre-release
-# and the tagged release keeps GitHub's "Latest" mark: an installed
-# NovaOS's update channel and the README's download link follow releases,
-# not every push to main.  "latest" also carries its own update channel
-# (kernel.elf, bootx64.efi, novaos-update.txt from tools/mkupdate.py),
-# stamped with a development version (NOVA_VERSION+dev.<commit time>) so
-# a system pointed at it sees each new build of main as newer.
-#
-# release.yml runs this whole workflow on a version tag (workflow_call with
-# release: true): the boot-test job then fetches the audio DSP's firmware
-# (tools/fetch_sof_firmware.py) before the build and keeps the kernel and
-# boot loader too, so the ISO the release publishes is the one these
-# suites tested.
-#
-# The checks job runs first, in seconds: no conflict markers left by a
-# merge, the DLL and program manifests and the self-test files load, and
-# (on a pull request) the generated doc regions were not edited by hand
-# (CONTRIBUTING.md).  The boot tests wait for it.  The merge queue runs the
-# same jobs on its temporary merge-group branches (the generated-docs check
-# was already done on the pull request, so it is skipped there).
-#
-# Speed: the build compiles through ccache, whose cache the boot-test job
-# saves after each build (main's cache is shared with every pull request), so
-# only changed files recompile.  A pull request that changes only Markdown,
-# docs/ or LICENSE skips the build and boot jobs: they report "skipped",
-# which GitHub counts as passing for required checks.
 name: CI
-
-on:
-  pull_request:
-  merge_group:
+'on':
+  pull_request: {}
+  merge_group: {}
   push:
-    branches: [main]
+    branches:
+    - main
   workflow_dispatch:
     inputs:
       allow_tcg:
-        description: run on a runner without /dev/kvm (the test VMs then run under TCG, much slower)
+        description: Allow slower software emulation when KVM is unavailable
         type: boolean
         default: false
-  workflow_call:                # .github/workflows/release.yml
+  workflow_call:
     inputs:
       release:
-        description: build the release image (with the DSP firmware) and keep its kernel and boot loader
         type: boolean
         default: false
-
-env:                            # ccache (the build's clang calls go through /usr/lib/ccache)
-  CCACHE_BASEDIR: ${{ github.workspace }}
-  CCACHE_NOHASHDIR: 'true'
-  CCACHE_COMPILERCHECK: content
-  CCACHE_MAXSIZE: 500M
-
+permissions:
+  contents: read
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   checks:
     name: Checks (conflict markers, manifests, generated docs)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      code: ${{ steps.changes.outputs.code }}
+      code: ${{ steps.plan.outputs.code }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2          # a pull request's merge commit and its base (HEAD^1)
-
-      - name: No merge conflict markers
-        run: python3 tools/ci/check-conflict-markers.py
-
-      - name: Does the change touch anything but docs?
-        id: changes
-        run: |
-          code=true
-          if [ "$GITHUB_EVENT_NAME" = pull_request ] &&
-             ! git diff --name-only HEAD^1 HEAD | grep -qvE '^docs/|\.md$|^LICENSE$'; then
-            code=false
-            echo "Docs-only change: the build and boot jobs are skipped."
-          fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-
-      - name: Host-side compatibility and build regressions
-        run: python3 -m unittest discover -s tests/tools -v
-
-      - name: DLL and program manifests load
-        run: python3 tools/build_userland.py --check
-
-      - name: Self-test and app-corpus files load
-        run: |
-          python3 tools/selftest.py --list
-          python3 tools/selftest.py --suite graphics --list
-          python3 tools/selftest.py --suite network --list
-          python3 tools/selftest.py --suite devices --list
-          python3 -c "import sys; sys.path.insert(0, 'tools'); import appcorpus; print(len(appcorpus.APPS), 'corpus programs')"
-
-      - name: Generated doc regions untouched, fragments build
-        if: github.event_name == 'pull_request' && github.head_ref != 'docs/regenerate'
-        run: python3 tools/docgen.py --check-pr HEAD^1
-
-  boot-test:
-    name: Build and boot-test
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install host test dependencies
+      run: |-
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq python3-yaml
+    - name: Plan required execution
+      run: python3 tools/ci/plan.py
+      id: plan
+    - name: Validate workflows
+      run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+    - name: Host regressions
+      run: python3 -m unittest discover -s tests/tools -v
+    - name: Validate manifests and suites
+      run: |-
+        python3 tools/ci/check-conflict-markers.py
+        python3 tools/build_userland.py --check
+        for suite in core network devices graphics; do python3 tools/selftest.py --suite "$suite" --list; done
+        python3 tools/compat_smoke.py --list
+        python3 tools/ci/plan.py --matrix
+    - name: Validate generated documentation
+      run: |-
+        base=$(python3 -c 'import json,os; e=json.load(open(os.environ["GITHUB_EVENT_PATH"])); print(e.get("pull_request",{}).get("base",{}).get("sha") or e.get("merge_group",{}).get("base_sha") or "HEAD")')
+        python3 tools/docgen.py --check-pr "$base"
+  build:
+    name: Build
     needs: checks
+    if: needs.checks.outputs.code == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      release: ${{ inputs.release || false }}
+  compatibility:
+    name: Compatibility smoke
+    needs:
+    - checks
+    - build
+    if: needs.checks.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install runtime dependencies
+      run: tools/ci/install.sh runtime
+    - name: Select accelerator
+      run: tools/ci/enable-kvm.sh optional
+      env:
+        NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg || false }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: nova-image
+        path: build
+    - name: Verify tested image
+      run: python3 tools/ci/image_manifest.py verify --sha "$GITHUB_SHA"
+    - name: Run regressions
+      run: python3 tools/compat_smoke.py --img build/nova.img --out compat-smoke-out --junit compat-smoke-out/junit.xml
+        --summary "$GITHUB_STEP_SUMMARY"
+    - name: Keep compat-smoke-out
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: compat-smoke-out
+        path: compat-smoke-out
+        if-no-files-found: ignore
+        retention-days: 14
+  boot-test:
+    name: OS tests (${{ matrix.suite }})
+    needs:
+    - checks
+    - build
     if: needs.checks.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Enable KVM (TCG when the runner has no /dev/kvm)
-        env:
-          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
-        run: tools/ci/enable-kvm.sh optional   # a required check must not go red on a runner without KVM that nobody can re-run
-
-      - name: Install the toolchain and QEMU
-        run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 p7zip-full \
-            qemu-system-x86 qemu-system-gui ovmf mtools dosfstools acpica-tools xorriso \
-            pulseaudio pulseaudio-utils ccache
-          echo /usr/lib/ccache >> "$GITHUB_PATH"
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      - name: Restore the compiler cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ github.run_id }}
-          restore-keys: ccache-
-
-      - name: Fetch the audio DSP firmware (release builds)
-        if: inputs.release
-        run: python3 tools/fetch_sof_firmware.py --all
-
-      - name: Build the kernel, bootloader, userland and disk image
-        run: |
-          cmake -S . -B build -G "Unix Makefiles"
-          make -C build -j"$(nproc)" || {
-            cat build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-err.log 2>/dev/null | tail -100
-            exit 1
-          }
-          test -f build/nova.img
-          ccache -s
-
-      - name: Save the compiler cache
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Build the bootable ISO
-        run: scripts/create-iso.sh build/nova.iso build/bootx64.efi build/kernel.elf
-
-      - name: Keep the ISO
-        uses: actions/upload-artifact@v4
-        with:
-          name: nova-iso
-          path: build/nova.iso
-          if-no-files-found: error
-
-      - name: Keep the kernel and boot loader (release builds and main's update channel)
-        if: inputs.release || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        uses: actions/upload-artifact@v4
-        with:
-          name: nova-boot
-          path: |
-            build/kernel.elf
-            build/bootx64.efi
-          if-no-files-found: error
-
-      - name: Boot NovaOS and run the self-tests
-        run: |
-          python3 tools/selftest.py --img build/nova.img --out selftest-out \
-            --junit selftest-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Run the network self-tests (IPv4, IPv6, HTTP/2)
-        if: success() || failure()
-        run: |
-          python3 tools/selftest.py --suite network --img build/nova.img --out selftest-out/network \
-            --junit selftest-out/network/junit.xml --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Run the device self-tests (touch screen, USB audio, starting from the ISO)
-        if: success() || failure()
-        run: |
-          python3 tools/selftest.py --suite devices --img build/nova.img --out selftest-out/devices \
-            --junit selftest-out/devices/junit.xml --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Keep the serial log and screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: selftest-out
-          path: selftest-out
-          if-no-files-found: ignore
-
+    - uses: actions/checkout@v4
+    - name: Install runtime dependencies
+      run: tools/ci/install.sh runtime
+    - name: Select accelerator
+      run: tools/ci/enable-kvm.sh optional
+      env:
+        NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg || false }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: nova-image
+        path: build
+    - name: Verify tested image
+      run: python3 tools/ci/image_manifest.py verify --sha "$GITHUB_SHA"
+    - name: Run regressions
+      run: python3 tools/selftest.py --suite "$SUITE" --img build/nova.img --out "selftest-$SUITE" --junit "selftest-$SUITE/junit.xml"
+        --summary "$GITHUB_STEP_SUMMARY"
+    - name: Keep selftest-${{ matrix.suite }}
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: selftest-${{ matrix.suite }}
+        path: selftest-${{ matrix.suite }}
+        if-no-files-found: ignore
+        retention-days: 14
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+        - core
+        - network
+        - devices
+    env:
+      SUITE: ${{ matrix.suite }}
   graphics-test:
     name: Graphics tests (OpenGL, Direct3D)
-    needs: checks
+    needs:
+    - checks
+    - build
     if: needs.checks.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Enable KVM (TCG when the runner has no /dev/kvm)
-        env:
-          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
-        run: tools/ci/enable-kvm.sh optional
-
-      - name: Install the toolchain and QEMU
-        run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
-            g++-mingw-w64-x86-64 g++-mingw-w64-i686 \
-            qemu-system-x86 ovmf mtools dosfstools acpica-tools p7zip-full curl ccache \
-            xvfb xauth mesa-vulkan-drivers libgl1-mesa-dri libegl1 seabios ipxe-qemu \
-            ninja-build pkg-config libglib2.0-dev libpixman-1-dev libsdl2-dev libepoxy-dev libgbm-dev \
-            libdrm-dev libvulkan-dev libpng-dev glslang-tools bison flex python3-mako python3-yaml python3-venv gdb
-          pip install --user --break-system-packages -q 'meson==1.9.0' pycotap
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo /usr/lib/ccache >> "$GITHUB_PATH"
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      - name: Restore the compiler cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ github.run_id }}
-          restore-keys: ccache-
-
-      - name: Cache the Mesa, DXVK and 7-Zip downloads
-        uses: actions/cache@v4
-        with:
-          path: gfx-cache
-          key: gfx-${{ hashFiles('kernel/apps/store.c', 'tools/ci/stage-graphics.sh') }}
-
-      - name: Build NovaOS
-        run: |
-          cmake -S . -B build -G "Unix Makefiles"
-          make -C build -j"$(nproc)" || {
-            cat build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-err.log 2>/dev/null | tail -100
-            exit 1
-          }
-          ccache -s
-
-      # Venus and virgl (tools/build_venus.py) and a QEMU with Venus
-      # (tools/ci/build-qemu-venus.sh) are built when their sources change
-      - name: Cache Venus
-        id: venus-cache
-        uses: actions/cache@v4
-        with:
-          path: venus-out/venus.7z
-          key: venus-${{ hashFiles('tools/build_venus.py', 'third_party/mesa-venus/**') }}
-
-      - name: Build Venus and virgl (Mesa's Vulkan and OpenGL drivers for the virtio-gpu)
-        if: steps.venus-cache.outputs.cache-hit != 'true'
-        run: python3 tools/build_venus.py venus-out --work "$RUNNER_TEMP/venus-work"
-
-      - name: Keep Venus for the release
-        uses: actions/upload-artifact@v4
-        with:
-          name: venus
-          path: venus-out/venus.7z
-          if-no-files-found: error
-
-      - name: Cache the QEMU with Venus
-        id: qemu-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/qv
-          key: qemu-venus-${{ hashFiles('tools/ci/build-qemu-venus.sh') }}
-
-      - name: Build QEMU 10.2 and virglrenderer with Venus
-        if: steps.qemu-cache.outputs.cache-hit != 'true'
-        run: tools/ci/build-qemu-venus.sh ~/qv "$RUNNER_TEMP/qemu-src"
-
-      - name: Stage 7-Zip, the downloads and the test programs
-        run: VENUS_7Z=venus-out/venus.7z tools/ci/stage-graphics.sh gfx gfx-cache
-
-      - name: Run d2dtest, install Mesa, DXVK and Venus from the App Store, run gltest, d3dtest and the frame-rate tests
-        run: |
-          export NOVARUN_QEMU="$HOME/qv/bin/qemu-system-x86_64" LD_LIBRARY_PATH="$HOME/qv/lib/x86_64-linux-gnu"
-          # what the host side was doing when a test hangs (tools/ci/host_watch.py)
-          mkdir -p graphics-out
-          export VIRGL_LOG_LEVEL=debug VIRGL_LOG_FILE="$PWD/graphics-out/virglrenderer-%PID%.log"
-          python3 tools/ci/host_watch.py graphics-out &
-          trap 'kill $! 2>/dev/null || true' EXIT
-          xvfb-run -a -s '-screen 0 1280x1024x24' \
-            python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
-            --junit graphics-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
-
-      - name: Keep the serial log and screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: graphics-out
-          path: graphics-out
-          if-no-files-found: ignore
-
+    - uses: actions/checkout@v4
+    - name: Install graphics dependencies
+      run: tools/ci/install.sh graphics
+    - name: Select accelerator
+      run: tools/ci/enable-kvm.sh optional
+      env:
+        NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg || false }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: nova-image
+        path: build
+    - name: Verify tested image
+      run: python3 tools/ci/image_manifest.py verify --sha "$GITHUB_SHA"
+    - name: Cache the Mesa, DXVK and 7-Zip downloads
+      uses: actions/cache@v4
+      with:
+        path: gfx-cache
+        key: gfx-${{ hashFiles('kernel/apps/store.c', 'tools/ci/stage-graphics.sh') }}
+    - name: Cache Venus
+      id: venus-cache
+      uses: actions/cache@v4
+      with:
+        path: venus-out/venus.7z
+        key: venus-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_venus.py', 'third_party/mesa-venus/**')
+          }}
+    - name: Build Venus and virgl (Mesa's Vulkan and OpenGL drivers for the virtio-gpu)
+      if: steps.venus-cache.outputs.cache-hit != 'true'
+      run: python3 tools/build_venus.py venus-out --work "$RUNNER_TEMP/venus-work"
+    - name: Keep Venus for the release
+      uses: actions/upload-artifact@v4
+      with:
+        name: venus
+        path: venus-out/venus.7z
+        if-no-files-found: error
+    - name: Cache the QEMU with Venus
+      id: qemu-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/qv
+        key: qemu-venus-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/ci/build-qemu-venus.sh') }}
+    - name: Build QEMU 10.2 and virglrenderer with Venus
+      if: steps.qemu-cache.outputs.cache-hit != 'true'
+      run: tools/ci/build-qemu-venus.sh ~/qv "$RUNNER_TEMP/qemu-src"
+    - name: Stage 7-Zip, the downloads and the test programs
+      run: VENUS_7Z=venus-out/venus.7z tools/ci/stage-graphics.sh gfx gfx-cache
+    - name: Run d2dtest, install Mesa, DXVK and Venus from the App Store, run gltest, d3dtest and the frame-rate
+        tests
+      run: |
+        export NOVARUN_QEMU="$HOME/qv/bin/qemu-system-x86_64" LD_LIBRARY_PATH="$HOME/qv/lib/x86_64-linux-gnu"
+        # what the host side was doing when a test hangs (tools/ci/host_watch.py)
+        mkdir -p graphics-out
+        export VIRGL_LOG_LEVEL=debug VIRGL_LOG_FILE="$PWD/graphics-out/virglrenderer-%PID%.log"
+        python3 tools/ci/host_watch.py graphics-out &
+        trap 'kill $! 2>/dev/null || true' EXIT
+        xvfb-run -a -s '-screen 0 1280x1024x24' \
+          python3 tools/selftest.py --suite graphics --gfx gfx --img build/nova.img --out graphics-out \
+          --junit graphics-out/junit.xml --summary "$GITHUB_STEP_SUMMARY"
+    - name: Keep the serial log and screenshots
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: graphics-out
+        path: graphics-out
+        if-no-files-found: ignore
+  ci-result:
+    name: CI result
+    needs:
+    - checks
+    - build
+    - compatibility
+    - boot-test
+    - graphics-test
+    - boot-result
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@v4
+    - name: Require every selected job
+      run: python3 tools/ci/results.py ci
+      env:
+        NEEDS_JSON: ${{ toJSON(needs) }}
   publish-iso:
     name: Publish nova.iso
-    needs: [boot-test, graphics-test]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+    - ci-result
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci-result.result == 'success'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -326,69 +239,75 @@ jobs:
       group: publish-iso
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: nova-iso
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: venus
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: nova-boot
-          path: boot
-
-      # The rolling build's own update channel, for systems whose channel is
-      # releases/download/latest/novaos-update.txt (docs/updates.md): the
-      # tested kernel stamped NOVA_VERSION+dev.<commit time, UTC, YYYYMMDDHHMMSS>, which an
-      # installed NovaOS orders after that release and the dev builds
-      # before it, and before the next release
-      - name: Make the update channel of this build
-        env:
-          NOVAOS_UPDATE_SIGNING_KEY: ${{ secrets.NOVAOS_UPDATE_SIGNING_KEY }}
-        run: |
-          sign=()
-          if [ -n "$NOVAOS_UPDATE_SIGNING_KEY" ]; then
-            sign=(--sign-env NOVAOS_UPDATE_SIGNING_KEY)
-          else
-            echo "::warning::no NOVAOS_UPDATE_SIGNING_KEY secret: the latest build's novaos-update.txt is unsigned (docs/releasing.md)"
-          fi
-          base=$(sed -n 's/^#define NOVA_VERSION "\(.*\)"$/\1/p' kernel/ke/version.h)
-          dev="$base+dev.$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d%H%M%S "$GITHUB_SHA")"
-          python3 tools/mkupdate.py channel --kernel boot/kernel.elf --loader boot/bootx64.efi --version "$dev" "${sign[@]}" \
-            --notes "NovaOS $dev, a development build of main at ${GITHUB_SHA::7}: https://github.com/$GITHUB_REPOSITORY/releases/tag/latest"
-          cat channel/novaos-update.txt
-
-      # Until the first tagged release (v0.1.0) this is the newest build
-      # anyone can download, so it carries GitHub's "Latest" mark; after it,
-      # it is a pre-release and the tagged release keeps the mark
-      - name: Move the "latest" release to this commit and attach the ISO
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          sha256sum nova.iso > nova.iso.sha256
-          git tag -f latest "$GITHUB_SHA"
-          git push -f origin refs/tags/latest
-          notes="NovaOS built from main at ${GITHUB_SHA::7} by CI run ${GITHUB_RUN_ID}.
-          Boot it with UEFI firmware; see the README for the QEMU command line."
-          mark=(--latest)
-          if gh release list --exclude-pre-releases --exclude-drafts --limit 100 \
-               --json tagName --jq '.[].tagName' | grep -q '^v[0-9]'; then
-            mark=(--prerelease --latest=false)
-            notes="$notes
-          This is a development build; the newest tested release is
-          https://github.com/dean-plude/os/releases/latest
-          An installed NovaOS follows these builds with
-          update channel https://github.com/dean-plude/os/releases/download/latest/novaos-update.txt"
-          fi
-          files=(nova.iso nova.iso.sha256 venus.7z channel/kernel.elf channel/bootx64.efi channel/novaos-update.txt)
-          if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest "${files[@]}" --clobber
-            gh release edit latest --title "NovaOS (latest main)" --notes "$notes" "${mark[@]}"
-          else
-            gh release create latest "${files[@]}" \
-              --title "NovaOS (latest main)" --notes "$notes" "${mark[@]}"
-          fi
+    - uses: actions/checkout@v4
+    - name: Require current main before publication
+      run: test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+    - uses: actions/download-artifact@v4
+      with:
+        name: nova-iso
+    - uses: actions/download-artifact@v4
+      with:
+        name: venus
+    - uses: actions/download-artifact@v4
+      with:
+        name: nova-boot
+        path: boot
+    - name: Make the update channel of this build
+      env:
+        NOVAOS_UPDATE_SIGNING_KEY: ${{ secrets.NOVAOS_UPDATE_SIGNING_KEY }}
+      run: |
+        sign=()
+        if [ -n "$NOVAOS_UPDATE_SIGNING_KEY" ]; then
+          sign=(--sign-env NOVAOS_UPDATE_SIGNING_KEY)
+        else
+          echo "::warning::no NOVAOS_UPDATE_SIGNING_KEY secret: the latest build's novaos-update.txt is unsigned (docs/releasing.md)"
+        fi
+        base=$(sed -n 's/^#define NOVA_VERSION "\(.*\)"$/\1/p' kernel/ke/version.h)
+        dev="$base+dev.$(TZ=UTC git show -s --format=%cd --date=format-local:%Y%m%d%H%M%S "$GITHUB_SHA")"
+        python3 tools/mkupdate.py channel --kernel boot/kernel.elf --loader boot/bootx64.efi --version "$dev" "${sign[@]}" \
+          --notes "NovaOS $dev, a development build of main at ${GITHUB_SHA::7}: https://github.com/$GITHUB_REPOSITORY/releases/tag/latest"
+        cat channel/novaos-update.txt
+    - name: Move the "latest" release to this commit and attach the ISO
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA"
+        sha256sum nova.iso > nova.iso.sha256
+        git tag -f latest "$GITHUB_SHA"
+        git push -f origin refs/tags/latest
+        notes="NovaOS built from main at ${GITHUB_SHA::7} by CI run ${GITHUB_RUN_ID}.
+        Boot it with UEFI firmware; see the README for the QEMU command line."
+        mark=(--latest)
+        if gh release list --exclude-pre-releases --exclude-drafts --limit 100 \
+             --json tagName --jq '.[].tagName' | grep -q '^v[0-9]'; then
+          mark=(--prerelease --latest=false)
+          notes="$notes
+        This is a development build; the newest tested release is
+        https://github.com/dean-plude/os/releases/latest
+        An installed NovaOS follows these builds with
+        update channel https://github.com/dean-plude/os/releases/download/latest/novaos-update.txt"
+        fi
+        files=(nova.iso nova.iso.sha256 venus.7z channel/kernel.elf channel/bootx64.efi channel/novaos-update.txt)
+        if gh release view latest >/dev/null 2>&1; then
+          gh release upload latest "${files[@]}" --clobber
+          gh release edit latest --title "NovaOS (latest main)" --notes "$notes" "${mark[@]}"
+        else
+          gh release create latest "${files[@]}" \
+            --title "NovaOS (latest main)" --notes "$notes" "${mark[@]}"
+        fi
+    timeout-minutes: 15
+  boot-result:
+    name: Build and boot-test
+    needs:
+    - checks
+    - build
+    - boot-test
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@v4
+    - name: Require build and every OS suite
+      env:
+        NEEDS_JSON: ${{ toJSON(needs) }}
+      run: python3 tools/ci/results.py boot

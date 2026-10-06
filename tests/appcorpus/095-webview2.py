@@ -29,10 +29,10 @@ APP = App('WebView2', 'evergreen', 'https://go.microsoft.com/fwlink/?linkid=2124
           [Test('run Edge Update\'s install step',
                 rf'cmd.exe /c "start /wait {A}\WebView2\{INSTALLER} /silent /install & '
                 r'type C:\AppData\Local\Temp\MicrosoftEdgeUpdate.log"',
-                [r'\[GoopdateImpl::DoInstall\]', r'InstallApp returned 0x0\b'], timeout=600),
+                [r'\[GoopdateImpl::DoInstall\]', r'InstallApp returned(?:\]\[| )0x0\b'], timeout=600),
            Test('load a page and execute JavaScript',
                 rf'cmd.exe /c "cd /d {A}\WebView2 & wv2host"',
                 [r'wv2host: runtime [^\r\n]+', r'wv2host: environment\r?\n',
                  r'wv2host: controller \(browser process \d+\)', r'wv2host: navigation ok\r?\n',
                  r'wv2host: script "NovaOS WebView2 / 42"\r?\n', r'wv2host: done\r?\n'], timeout=600)],
-          unpack=unpack, extra=[SDK], mutable=True)
+          unpack=unpack, extra=[SDK], mutable=True, online=True)

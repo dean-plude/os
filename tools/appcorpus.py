@@ -39,7 +39,7 @@ The exit status counts failed and unrun programs; skips do not fail the run.  --
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
-import argparse, http.server, math, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
+import argparse, json, http.server, math, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT, accel_args
@@ -67,7 +67,8 @@ class App:
     with tests/reference/NAME.png; @interact(nova, echo) runs before the
     screenshot (typing into it) and returns why it failed, or None.  A
     windowed program's tests whose command does not start a program run in
-    the Terminal after its window closed.  @net gives NovaOS QEMU's user
+    the Terminal after its window closed.  @online enables QEMU networking
+    without a local server.  @net gives NovaOS QEMU's user
     network and starts the echo server; @https also starts the HTTPS
     server (https://10.0.2.2:8443/ in NovaOS) and sets app.ca to its CA
     certificate's file before @unpack runs.  @mic: the program hears a tone
@@ -94,14 +95,14 @@ class App:
     pad("buttons=0x1000 lx=32767") (padpeer's control lines)."""
     def __init__(self, name, version, url, dir, tests, unpack='zip', strip=0, extra=(),
                  gui=False, net=False, interact=None, https=False, store=None, processes=False,
-                 mic=False, sound=None, runtimes=(), pad=None, mutable=False):
+                 mic=False, sound=None, runtimes=(), pad=None, mutable=False, online=False):
         self.name, self.version, self.url, self.dir, self.tests = name, version, url, dir, tests
         self.unpack, self.strip, self.extra = unpack, strip, list(extra)
         self.gui, self.net, self.interact = gui, net, interact
         self.https, self.store, self.ca, self.processes = https, store, None, processes
         self.mic, self.sound = mic, sound
         self.runtimes = list(runtimes)
-        self.pad, self.mutable = pad, mutable
+        self.pad, self.mutable, self.online = pad, mutable, online
 
 
 def pad(line):
@@ -412,6 +413,51 @@ def compare(shot, ref, size=(640, 400), level=48):
     return diff.histogram()[255] / (size[0] * size[1])
 
 
+def network_required(apps):
+    """Network access belongs to the selected apps, independently of fixtures."""
+    return any(app.net or app.https or app.online for app in apps)
+
+
+def reference_desktop(nova, work):
+    """Select Sunset via the desktop menu without opening a cascading window.
+
+    References use Sunset. Normal boots retain Aurora; application screenshots
+    still compare the entire screen with the existing references and tolerance.
+    Fail setup if the wallpaper selection did not take effect.
+    """
+    from PIL import Image, ImageChops
+    nova.click(1100, 100, button=2)
+    nova.click(1100, 234)  # Next wallpaper: Aurora -> Sunset
+    nova.move_to(1270, 790)
+    time.sleep(1)
+    shot = os.path.join(work, 'reference-desktop.png')
+    nova.shot(shot)
+    region = (1100, 40, 1150, 80)  # clear desktop, outside Terminal and icons
+    with Image.open(shot) as im:
+        actual = im.convert('RGB').resize((1280, 800), Image.BOX).crop(region)
+    with Image.open(os.path.join(REFERENCES, 'this-pc.png')) as im:
+        expected = im.convert('RGB').crop(region)
+    extrema = ImageChops.difference(actual, expected).getextrema()
+    if max(high for low, high in extrema) > 12:
+        raise RuntimeError('reference desktop setup failed: Sunset wallpaper did not match')
+
+
+def selected_apps(apps, only):
+    if only is None:
+        selected = list(apps)
+    else:
+        names = only.split(',')
+        if not names or any(not n for n in names) or len(names) != len(set(names)):
+            raise ValueError('invalid or duplicate corpus selection')
+        selected = [app for app in apps if app.name in names]
+        missing = set(names) - {app.name for app in selected}
+        if missing:
+            raise ValueError('unknown corpus programs: ' + ', '.join(sorted(missing)))
+    if not selected:
+        raise ValueError('corpus selection must not be empty')
+    return selected
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
@@ -426,7 +472,10 @@ def main():
     ap.add_argument('--max-diff', type=float, default=0.03, help='share of differing pixels allowed')
     a = ap.parse_args()
 
-    apps = [x for x in APPS if not a.only or x.name in a.only.split(',')]
+    try:
+        apps = selected_apps(APPS, a.only)
+    except ValueError as e:
+        ap.error(str(e))
     os.makedirs(a.out, exist_ok=True)
     a.cache = DownloadCache(a.cache, a.mutable_max_age, a.download_lock,
                             os.path.join(a.out, 'downloads.json'))
@@ -481,8 +530,8 @@ def main():
         # memory runs short and read back from the data disk when wanted, so
         # 6 GB is room enough; the data disk needs room for all of C:
         nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=6144, data_mb=12288,
-                    extra_args=extra,
-                    net=echo is not None or https is not None, rec=rec, wav=wav)
+                    extra_args=extra, serial_path=os.path.join(a.out, 'serial-raw.log'),
+                    net=network_required(staged), rec=rec, wav=wav)
     except RuntimeError as e:
         print(e)
         if padpeer:
@@ -495,6 +544,12 @@ def main():
     log = nova.boot_log
     stopped = None
     try:
+        if any(app.gui or app.name == 'NovaOS' for app in staged):
+            try:
+                reference_desktop(nova, a.out)
+            except RuntimeError as e:
+                stopped = str(e)
+                print(f'FAIL  {stopped}', flush=True)
         for app in staged:
             if stopped:
                 results[app.name] = (NOT_RUN + ': ' + stopped, 0, [])
@@ -767,6 +822,14 @@ def report(a, apps, results):
                f'{counts["skipped"]} skipped, {counts["not run"]} not run '
                f'({len(apps)} programs selected)')
     print('\n' + summary)
+    if getattr(a, 'out', None):
+        outcomes = [{'name': app.name, 'version': app.version,
+                     'outcome': result_status(results.get(app.name, (NOT_RUN + ': no result recorded', 0, []))[0]),
+                     'reason': results.get(app.name, (NOT_RUN + ': no result recorded', 0, []))[0]}
+                    for app in apps]
+        with open(os.path.join(a.out, 'results.json'), 'w') as out:
+            json.dump({'counts': counts, 'programs': outcomes}, out, indent=2)
+
     if a.summary:
         with open(a.summary, 'a') as f:
             f.write(f'### NovaOS app corpus: {summary}\n\n')

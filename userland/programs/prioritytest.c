@@ -419,7 +419,7 @@ static int under_tcg(void)
 {
     unsigned a, b, c, d;
     __cpuid(0x40000000, a, b, c, d);
-    return b == 0x47435443 && c == 0x43544347 && d == 0x47435443;     /* "TCGTCGTCGTCG" */
+    return b == 0x54474354 && c == 0x43544743 && d == 0x47435447;     /* "TCGTCGTCGTCG" */
 }
 
 static int check_network(void)
