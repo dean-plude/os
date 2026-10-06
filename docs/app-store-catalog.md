@@ -98,3 +98,7 @@ The host compatibility harness reads this same bundled JSON file when staging
 Store applications and runtimes. It requires a unique matching entry and the
 fixture's exact download URL; catalog and parser edits select the native corpus
 checks. It no longer attempts to extract catalog rows from the Store C source.
+
+Graphics staging resolves Mesa and DXVK downloads through the same JSON catalog
+lookup as compatibility fixtures. The graphics download cache includes the
+catalog hash so catalog changes also refresh its cache identity.
