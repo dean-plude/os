@@ -96,6 +96,9 @@ jobs:
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
 
+      - name: Host-side compatibility and build regressions
+        run: python3 -m unittest discover -s tests/tools -v
+
       - name: DLL and program manifests load
         run: python3 tools/build_userland.py --check
 
@@ -129,7 +132,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
+            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 p7zip-full \
             qemu-system-x86 qemu-system-gui ovmf mtools dosfstools acpica-tools xorriso \
             pulseaudio pulseaudio-utils ccache
           echo /usr/lib/ccache >> "$GITHUB_PATH"

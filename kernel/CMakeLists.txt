@@ -308,8 +308,9 @@ add_custom_command(
     DEPENDS ${USERLAND_DEPS}
             "${CMAKE_CURRENT_SOURCE_DIR}/../tools/build_userland.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/../tools/build_netsurf.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/bundle_firefox.py"
             "${CMAKE_CURRENT_SOURCE_DIR}/ke/syscall.h"
-    COMMENT "Building the Windows userland (ntdll, kernel32, msvcrt, programs, NetSurf)")
+    COMMENT "Building the Windows userland (ntdll, kernel32, msvcrt, programs, NetSurf, Firefox)")
 list(APPEND KERNEL_C_SOURCES "${USERLAND_C}")
 
 # C object library with kernel flags

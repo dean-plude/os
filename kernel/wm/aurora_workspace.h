@@ -22,7 +22,7 @@ static const struct { const char *name; Glyph glyph; ActKind kind; int app; } g_
     { "Home", GL_FOLDER, ACT_APP, APP_EXPLORER },
     { "Apps", GL_WINDOWS, ACT_START, 0 },
     { "Create", GL_PLUS, ACT_APP, APP_NOTEPAD },
-    { "Explore", GL_NETWORK, ACT_APP, APP_NETSURF },
+    { "Explore", GL_NETWORK, ACT_APP, APP_FIREFOX },
     { "Notes", GL_DOCUMENTS, ACT_APP, APP_NOTEPAD },
     { "Calendar", GL_FILE, ACT_APP, APP_CALENDAR },
     { "Photos", GL_PICTURES, ACT_APP, APP_PHOTOS },
@@ -151,7 +151,7 @@ static void draw_aurora_workspace(void)
     static const struct { const char *title; AppId app; } shortcuts[] = {
         { "Browse your files", APP_EXPLORER },
         { "Write a note", APP_NOTEPAD },
-        { "Explore the web", APP_NETSURF },
+        { "Explore the web", APP_FIREFOX },
     };
     for (int i = 0; i < 3; i++) {
         GdiRect button = RECT(x + 12, 416 + i * 40, 208, 36);

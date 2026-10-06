@@ -283,7 +283,7 @@ static const struct {
     { ICON_FOLDER,  "Downloads", "\\Downloads",  -1 },
     { ICON_PHOTOS,  "Pictures",  "\\Pictures",   -1 },
     { ICON_PROJECT, "Projects",  "\\Projects",   -1 },
-    { ICON_APP,     "NetSurf",   NULL,           APP_NETSURF },
+    { ICON_APP,     "Firefox",   NULL,           APP_FIREFOX },
     { ICON_APP,     "Install NovaOS", NULL,      APP_SETUP },   /* last: only on the installation disc */
 };
 /* the installer's icon shows when running from the installation disc */
@@ -616,12 +616,12 @@ static int  g_query_len;
 static int  g_sel;                     /* selected search result */
 
 static const AppId g_pinned[] = {
-    APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS, APP_CALENDAR, APP_NETSURF,
+    APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS, APP_CALENDAR, APP_FIREFOX,
     APP_STORE,
 };
 #define N_PINNED ((int)(sizeof(g_pinned) / sizeof(g_pinned[0])))
 static const char *g_pinned_cap[N_PINNED] = {
-    "Terminal", "Files", "Notepad", "Settings", "Calendar", "NetSurf", "Store",
+    "Terminal", "Files", "Notepad", "Settings", "Calendar", "Firefox", "Store",
 };
 
 /* Programs installed in C:\Programs (rescanned when the menu opens) */
@@ -1023,7 +1023,7 @@ typedef enum { DK_START, DK_SEARCH, DK_APP, DK_TASK } DockKind;
 typedef struct { DockKind kind; int arg; char tip[WM_TITLE_MAX]; GdiRect r; } DockItem;
 
 static const AppId g_dock_apps[] = {
-    APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS, APP_CALENDAR, APP_NETSURF,
+    APP_TERMINAL, APP_EXPLORER, APP_NOTEPAD, APP_SETTINGS, APP_CALENDAR, APP_FIREFOX,
     APP_STORE,
 };
 #define N_DOCK_APPS ((int)(sizeof(g_dock_apps) / sizeof(g_dock_apps[0])))
