@@ -18,10 +18,10 @@ def docs_only(paths):
 def scope(event, paths):
     code = event not in {'pull_request', 'merge_group'} or not docs_only(paths)
     corpus = code and (not paths or event not in {'pull_request', 'merge_group'} or any(
-        p.startswith(('tests/appcorpus/', 'tests/reference/', 'tests/tools/',
+        p.startswith(('userland/store/', 'tests/appcorpus/', 'tests/reference/', 'tests/tools/',
                       'tools/ci/', '.github/')) or
         p in {'tools/appcorpus.py', 'tools/download_cache.py', 'tools/novarun.py',
-              'kernel/apps/store.c', 'tools/bundle_firefox.py'} for p in paths))
+              'kernel/apps/store.c', 'kernel/apps/store_catalog.h', 'tools/bundle_firefox.py'} for p in paths))
     return {'code': code, 'corpus': corpus}
 
 

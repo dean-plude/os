@@ -631,6 +631,9 @@ samples = os.path.join(HERE, 'samples')
 for n in sorted(os.listdir(samples)):
     built.append((f'\\Pictures\\{n}', os.path.join(samples, n)))
 
+# The Store's offline JSON catalog; refreshed copies persist separately.
+built.append(('\\Windows\\AppStore\\default-catalog.json', os.path.join(HERE, 'store', 'catalog.json')))
+
 # 3b. the NetSurf web browser
 if os.environ.get('NOVA_NO_NETSURF') != '1':
     built += results['netsurf:link']
