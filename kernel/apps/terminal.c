@@ -253,6 +253,7 @@ static void cmd_help(Term *t)
         "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
         "  store install <name>  get a program from the App Store\n"
         "  store open          open the App Store window\n"
+        "  store refresh       update the JSON app catalog\n"
         "  store close         close the App Store window\n"
         "  store updates       open the App Store's updates for NovaOS\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
@@ -1784,8 +1785,9 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "store")) {
         if (argc == 2 && is(argv[1], "close")) tprint(t, StoreClose());
         else if (argc == 2 && is(argv[1], "open")) { StoreOpen(); tprint(t, "Opened the App Store."); }
+        else if (argc == 2 && is(argv[1], "refresh")) tprint(t, StoreRefresh());
         else if (argc == 2 && is(argv[1], "updates")) { StoreShowUpdates(); tprint(t, "Opened the App Store's updates."); }
-        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store updates | store close");
+        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store refresh | store updates | store close");
         else {
             char name[64];
             int n = 0;

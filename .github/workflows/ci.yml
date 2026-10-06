@@ -107,6 +107,9 @@ jobs:
           python3 tools/selftest.py --suite devices --list
           python3 -c "import sys; sys.path.insert(0, 'tools'); import appcorpus; print(len(appcorpus.APPS), 'corpus programs')"
 
+      - name: JSON App Store catalog and refresh regressions
+        run: python3 -m unittest discover -s tests/tools -p test_store_catalog.py -v
+
       - name: Generated doc regions untouched, fragments build
         if: github.event_name == 'pull_request' && github.head_ref != 'docs/regenerate'
         run: python3 tools/docgen.py --check-pr HEAD^1

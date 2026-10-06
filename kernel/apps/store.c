@@ -2,7 +2,7 @@
  * store.c — App Store: a catalog of open-source Windows programs that
  * NovaOS downloads to C:\Downloads and runs unmodified.
  *
- * The catalog is built in (name, publisher, download URL, and where the
+ * The catalog is read from JSON (name, publisher, download URL, and where the
  * installed program ends up).  "Get" fetches the installer over HTTP(S)
  * with the same asynchronous network operations the Terminal's wget
  * uses; "Install" runs the downloaded installer; "Open" starts the
@@ -62,159 +62,11 @@ typedef struct {
                                 * manifests (*_icd.*.json) among them are registered */
 } StoreApp;
 
-#define GH "https://github.com/"
-static const StoreApp g_catalog[] = {
-    { "7-Zip", "Igor Pavlov", "File archiver with a high compression ratio (7z, zip, tar, ...)",
-      CAT_UTILITIES, "https://www.7-zip.org/a/7z2603-x64.exe", "7z2603-x64.exe", NULL,
-      "7-Zip\\7zFM.exe", KIND_SETUP, 2, "Tested on NovaOS; the Store uses it to unpack downloads", "7z", GDI_C(0x25, 0x6E, 0xB8) },
-    { "VLC media player", "VideoLAN", "Plays most video and audio files, discs and streams",
-      CAT_MEDIA, "https://get.videolan.org/vlc/3.0.21/win64/vlc-3.0.21-win64.zip", "vlc-3.0.21-win64.zip", "VideoLAN",
-      "VideoLAN\\**\\vlc.exe", KIND_ARCHIVE, 60, "64-bit zip; plays video and audio on NovaOS (nightly corpus)", "VLC", GDI_C(0xF0, 0x7E, 0x1A) },
-    { "Firefox", "Mozilla", "Fast, private web browser",
-      CAT_INTERNET, "https://archive.mozilla.org/pub/firefox/releases/157.0/win64/en-US/Firefox%20Setup%20157.0.exe", "Firefox-Setup-x64.exe", "Mozilla Firefox",
-      "Mozilla Firefox\\core\\firefox.exe", KIND_ARCHIVE, 80, "Unpacked from the full installer; loads HTTPS pages on NovaOS (nightly corpus)", "Fx", GDI_C(0xE6, 0x5A, 0x1C) },
-    { "Thunderbird", "Mozilla", "Email, calendar and chat client",
-      CAT_INTERNET, "https://download.mozilla.org/?product=thunderbird-latest-ssl&os=win64&lang=en-US", "Thunderbird-Setup-x64.exe", "Mozilla Thunderbird",
-      "Mozilla Thunderbird\\core\\thunderbird.exe", KIND_ARCHIVE, 75, "Unpacked from the full installer; same runtime as Firefox", "Tb", GDI_C(0x1D, 0x66, 0xB4) },
-    { "Notepad++", "Don Ho", "Source code editor with syntax highlighting and plugins",
-      CAT_DEVELOPER, GH "notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.3/npp.8.8.3.portable.x64.zip", "npp.8.8.3.portable.x64.zip", "Notepad++",
-      "Notepad++\\**\\notepad++.exe", KIND_ARCHIVE, 7, "64-bit portable zip; opens and edits", "N++", GDI_C(0x8C, 0xC0, 0x44) },
-    { "GIMP", "The GIMP Team", "Image editor for photo retouching, composition and authoring",
-      CAT_GRAPHICS, "https://download.gimp.org/gimp/v3.0/windows/gimp-3.0.4-setup.exe", "gimp-3.0.4-setup.exe", NULL,
-      NULL, KIND_SETUP, 260, "32-bit installer (Inno Setup) for 64-bit GIMP; untested", "G", GDI_C(0x5C, 0x4A, 0x36) },
-    { "Inkscape", "Inkscape Project", "Vector graphics editor (SVG)",
-      CAT_GRAPHICS, "https://inkscape.org/release/inkscape-1.4.2/windows/64-bit/compressed-7z/dl/", "inkscape-1.4.2-x64.7z", "Inkscape",
-      "Inkscape\\**\\inkscape.exe", KIND_ARCHIVE, 110, "64-bit 7z archive; GTK application, untested", "Ik", GDI_C(0x2A, 0x2A, 0x2A) },
-    { "Krita", "Krita Foundation", "Digital painting and illustration",
-      CAT_GRAPHICS, "https://download.kde.org/stable/krita/5.3.4/krita-x64-5.3.4.zip", "krita-x64-5.3.4.zip", "Krita",
-      "Krita\\**\\krita.exe", KIND_ARCHIVE, 220, "64-bit portable zip; starts on NovaOS (nightly corpus); needs Mesa 3D (see Runtimes)", "Kr", GDI_C(0x9C, 0x3A, 0x8A) },
-    { "Audacity", "Audacity Team", "Multi-track audio editor and recorder",
-      CAT_MEDIA, GH "audacity/audacity/releases/download/Audacity-3.7.4/audacity-win-3.7.4-64bit.zip", "audacity-win-3.7.4-64bit.zip", "Audacity",
-      "Audacity\\**\\Audacity.exe", KIND_ARCHIVE, 20, "64-bit zip; records, edits and saves audio on NovaOS (nightly corpus)", "Au", GDI_C(0x1C, 0x1C, 0x60) },
-    { "HandBrake", "HandBrake Team", "Video transcoder: convert video to modern formats",
-      CAT_MEDIA, GH "HandBrake/HandBrake/releases/download/1.9.2/HandBrake-1.9.2-x86_64-Win_GUI.zip", "HandBrake-1.9.2-x86_64-Win_GUI.zip", "HandBrake",
-      "HandBrake\\**\\HandBrake.exe", KIND_ARCHIVE, 25, "64-bit zip; needs the .NET runtime (see Runtimes)", "HB", GDI_C(0xB8, 0x3A, 0x2E) },
-    { "OBS Studio", "OBS Project", "Live streaming and screen recording",
-      CAT_MEDIA, GH "obsproject/obs-studio/releases/download/31.1.2/OBS-Studio-31.1.2-Windows-x64.zip", "OBS-Studio-31.1.2-Windows-x64.zip", "obs-studio",
-      "obs-studio\\**\\obs64.exe", KIND_ARCHIVE, 150, "64-bit zip; untested", "OBS", GDI_C(0x30, 0x30, 0x30) },
-    { "LibreOffice", "The Document Foundation", "Writer, Calc, Impress: a full office suite",
-      CAT_OFFICE, "https://downloadarchive.documentfoundation.org/libreoffice/old/25.2.5.2/win/x86_64/LibreOffice_25.2.5.2_Win_x86-64.msi", "LibreOffice_25.2.5.2_Win_x86-64.msi", NULL,
-      "LibreOffice\\program\\soffice.exe", KIND_SETUP, 350, "64-bit Windows Installer package; untested", "Lo", GDI_C(0x18, 0xA3, 0x03) },
-    { "SumatraPDF", "Krzysztof Kowalczyk", "Small, fast PDF, EPUB and comic book reader",
-      CAT_OFFICE, "https://www.sumatrapdfreader.org/dl/rel/3.5.2/SumatraPDF-3.5.2-64.exe", "SumatraPDF-3.5.2-64.exe", NULL,
-      NULL, KIND_PORTABLE, 8, "64-bit portable program: runs straight from Downloads; 3.4.6 opens and renders PDFs on NovaOS (nightly corpus)", "Su", GDI_C(0xE8, 0xB0, 0x22) },
-    { "KeePassXC", "KeePassXC Team", "Password manager with an encrypted database",
-      CAT_UTILITIES, GH "keepassxreboot/keepassxc/releases/download/2.7.10/KeePassXC-2.7.10-Win64.zip", "KeePassXC-2.7.10-Win64.zip", "KeePassXC",
-      "KeePassXC\\**\\KeePassXC.exe", KIND_ARCHIVE, 40, "64-bit portable zip; Qt application, untested", "Kp", GDI_C(0x2C, 0x9A, 0x4C) },
-    { "qBittorrent", "qBittorrent project", "BitTorrent client without ads",
-      CAT_INTERNET, "https://sourceforge.net/projects/qbittorrent/files/qbittorrent-win32/qbittorrent-5.1.2/qbittorrent_5.1.2_x64_setup.exe/download", "qbittorrent_5.1.2_x64_setup.exe", NULL,
-      NULL, KIND_SETUP, 40, "32-bit installer (NSIS); Qt application, untested", "qB", GDI_C(0x2E, 0x7A, 0xC8) },
-    { "PuTTY", "Simon Tatham", "SSH and telnet client",
-      CAT_INTERNET, "https://the.earth.li/~sgtatham/putty/latest/w64/putty.exe", "putty.exe", NULL,
-      NULL, KIND_PORTABLE, 2, "64-bit portable program: runs straight from Downloads; raw connections work on NovaOS (nightly corpus), SSH untested", "Pu", GDI_C(0x1F, 0x1F, 0x1F) },
-    { "WinSCP", "Martin Prikryl", "SFTP, FTP and SCP file transfer client",
-      CAT_INTERNET, "https://sourceforge.net/projects/winscp/files/WinSCP/6.5.3/WinSCP-6.5.3-Setup.exe/download", "WinSCP-6.5.3-Setup.exe", NULL,
-      NULL, KIND_SETUP, 12, "32-bit program and installer (Inno Setup); untested", "Ws", GDI_C(0x2B, 0x90, 0x3C) },
-    { "Git", "Git for Windows", "The git version control system (MinGit, command line)",
-      CAT_DEVELOPER, GH "git-for-windows/git/releases/download/v2.51.0.windows.1/MinGit-2.51.0-64-bit.zip", "MinGit-2.51.0-64-bit.zip", "Git",
-      "Git\\cmd\\git.exe", KIND_ARCHIVE, 40, "64-bit zip; git, its bash and clone/fetch/push run on NovaOS", "git", GDI_C(0xF0, 0x50, 0x32) },
-    { "Python", "Python Software Foundation", "The Python 3 programming language (embeddable)",
-      CAT_DEVELOPER, "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip", "python-3.13.7-embed-amd64.zip", "Python",
-      "Python\\python.exe", KIND_ARCHIVE, 11, "64-bit zip; opens in a Terminal; Python runs on NovaOS", "Py", GDI_C(0x36, 0x71, 0xA6) },
-    { "WinMerge", "WinMerge Team", "Compare and merge files and folders",
-      CAT_DEVELOPER, GH "WinMerge/winmerge/releases/download/v2.16.50/winmerge-2.16.50-x64-exe.zip", "winmerge-2.16.50-x64-exe.zip", "WinMerge",
-      "WinMerge\\**\\WinMergeU.exe", KIND_ARCHIVE, 12, "64-bit portable zip; compares files on NovaOS (nightly corpus)", "WM", GDI_C(0xE0, 0xB8, 0x30) },
-    { "ShareX", "ShareX Team", "Screen capture and file sharing",
-      CAT_UTILITIES, GH "ShareX/ShareX/releases/download/v17.1.0/ShareX-17.1.0-portable.zip", "ShareX-17.1.0-portable.zip", "ShareX",
-      "ShareX\\**\\ShareX.exe", KIND_ARCHIVE, 10, "Portable zip; needs the .NET runtime (see Runtimes)", "Sx", GDI_C(0x20, 0x90, 0x60) },
-    { "Roblox", "Roblox Corporation", "Play millions of games made by the Roblox community",
-      CAT_MEDIA, "https://www.roblox.com/download/client?os=win", "RobloxPlayerInstaller.exe", NULL,
-      "\\AppData\\Local\\Roblox\\Versions\\**\\RobloxPlayerBeta.exe", KIND_SETUP, 15,
-      "64-bit installer; installs on NovaOS, but the game client stops in its Hyperion anti-cheat (docs/compatibility.md)",
-      "Rb", GDI_C(0x33, 0x5F, 0xFF) },
-    { "OpenTTD", "OpenTTD team", "Transport tycoon game: build railways, roads, ships and planes (free on GOG)",
-      CAT_MEDIA, "https://cdn.openttd.org/openttd-releases/15.3/openttd-15.3-windows-win64.exe", "openttd-15.3-windows-win64.exe", NULL,
-      "OpenTTD\\openttd.exe", KIND_SETUP, 15,
-      "64-bit installer (NSIS); installs and reaches its main menu on NovaOS with the free OpenGFX graphics (nightly corpus)",
-      "TT", GDI_C(0x2E, 0x6B, 0x3A) },
-    { "ScummVM", "ScummVM team", "Plays classic adventure games, such as Beneath a Steel Sky (free on GOG)",
-      CAT_MEDIA, "https://downloads.scummvm.org/frs/scummvm/2026.3.0/scummvm-2026.3.0-win32.exe", "scummvm-2026.3.0-win32.exe", NULL,
-      "ScummVM\\scummvm.exe", KIND_SETUP, 130,
-      "32-bit installer (Inno Setup) for 64-bit ScummVM; plays the freeware Beneath a Steel Sky on NovaOS (nightly corpus)",
-      "SV", GDI_C(0x1E, 0x8C, 0x2E) },
-    { "Steam", "Valve", "Valve's game store and launcher",
-      CAT_MEDIA, "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe", "SteamSetup.exe", NULL,
-      "Steam\\Steam.exe", KIND_SETUP, 3,
-      "32-bit installer (NSIS); installs and updates itself on NovaOS, but its browser does not open the login window yet (docs/compatibility.md)",
-      "St", GDI_C(0x17, 0x1A, 0x21) },
-    { "Teeworlds", "Teeworlds team", "Fast 2D online shooter with cute round characters (free and open source)",
-      CAT_MEDIA, GH "teeworlds/teeworlds/releases/download/0.7.5/teeworlds-0.7.5-win64.zip", "teeworlds-0.7.5-win64.zip", "Teeworlds",
-      "Teeworlds\\**\\teeworlds.exe", KIND_ARCHIVE, 25,
-      "64-bit zip; starts in full screen with its music on NovaOS (nightly corpus); needs Mesa 3D (see Runtimes)",
-      "TW", GDI_C(0xC8, 0x6A, 0x3C) },
-    { "OpenTyrian", "OpenTyrian team", "Tyrian 2.1, the classic vertical shoot 'em up (freeware game, open-source engine)",
-      CAT_MEDIA, GH "opentyrian/opentyrian/releases/download/v2.1.20260913/opentyrian-v2.1.20260913-windows-x86_64.zip", "opentyrian-v2.1.20260913-windows-x86_64.zip", "OpenTyrian",
-      "OpenTyrian\\opentyrian\\opentyrian.exe", KIND_ARCHIVE, 7,
-      "64-bit zip with the freeware game data; draws with Direct3D 9 on NovaOS (nightly corpus); needs Mesa 3D and DXVK (see Runtimes)",
-      "Ty", GDI_C(0x2A, 0x4E, 0x9A) },
-    { "Blobby Volley 2", "Blobby Volley team", "Head-to-head beach volleyball for two players or against the computer (GPL)",
-      CAT_MEDIA, "https://downloads.sourceforge.net/project/blobby/Blobby%20Volley%202%20%28Win32%29/1.1.1/blobby2-win32-1.1.1.zip", "blobby2-win32-1.1.1.zip", "Blobby Volley 2",
-      "Blobby Volley 2\\blobby-1.1.1\\blobby.exe", KIND_ARCHIVE, 3,
-      "32-bit zip; its full screen switches the display to 800x600 and back on NovaOS (nightly corpus); draws with Direct3D 9 once Mesa 3D and DXVK are installed (see Runtimes)",
-      "BV", GDI_C(0x1E, 0x8C, 0xC8) },
-    { "LBreakout2", "LGames", "Breakout with bonuses, special bricks and dozens of level sets (GPL)",
-      CAT_MEDIA, "https://downloads.sourceforge.net/project/lgames/lbreakout2/2.6/lbreakout2-2.6.5-win64.zip", "lbreakout2-2.6.5-win64.zip", "LBreakout2",
-      "LBreakout2\\lbreakout2-2.6.5\\lbreakout2.exe", KIND_ARCHIVE, 4,
-      "64-bit zip; an SDL 1.2 game (GDI drawing, its full screen switches the display to 640x480) that plays on NovaOS (nightly corpus)",
-      "LB", GDI_C(0xB0, 0x30, 0x60) },
-    { "Cave Story", "Studio Pixel", "Pixel's 2004 freeware platformer, in Aeon Genesis' English translation",
-      CAT_MEDIA, "https://www.cavestory.org/downloads/cavestoryen.zip", "cavestoryen.zip", "Cave Story",
-      "Cave Story\\CaveStory\\Doukutsu.exe", KIND_ARCHIVE, 2,
-      "32-bit freeware; draws with DirectDraw (NovaOS's ddraw.dll, cnc-ddraw) and plays on NovaOS (nightly corpus)",
-      "CS", GDI_C(0xC0, 0x40, 0x30) },
-    { "SuperTux", "SuperTux Development Team", "Tux's classic 2005 jump-and-run, in 26 levels across Antarctica (GPL)",
-      CAT_MEDIA, "https://downloads.sourceforge.net/project/super-tux/supertux/0.1.3/supertux-0.1.3-setup.exe", "supertux-0.1.3-setup.exe", NULL,
-      "SuperTux\\supertux.exe", KIND_SETUP, 8,
-      "32-bit installer (Inno Setup); an SDL 1.2 game that plays on NovaOS with a game pad (winmm joystick) or the keyboard (nightly corpus)",
-      "ST", GDI_C(0x20, 0x60, 0xC0) },
-    /* Runtimes */
-    { ".NET Desktop Runtime 8", "Microsoft (MIT)", "Runs .NET programs such as HandBrake and ShareX (WinForms, WPF)",
-      CAT_RUNTIMES, "https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.zip", "windowsdesktop-runtime-8.0-win-x64.zip", "dotnet",
-      "dotnet\\dotnet.exe", KIND_ARCHIVE, 60, "64-bit zip; .NET console programs run; desktop (WinForms/WPF) apps are untested", ".NET", GDI_C(0x51, 0x2B, 0xD4) },
-    { "Visual C++ Redistributable", "Microsoft", "C++ runtime DLLs (msvcp140, vcruntime140, ...) many programs need",
-      CAT_RUNTIMES, "https://aka.ms/vs/17/release/vc_redist.x64.exe", "vc_redist.x64.exe", NULL,
-      NULL, KIND_SETUP, 25, "32-bit installer; NovaOS also has its own vcruntime140", "VC", GDI_C(0x68, 0x21, 0x7A) },
-    { "OpenJDK 21", "Microsoft Build of OpenJDK", "Java runtime and development kit",
-      CAT_RUNTIMES, "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.zip", "microsoft-jdk-21-windows-x64.zip", "Java",
-      "Java\\**\\bin\\java.exe", KIND_ARCHIVE, 190, "64-bit zip; Java (Temurin 21) runs on NovaOS; this build is untested", "Jv", GDI_C(0xE7, 0x6F, 0x00) },
-    { "Mesa 3D", "Mesa / mesa-dist-win", "Software OpenGL and Vulkan for programs that need 3D without a GPU driver",
-      CAT_RUNTIMES, GH "pal1000/mesa-dist-win/releases/download/24.2.4/mesa3d-24.2.4-release-msvc.7z", "mesa3d-24.2.4-release-msvc.7z", "Mesa3D",
-      "\\Windows\\System32\\opengl32_mesa.dll", KIND_ARCHIVE, 90,
-      "The system OpenGL 4.5 and Vulkan 1.3, drawn on the CPU (llvmpipe, lavapipe), for 64- and 32-bit programs",
-      "GL", GDI_C(0x3B, 0x5B, 0xA0),
-      "x64\\opengl32.dll>opengl32_mesa.dll x64\\libgallium_wgl.dll x64\\libglapi.dll x64\\vulkan_lvp.dll x64\\lvp_icd.x86_64.json "
-      "x86\\opengl32.dll>opengl32_mesa.dll x86\\libgallium_wgl.dll x86\\libglapi.dll x86\\vulkan_lvp.dll x86\\lvp_icd.x86.json" },
-    { "DXVK", "Philip Rebohle / DXVK", "Direct3D 8, 9, 10 and 11 on Vulkan, for games and 3D programs",
-      CAT_RUNTIMES, GH "doitsujin/dxvk/releases/download/v2.5.3/dxvk-2.5.3.tar.gz", "dxvk-2.5.3.tar.gz", "DXVK",
-      "\\Windows\\System32\\d3d11_dxvk.dll", KIND_ARCHIVE, 10,
-      "The system Direct3D 8-11 for 64- and 32-bit programs, drawn on the CPU through Mesa's Vulkan: get Mesa 3D first",
-      "DX", GDI_C(0x10, 0x7C, 0x10),
-      "dxvk-2.5.3\\x64\\d3d8.dll dxvk-2.5.3\\x64\\d3d9.dll>d3d9_dxvk.dll dxvk-2.5.3\\x64\\d3d10core.dll dxvk-2.5.3\\x64\\d3d11.dll>d3d11_dxvk.dll "
-      "dxvk-2.5.3\\x64\\dxgi.dll>dxgi_dxvk.dll "
-      "dxvk-2.5.3\\x32\\d3d8.dll dxvk-2.5.3\\x32\\d3d9.dll>d3d9_dxvk.dll dxvk-2.5.3\\x32\\d3d10core.dll dxvk-2.5.3\\x32\\d3d11.dll>d3d11_dxvk.dll "
-      "dxvk-2.5.3\\x32\\dxgi.dll>dxgi_dxvk.dll" },
-    /* Built by tools/build_venus.py; the CI publishes it beside nova.iso */
-    { "Venus", "Mesa / NovaOS", "Vulkan and OpenGL on the host's GPU when NovaOS runs in QEMU with a 3D virtio-gpu",
-      CAT_RUNTIMES, GH "dean-plude/os/releases/download/latest/venus.7z", "venus.7z", "Venus",
-      "\\Windows\\System32\\opengl32_virgl.dll", KIND_ARCHIVE, 8,
-      "Mesa's Venus and virgl for 64- and 32-bit programs: Vulkan, Direct3D through DXVK, and OpenGL run on the "
-      "host's GPU (QEMU: -device virtio-vga-gl,venus=on,blob=on,hostmem=1G); without that GPU programs keep using Mesa 3D",
-      "VN", GDI_C(0xC0, 0x30, 0x40),
-      "x64\\vulkan_virtio.dll x64\\virtio_icd.x86_64.json x64\\opengl32_virgl.dll x64\\libgallium_virgl.dll "
-      "x86\\vulkan_virtio.dll x86\\virtio_icd.x86.json x86\\opengl32_virgl.dll x86\\libgallium_virgl.dll" },
-};
-#undef GH
-#define N_APPS ((int)(sizeof(g_catalog) / sizeof(g_catalog[0])))
+#include "store_catalog.h"
+
+static StoreCatalog *g_store_catalog;
+#define g_catalog (g_store_catalog->apps)
+#define N_APPS (g_store_catalog ? g_store_catalog->count : 0)
 
 /* -----------------------------------------------------------------------
  * State
@@ -235,8 +87,8 @@ typedef struct {
     UINT16  port;
     bool    https;
     int     redirects;
-    char    msg[N_APPS][72];       /* per-app status line */
-    bool    bad[N_APPS];           /* the status line reports a failure */
+    char    msg[STORE_MAX_APPS][72];       /* per-app status line */
+    bool    bad[STORE_MAX_APPS];           /* the status line reports a failure */
     /* 7-Zip unpacking an archive */
     UmProcess *unpack;
     int     unpack_i;              /* catalog index, or -1 */
@@ -245,6 +97,11 @@ typedef struct {
     /* the Updates page */
     UpdateStatus upd;              /* as last painted */
     bool    upd_pressed;
+    NetOp  *catalog_op;
+    int     catalog_phase, catalog_redirects;
+    char    catalog_host[128], catalog_path[512], catalog_msg[96];
+    UINT16  catalog_port;
+    bool    catalog_pressed;
 } Store;
 
 #define SIDE_W   180
@@ -255,6 +112,118 @@ typedef struct {
 #define TILE     48
 
 static WND *g_store;               /* the one Store window */
+
+/* Read the independently persisted catalog; the image's copy is an offline
+ * fallback, not a C table. UI callbacks hold the file-system lock. */
+static bool catalog_load(Store *s)
+{
+    const char *paths[] = { STORE_CATALOG_PATH, STORE_DEFAULT_PATH };
+    for (int i = 0; i < 2; i++) {
+        RamNode *f = RamfsResolve(NULL, paths[i]);
+        if (!f || f->dir || f->size > STORE_JSON_MAX || !RamfsLoad(f)) continue;
+        StoreCatalog *c = store_catalog_parse(f->data, f->size);
+        if (!c) continue;
+        kfree(g_store_catalog); g_store_catalog = c;
+        strcpy(s->catalog_msg, i ? "Using offline catalog" : "Using saved catalog");
+        kprintf("[STORE] Catalog: loaded %d apps from %s\n", N_APPS, paths[i]);
+        return true;
+    }
+    strcpy(s->catalog_msg, "No valid catalog; refresh");
+    return false;
+}
+
+static void catalog_end(Store *s, const char *msg)
+{
+    if (s->catalog_op) NetRelease(s->catalog_op);
+    s->catalog_op = NULL; s->catalog_phase = DL_NONE;
+    strncpy(s->catalog_msg, msg, sizeof(s->catalog_msg) - 1);
+    s->catalog_msg[sizeof(s->catalog_msg) - 1] = 0;
+    kprintf("[STORE] Catalog: %s\n", s->catalog_msg);
+}
+static bool catalog_target(Store *s, const char *url)
+{
+    bool https;
+    return sc_text(url, 500) && !strchr(url, ' ') && !strncmp(url, "https://", 8) &&
+           NetParseUrl(url, s->catalog_host, sizeof(s->catalog_host), &s->catalog_port,
+                       s->catalog_path, sizeof(s->catalog_path), &https) && https;
+}
+static void catalog_resolve(Store *s)
+{
+    s->catalog_phase = DL_RESOLVE;
+    s->catalog_op = NetResolve(s->catalog_host);
+    if (!s->catalog_op) catalog_end(s, "Catalog: network busy");
+}
+static void catalog_refresh(Store *s)
+{
+    if (s->catalog_op) return;
+    if (s->dl >= 0 || s->unpack) { catalog_end(s, "Finish the app operation first"); return; }
+    if (!NetAvailable()) { catalog_end(s, "Offline; keeping catalog"); return; }
+    char url[512]; strcpy(url, STORE_CHANNEL);
+    RamNode *f = RamfsResolve(NULL, STORE_CHANNEL_PATH);
+    if (f) {
+        if (f->dir || !f->size || f->size >= sizeof(url) || !RamfsLoad(f) || memchr(f->data, 0, f->size)) {
+            catalog_end(s, "Invalid catalog URL file"); return;
+        }
+        memcpy(url, f->data, f->size); url[f->size] = 0;
+        size_t n = f->size;
+        while (n && (url[n-1] == '\n' || url[n-1] == '\r' || url[n-1] == ' ')) url[--n] = 0;
+    }
+    if (!catalog_target(s, url)) { catalog_end(s, "Catalog URL must use HTTPS"); return; }
+    s->catalog_redirects = 0; s->pressed = -1;
+    strcpy(s->catalog_msg, "Refreshing catalog...");
+    catalog_resolve(s);
+}
+/* Cache a validated response with a same-directory rename. Failed writes or
+ * malformed downloads cannot replace the last usable catalog. */
+static bool catalog_save(const char *body, UINT32 len)
+{
+    RamNode *windows = RamfsResolve(NULL, "\\Windows");
+    RamNode *dir = windows ? RamfsCreate(windows, "AppStore", true) : NULL;
+    if (!dir) return false;
+    RamNode *tmp = RamfsCreate(dir, "catalog.json.tmp", false);
+    if (!tmp) return false;
+    if (!RamfsWrite(tmp, body, len) || !RamfsRename(tmp, dir, "catalog.json", true)) {
+        RamfsDelete(tmp); return false;
+    }
+    return true;
+}
+static bool catalog_tick(Store *s)
+{
+    NetOp *op = s->catalog_op;
+    if (!op) return false;
+    if (s->catalog_phase == DL_FETCH && op->len > STORE_JSON_MAX + 65536u) {
+        catalog_end(s, "Catalog too large; kept old list"); return true;
+    }
+    if (op->state == NET_PENDING) return false;
+    if (op->state == NET_FAILED) { catalog_end(s, "Refresh failed; keeping catalog"); return true; }
+    if (s->catalog_phase == DL_RESOLVE) {
+        NetIp ip = op->addr; NetRelease(op);
+        s->catalog_op = NetHttpGetAddr(&ip, s->catalog_port, s->catalog_host, s->catalog_path, true);
+        s->catalog_phase = DL_FETCH;
+        if (!s->catalog_op) catalog_end(s, "Catalog: network busy");
+        return true;
+    }
+    const char *body; UINT32 len; char location[512];
+    int status = NetHttpParse(op, &body, &len, location, sizeof(location));
+    if (status >= 300 && status < 400 && location[0] && s->catalog_redirects++ < 8) {
+        bool valid;
+        if (location[0] == '/' && location[1] != '/' && sc_text(location, 500) && !strchr(location, ' ')) {
+            strcpy(s->catalog_path, location); valid = true;
+        } else valid = catalog_target(s, location);
+        if (!valid) { catalog_end(s, "Invalid catalog redirect"); return true; }
+        NetRelease(op); s->catalog_op = NULL; catalog_resolve(s); return true;
+    }
+    if (status != 200) { catalog_end(s, "Refresh failed; keeping catalog"); return true; }
+    StoreCatalog *c = store_catalog_parse(body, len);
+    if (!c) { catalog_end(s, "Invalid JSON; keeping catalog"); return true; }
+    if (!catalog_save(body, len)) { kfree(c); catalog_end(s, "Could not save; keeping catalog"); return true; }
+    kfree(g_store_catalog); g_store_catalog = c;
+    memset(s->msg, 0, sizeof(s->msg)); memset(s->bad, 0, sizeof(s->bad));
+    s->pressed = -1; UiScrollTo(&s->bar, 0); memset(s->logged, 0xFF, sizeof(s->logged));
+    catalog_end(s, "Catalog updated");
+    kprintf("[STORE] Catalog: now %d apps\n", N_APPS);
+    return true;
+}
 
 /* Walk the '\'-separated @path from @n; a component ending in '*' matches
  * the first folder with that prefix, and a "**" component any folders */
@@ -356,6 +325,7 @@ static void dl_resolve(Store *s)
 
 static void dl_start(Store *s, int i)
 {
+    if (s->catalog_op) { set_msg(s, i, "Wait for catalog refresh"); return; }
     if (s->dl >= 0) { set_msg(s, i, "Another download is in progress"); return; }
     if (!NetAvailable()) { set_msg(s, i, "Failed: no network connection"); return; }
     if ((UINT64)g_catalog[i].size_mb * 1024 * 1024 > NET_HTTP_MAX) {
@@ -471,7 +441,9 @@ static bool store_tick(WND *w)
     if (!s) return false;
     bool moved = UiScrollTick(&s->bar);       /* a held arrow or trough repeats */
     bool upd = s->cat == CAT_UPDATES && upd_changed(s);
-    return dl_tick(s) || moved || upd;
+    bool catalog = catalog_tick(s);
+    bool download = dl_tick(s);
+    return catalog || download || moved || upd;
 }
 
 /* -----------------------------------------------------------------------
@@ -688,6 +660,7 @@ static const char *no_button_text(const Store *s, int i)
 
 static void press(Store *s, int i)
 {
+    if (s->catalog_op) { set_msg(s, i, "Wait for catalog refresh"); return; }
     const StoreApp *a = &g_catalog[i];
     switch (row_button(s, i)) {
     case BTN_GET:     dl_start(s, i); break;
@@ -715,13 +688,14 @@ static GdiRect r_list(const Store *s, GdiRect c)
 {
     return RECT(SIDE_W, HEAD_H, c.w - SIDE_W - (UiScrollNeeded(&s->bar) ? UI_SB_W : 0), c.h - HEAD_H);
 }
+static GdiRect r_catalog(GdiRect c) { return RECT(c.w - BTN_W - 16, 12, BTN_W, BTN_H); }
 static GdiRect r_bar(GdiRect c)  { return RECT(c.w - UI_SB_W, HEAD_H, UI_SB_W, c.h - HEAD_H); }
 static GdiRect r_cat(int i)      { return RECT(8, 56 + i * 36, SIDE_W - 16, 32); }
 static GdiRect r_btn(GdiRect lr, int row_y) { return RECT(lr.x + lr.w - BTN_W - 20, row_y + (ROW_H - BTN_H) / 2, BTN_W, BTN_H); }
 
 static int list_height(const Store *s)
 {
-    int idx[N_APPS];
+    int idx[STORE_MAX_APPS];
     return visible(s, idx) * ROW_H + 12;
 }
 
@@ -876,16 +850,22 @@ static void store_paint(WND *w)
         }
         GdiTextT(r.x + 14, r.y + (r.h - GDI_FONT_H) / 2, g_cat_name[i], i == s->cat ? UI_TEXT : UI_TEXT2);
     }
-    GdiTextT(c.x + 16, c.y + c.h - 42, "Free and open source", UI_TEXT3);
-    GdiTextT(c.x + 16, c.y + c.h - 24, "software for NovaOS", UI_TEXT3);
+    GdiSetClip(RECT(c.x + 8, c.y + c.h - 48, SIDE_W - 16, 48));
+    GdiTextT(c.x + 12, c.y + c.h - 42, "App catalog (F5 refresh)", UI_TEXT3);
+    GdiTextT(c.x + 12, c.y + c.h - 24, s->catalog_msg, UI_TEXT3);
+    GdiSetClip(c);
 
     /* Header */
     GdiTextLarge(c.x + SIDE_W + 24, c.y + 14, g_cat_name[s->cat], UI_TEXT);
-    int idx[N_APPS];
+    int idx[STORE_MAX_APPS];
     int n = visible(s, idx);
     char cnt[32];
     ksnprintf(cnt, sizeof(cnt), "%d app%s", n, n == 1 ? "" : "s");
-    if (s->cat != CAT_UPDATES) GdiTextT(c.x + c.w - 20 - GdiTextW(cnt), c.y + 22, cnt, UI_TEXT3);
+    if (s->cat != CAT_UPDATES) {
+        GdiTextT(c.x + c.w - BTN_W - 32 - GdiTextW(cnt), c.y + 22, cnt, UI_TEXT3);
+        GdiRect refresh = r_catalog(c); refresh.x += c.x; refresh.y += c.y;
+        UiButton(refresh, s->catalog_op ? "Refreshing" : "Refresh", false);
+    }
     GdiFillRect(RECT(c.x + SIDE_W, c.y + HEAD_H - 1, c.w - SIDE_W, 1), UI_LINE);
 
     /* Rows */
@@ -946,7 +926,7 @@ static int button_at(const Store *s, GdiRect c, int x, int y)
 {
     GdiRect lr = r_list(s, c);
     if (!UiHit(lr, x, y)) return -1;
-    int idx[N_APPS];
+    int idx[STORE_MAX_APPS];
     int n = visible(s, idx);
     for (int k = 0; k < n; k++) {
         int ry = lr.y + 6 + k * ROW_H - s->bar.pos;
@@ -965,6 +945,7 @@ static void store_mouse(WND *w, WmMouseMsg msg, int x, int y)
     switch (msg) {
     case WM_MOUSE_DOWN:
     case WM_MOUSE_DBLCLK:
+        if (s->cat != CAT_UPDATES && UiHit(r_catalog(c), x, y)) { s->catalog_pressed = true; s->pressed = -1; return; }
         for (int i = 0; i < CAT_COUNT; i++)
             if (UiHit(r_cat(i), x, y)) {
                 s->cat = i;
@@ -980,6 +961,11 @@ static void store_mouse(WND *w, WmMouseMsg msg, int x, int y)
         s->pressed = button_at(s, c, x, y);
         break;
     case WM_MOUSE_UP: {
+        if (s->catalog_pressed) {
+            s->catalog_pressed = false;
+            if (s->cat != CAT_UPDATES && UiHit(r_catalog(c), x, y)) catalog_refresh(s);
+            break;
+        }
         if (s->cat == CAT_UPDATES) {
             if (s->upd_pressed && UiHit(r_upd_btn(r_list(s, c)), x, y)) upd_press(s);
             s->upd_pressed = false;
@@ -1002,6 +988,7 @@ static void store_key(WND *w, const KeyEvent *k)
     Store *s = w->user;
     GdiRect c = WmClientRect(w);
     if (k->scancode == KEY_ESC) { WmDestroyWindow(w); return; }
+    if (!k->extended && k->scancode == 0x3F) { catalog_refresh(s); return; }
     if (!k->extended) return;
     set_bar(s, c);
     switch (k->scancode) {
@@ -1018,6 +1005,7 @@ static void store_close(WND *w)
 {
     Store *s = w->user;
     if (s->op) NetRelease(s->op);
+    if (s->catalog_op) NetRelease(s->catalog_op);
     if (s->unpack) UmDetach(s->unpack);          /* let 7-Zip finish on its own */
     kfree(s);
     w->user = NULL;
@@ -1030,6 +1018,12 @@ static void store_close(WND *w)
  * "[STORE] NAME: Installed ..." or "... Failed/Could not ...". */
 const char *StoreInstall(const char *name)
 {
+    WND *was = WmActiveWindow();
+    StoreOpen();
+    if (!g_store) return "Could not open the App Store.";
+    if (was && was != g_store) WmSetActive(was);
+    Store *s = g_store->user;
+    if (s->catalog_op) return "Wait for catalog refresh.";
     int i = 0;
     for (; i < N_APPS; i++) {
         const char *a = g_catalog[i].name, *b = name;
@@ -1037,11 +1031,6 @@ const char *StoreInstall(const char *name)
         if (!*a && !*b) break;
     }
     if (i == N_APPS) return "There is no such program in the App Store.";
-    WND *was = WmActiveWindow();
-    StoreOpen();
-    if (!g_store) return "Could not open the App Store.";
-    if (was && was != g_store) WmSetActive(was);
-    Store *s = g_store->user;
     if (installed_exe(&g_catalog[i])) {
         kprintf("[STORE] %s: Installed already\n", g_catalog[i].name);
         return "Installed already.";
@@ -1057,6 +1046,15 @@ const char *StoreClose(void)
     if (!g_store) return "The App Store is not open.";
     WmRequestClose(g_store);
     return "Closed the App Store.";
+}
+
+const char *StoreRefresh(void)
+{
+    StoreOpen();
+    if (!g_store) return "Could not open the App Store.";
+    Store *s = g_store->user;
+    catalog_refresh(s);
+    return s->catalog_msg;
 }
 
 void StoreShowUpdates(void)
@@ -1083,6 +1081,7 @@ void StoreOpen(void)
     s->dl = -1;
     s->pressed = -1;
     s->unpack_i = -1;
+    catalog_load(s);
     WND *w = AppCreateWindow(APP_STORE, "App Store", 820, 540, UI_BG);
     if (!w) { kfree(s); return; }
     w->user     = s;
