@@ -1,0 +1,94 @@
+name: Build image
+'on':
+  workflow_call:
+    inputs:
+      release:
+        type: boolean
+        default: false
+      artifact:
+        type: string
+        default: nova-image
+permissions:
+  contents: read
+env:
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_NOHASHDIR: 'true'
+  CCACHE_COMPILERCHECK: content
+  CCACHE_MAXSIZE: 1000M
+jobs:
+  image:
+    name: Kernel, userland and image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install build dependencies
+      run: tools/ci/install.sh build
+    - name: Restore compiler cache
+      id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.ccache
+        key: ccache-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_userland.py', 'kernel/CMakeLists.txt')
+          }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ccache-v3-${{ runner.os }}-${{ runner.arch }}-
+    - name: Restore Firefox installer cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/novaos/firefox
+        key: firefox-${{ runner.os }}-${{ hashFiles('tools/bundle_firefox.py') }}
+    - name: Fetch release DSP firmware
+      run: python3 tools/fetch_sof_firmware.py --all
+      if: inputs.release
+    - name: Build NovaOS
+      run: |-
+        cmake -S . -B build -G "Unix Makefiles"
+        make -C build -j"$(nproc)" || {
+          tail -100 build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-err.log 2>/dev/null || true
+          exit 1
+        }
+        scripts/create-iso.sh build/nova.iso build/bootx64.efi build/kernel.elf
+        python3 tools/ci/image_manifest.py stamp --sha "$GITHUB_SHA"
+        ccache -s
+    - name: Save compiler cache
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.ccache
+        key: ccache-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_userland.py', 'kernel/CMakeLists.txt')
+          }}-${{ github.run_id }}-${{ github.run_attempt }}
+    - name: Keep ${{ inputs.artifact }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: |-
+          build/nova.img
+          build/nova.iso
+          build/kernel.elf
+          build/bootx64.efi
+          build/ci-image.json
+        if-no-files-found: error
+        retention-days: 14
+    - name: Keep nova-iso
+      uses: actions/upload-artifact@v4
+      with:
+        name: nova-iso
+        path: build/nova.iso
+        if-no-files-found: error
+        retention-days: 14
+    - name: Keep nova-boot
+      uses: actions/upload-artifact@v4
+      with:
+        name: nova-boot
+        path: |-
+          build/kernel.elf
+          build/bootx64.efi
+        if-no-files-found: error
+        retention-days: 14
+    - name: Keep build-diagnostics
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: build-diagnostics
+        path: build/kernel_build-prefix/src/kernel_build-stamp/*err.log
+        if-no-files-found: ignore
+        retention-days: 14

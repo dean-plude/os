@@ -44,13 +44,42 @@ static BOOL warm_loader_lock(void)
 #define BATCH 32
 #define ROUNDS 160
 static HANDLE g_done;
-static volatile LONG g_calls, g_bad;
+static volatile LONG g_calls, g_finished, g_bad;
+static HANDLE g_threads[BATCH];
 static int g_context;
 
 static VOID WINAPI callback(PVOID instance, PVOID ctx)
 {
     if (!instance || ctx != &g_context) InterlockedIncrement(&g_bad);
-    if (InterlockedIncrement(&g_calls) == BATCH) SetEvent(g_done);
+    LONG slot = InterlockedIncrement(&g_calls) - 1;
+    if (slot < 0 || slot >= BATCH) {
+        InterlockedIncrement(&g_bad);
+        return;
+    }
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
+                         &g_threads[slot], SYNCHRONIZE, FALSE, 0))
+        InterlockedIncrement(&g_bad);
+    if (InterlockedIncrement(&g_finished) == BATCH) SetEvent(g_done);
+}
+
+/* Callback completion precedes RtlExitUserThread and DLL_THREAD_DETACH.
+ * Join the actual threads so unfinished teardown cannot accumulate across
+ * batches and exhaust the smaller WOW64 thread table. Close our temporary
+ * handles before checking the exact leak baseline. */
+static BOOL join_batch(void)
+{
+    BOOL ok = TRUE;
+    DWORD start = GetTickCount();
+    for (int i = 0; i < BATCH; i++) {
+        DWORD elapsed = GetTickCount() - start;
+        if (!g_threads[i] || WaitForSingleObject(g_threads[i],
+                elapsed < 10000 ? 10000 - elapsed : 0) != WAIT_OBJECT_0) ok = FALSE;
+        if (g_threads[i]) {
+            if (!CloseHandle(g_threads[i])) ok = FALSE;
+            g_threads[i] = NULL;
+        }
+    }
+    return ok;
 }
 
 int main(void)
@@ -66,7 +95,7 @@ int main(void)
         return 1;
     }
     for (int round = 0; round < ROUNDS; round++) {
-        g_calls = 0;
+        g_calls = g_finished = 0;
         for (int i = 0; i < BATCH; i++) {
             if (!TrySubmitThreadpoolCallback(callback, &g_context, NULL)) {
                 printf("FAIL submission %d (%lu)\n", round * BATCH + i, (unsigned long)GetLastError());
@@ -75,6 +104,10 @@ int main(void)
         }
         if (WaitForSingleObject(g_done, 10000) != WAIT_OBJECT_0 || g_calls != BATCH || g_bad) {
             printf("FAIL callback batch %d: %ld calls, %ld bad contexts\n", round, (long)g_calls, (long)g_bad);
+            return 1;
+        }
+        if (!join_batch()) {
+            printf("FAIL thread teardown after batch %d (%lu)\n", round, (unsigned long)GetLastError());
             return 1;
         }
         if (!GetProcessHandleCount(GetCurrentProcess(), &after) || after > before) {

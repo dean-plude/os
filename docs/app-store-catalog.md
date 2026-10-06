@@ -93,3 +93,8 @@ python3 -m unittest discover -s tests/tools -p test_store_catalog.py -v
 The first test parses the repository catalog using the actual native reader.
 It rejects a catalog that would fail to load in NovaOS. Full install/HTTPS tests
 still run through the boot-test suites in CI.
+
+The host compatibility harness reads this same bundled JSON file when staging
+Store applications and runtimes. It requires a unique matching entry and the
+fixture's exact download URL; catalog and parser edits select the native corpus
+checks. It no longer attempts to extract catalog rows from the Store C source.
