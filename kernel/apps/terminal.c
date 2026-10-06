@@ -253,6 +253,7 @@ static void cmd_help(Term *t)
         "  start <app> [file]  open notepad, explorer, settings, calendar, browser\n"
         "  store install <name>  get a program from the App Store\n"
         "  store open          open the App Store window\n"
+        "  store refresh       update the JSON app catalog\n"
         "  store close         close the App Store window\n"
         "  store updates       open the App Store's updates for NovaOS\n"
         "  mem  uptime  date  time  ver  whoami  sysinfo  dmesg\n"
@@ -1456,7 +1457,7 @@ static bool screen_csi(const char *p, int n, char final)
     if ((final == 'h' || final == 'l') && n >= 2 && p[0] == '?') {
         int v = 0;
         for (int i = 1; i < n && p[i] >= '0' && p[i] <= '9'; i++) v = v * 10 + (p[i] - '0');
-        return v == 1049 || v == 1047 || v == 47;
+        return v == 25 || v == 1049 || v == 1047 || v == 47;
     }
     return false;
 }
@@ -1784,8 +1785,9 @@ static void run_cmd_line(Term *t, char *cmdline, const char *original)
     else if (is(c, "store")) {
         if (argc == 2 && is(argv[1], "close")) tprint(t, StoreClose());
         else if (argc == 2 && is(argv[1], "open")) { StoreOpen(); tprint(t, "Opened the App Store."); }
+        else if (argc == 2 && is(argv[1], "refresh")) tprint(t, StoreRefresh());
         else if (argc == 2 && is(argv[1], "updates")) { StoreShowUpdates(); tprint(t, "Opened the App Store's updates."); }
-        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store updates | store close");
+        else if (argc < 3 || !is(argv[1], "install")) terr(t, "Usage: store install <program name> | store open | store refresh | store updates | store close");
         else {
             char name[64];
             int n = 0;
@@ -2069,8 +2071,11 @@ static void paint_screen(Term *t, GdiRect c)
         }
         if (cur.col >= j->vt_cols && cur.row + 1 < j->vt_rows) { cur.col = 0; cur.row++; }
     }
-    if (j->vt_cursor && t->w->active && cur.row < j->vt_rows && cur.col < j->vt_cols)
-        GdiAlphaFill(RECT(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H + 1, cell / 256, 15), T_FG, 170);
+    if (j->vt_cursor && t->w->active && cur.row < j->vt_rows && cur.col < j->vt_cols) {
+        int height = (15 * (int)(UmConsoleCursorStyle(j->con) & 0xFF) + 99) / 100;
+        GdiAlphaFill(RECT(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H + 16 - height,
+                         cell / 256, height), T_FG, 170);
+    }
 }
 
 /* Row @r of the edit area at (x, y): pre's part in its colours, then the

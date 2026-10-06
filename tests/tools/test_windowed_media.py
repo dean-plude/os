@@ -13,6 +13,45 @@ import appcorpus
 
 
 class WindowedMediaTests(unittest.TestCase):
+    def test_normal_mode_uses_desktop_without_installing_game_hooks(self):
+        source = (ROOT / 'third_party/cnc-ddraw/src/dd.c').read_text()
+        start = source.index('#ifdef NOVAOS', source.index('HRESULT dd_SetCooperativeLevel('))
+        end = source.index('#endif', start)
+        normal = source[start:end] + '#endif\n'
+        self.assertLess(end, source.index('        hook_init();', start))
+        fixture = r'''
+#include <assert.h>
+#define NOVAOS 1
+#define DDSCL_NORMAL 1
+#define DDSCL_FULLSCREEN 2
+#define DD_OK 0
+#define FALSE 0
+#define SM_CXSCREEN 0
+#define SM_CYSCREEN 1
+typedef unsigned DWORD;
+static struct { unsigned width, height, bpp; int windowed_hack; } g_ddraw;
+static unsigned real_GetSystemMetrics(int metric) { return metric ? 800 : 1280; }
+static int setup(DWORD dwFlags) {
+''' + normal + r'''
+    return 42; /* Continue to the original fullscreen/game path. */
+}
+int main(void) {
+    assert(setup(DDSCL_NORMAL)==DD_OK);
+    assert(g_ddraw.width==1280 && g_ddraw.height==800 && g_ddraw.bpp==32);
+    assert(!g_ddraw.windowed_hack);
+    g_ddraw.width=640; g_ddraw.height=480; g_ddraw.bpp=16;
+    assert(setup(DDSCL_FULLSCREEN)==42);
+    assert(setup(DDSCL_NORMAL|DDSCL_FULLSCREEN)==42);
+    assert(g_ddraw.width==640 && g_ddraw.height==480 && g_ddraw.bpp==16);
+}
+'''
+        with tempfile.TemporaryDirectory() as d:
+            src, exe = Path(d)/'normal.c', Path(d)/'normal'
+            src.write_text(fixture)
+            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            str(src), '-o', str(exe)], check=True, capture_output=True)
+            subprocess.run([str(exe)], check=True, capture_output=True)
+
     def test_windowed_primary_presentation_clipping_and_failures(self):
         source = (ROOT / 'third_party/cnc-ddraw/src/ddsurface.c').read_text()
         start = source.index('static HRESULT nova_present_windowed_primary(')

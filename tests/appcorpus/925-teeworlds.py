@@ -15,6 +15,9 @@
 # test pushes the menu cursor into the top-left corner and moves it over
 # the Settings button (1:1 with the mouse) and clicks, and the settings
 # page must show.  Takes the keyboard and the mouse.
+# Keep the winter day map as the fixture at every hour. Teeworlds falls
+# back to winter_day.map when winter_night.map is absent; its menu theme
+# remains "winter" and the installed executable/renderer are unchanged.
 import time
 
 DOC = 'Teeworlds (full screen, through its first-start questions to its start menu, with music; Settings opened with the mouse, SDL recentring the pointer with SetCursorPos)'
@@ -46,6 +49,7 @@ def first_start(nova, echo):
 APP = App('Teeworlds', '0.7.5', 'https://github.com/teeworlds/teeworlds/releases/download/0.7.5/teeworlds-0.7.5-win64.zip',
           'Teeworlds', [Test('install Mesa 3D', 'store install Mesa 3D', store='Mesa 3D', timeout=1200),
                         Test('install from the App Store', 'store install Teeworlds', store='Teeworlds', timeout=600),
+                        Test('pin daytime menu fixture', r'del C:\Programs\Teeworlds\teeworlds-0.7.5-win64\data\ui\themes\winter_night.map'),
                         Test('settings with the mouse', r'start C:\Programs\Teeworlds\teeworlds-0.7.5-win64\teeworlds.exe',
                              timeout=90)],
           store='Teeworlds', gui=True, runtimes=['Mesa 3D'], sound=(None, 5000), interact=first_start)

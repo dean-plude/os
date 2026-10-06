@@ -162,7 +162,7 @@ jobs:
       uses: actions/cache@v4
       with:
         path: gfx-cache
-        key: gfx-${{ hashFiles('kernel/apps/store.c', 'tools/ci/stage-graphics.sh') }}
+        key: gfx-${{ hashFiles('userland/store/catalog.json', 'tools/ci/stage-graphics.sh') }}
     - name: Cache Venus
       id: venus-cache
       uses: actions/cache@v4

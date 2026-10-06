@@ -2879,7 +2879,8 @@ static bool clip_name(UINT64 ptr, char *name)
  * the processes on the caller's console, in a DWORD[Length]; Result: how
  * many there are. */
 enum { CON_GET_MODE, CON_SET_MODE, CON_READ_INPUT, CON_PEEK_INPUT, CON_WRITE_INPUT,
-       CON_COUNT_INPUT, CON_FLUSH_INPUT, CON_GET_SIZE, CON_PROCESS_LIST };
+       CON_COUNT_INPUT, CON_FLUSH_INPUT, CON_GET_SIZE, CON_PROCESS_LIST,
+       CON_SET_CURSOR, CON_GET_CURSOR_INFO, CON_SET_CURSOR_INFO };
 static UINT64 sys_nova_console(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
@@ -2948,6 +2949,14 @@ static UINT64 sys_nova_console(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         if (!in) return ST_INVALID_HANDLE;
         um_console_flush(c);
         break;
+    case CON_SET_CURSOR:
+    case CON_GET_CURSOR_INFO:
+    case CON_SET_CURSOR_INFO: {
+        if (in) return ST_INVALID_HANDLE;
+        UINT32 status = um_console_cursor(c, (UINT32)a2, (UINT32)a4, &res);
+        if (status) return status;
+        break;
+    }
     case CON_GET_SIZE: {
         int cols, rows;
         um_console_size(c, &cols, &rows);

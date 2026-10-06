@@ -2889,9 +2889,37 @@ WINBASEAPI HANDLE WINAPI GetConsoleWindow(void)
     }
     return (HANDLE)(ULONG_PTR)0x000C0501;
 }
-WINBASEAPI BOOL WINAPI SetConsoleCursorPosition(HANDLE h, COORD c) { (void)h; (void)c; return TRUE; }
-WINBASEAPI BOOL WINAPI GetConsoleCursorInfo(HANDLE h, LPVOID i) { (void)h; memset(i, 0, 8); ((DWORD *)i)[0] = 25; ((DWORD *)i)[1] = 1; return TRUE; }
-WINBASEAPI BOOL WINAPI SetConsoleCursorInfo(HANDLE h, LPCVOID i) { (void)h; (void)i; return TRUE; }
+/* NtNovaConsole cursor operations use only fixed-width integers, on x86
+ * and x64 alike. Cursor state belongs to the shared console, not a DLL. */
+static BOOL cursor_call(HANDLE h, ULONG op, ULONG value, ULONG *result)
+{
+    ULONG r = 0;
+    NTSTATUS s = NtNovaConsole(h, op, 0, value, &r);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    if (result) *result = r;
+    return TRUE;
+}
+WINBASEAPI BOOL WINAPI SetConsoleCursorPosition(HANDLE h, COORD c)
+{
+    return cursor_call(h, 9, (ULONG)(USHORT)c.X | ((ULONG)(USHORT)c.Y << 16), 0);
+}
+WINBASEAPI BOOL WINAPI GetConsoleCursorInfo(HANDLE h, LPVOID i)
+{
+    if (!i) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    ULONG style;
+    if (!cursor_call(h, 10, 0, &style)) return FALSE;
+    ((DWORD *)i)[0] = style & 0xFF;
+    ((BOOL *)i)[1] = !!(style & 0x100);
+    return TRUE;
+}
+WINBASEAPI BOOL WINAPI SetConsoleCursorInfo(HANDLE h, LPCVOID i)
+{
+    if (!i || ((const DWORD *)i)[0] < 1 || ((const DWORD *)i)[0] > 100) {
+        SetLastError(ERROR_INVALID_PARAMETER); return FALSE;
+    }
+    ULONG style = ((const DWORD *)i)[0] | (((const BOOL *)i)[1] ? 0x100 : 0);
+    return cursor_call(h, 11, style, 0);
+}
 WINBASEAPI BOOL WINAPI FillConsoleOutputCharacterW(HANDLE h, WCHAR c, DWORD n, COORD at, LPDWORD done) { (void)h; (void)c; (void)at; if (done) *done = n; return TRUE; }
 WINBASEAPI BOOL WINAPI FillConsoleOutputAttribute(HANDLE h, WORD a, DWORD n, COORD at, LPDWORD done) { (void)h; (void)a; (void)at; if (done) *done = n; return TRUE; }
 

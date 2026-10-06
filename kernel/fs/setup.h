@@ -8,7 +8,7 @@
  * booted from.  Installing erases the chosen disk and gives it a GPT with
  * two partitions:
  *
- *   1. EFI System Partition, FAT32 "NOVA_EFI", 128 MiB: the boot files
+ *   1. EFI System Partition, FAT32 "NOVA_EFI", at least 128 MiB: boot files and a staged update
  *   2. Basic data, NTFS (or FAT32) "NOVADATA", the rest: drive C: is saved
  *      here (on NTFS with its files' security descriptors)
  *
@@ -32,7 +32,6 @@ const char *SetupMediaName(void);
 bool SetupLiveFromUsb(void);
 
 #define SETUP_MIN_BYTES  (256ull << 20)   /* smallest disk to install on */
-#define SETUP_ESP_SECTORS 262144ull       /* 128 MiB */
 
 typedef struct {
     BlockDev *dev;

@@ -18,13 +18,19 @@ OUT="$1"
 CACHE="${2:-$OUT/cache}"
 mkdir -p "$OUT/7zip" "$OUT/downloads" "$OUT/tests" "$CACHE"
 
-# the URLs the App Store's catalog has (kernel/apps/store.c); 7-Zip from
-# its GitHub releases
-URLS=(
-  "https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe"
-  "$(grep -o 'pal1000/mesa-dist-win/releases/download/[^"]*\.7z' "$ROOT/kernel/apps/store.c" | sed 's|^|https://github.com/|')"
-  "$(grep -o 'doitsujin/dxvk/releases/download/[^"]*\.tar\.gz' "$ROOT/kernel/apps/store.c" | sed 's|^|https://github.com/|')"
+# Resolve runtime downloads through the same JSON catalog as Store fixtures.
+# Assignment propagates catalog lookup errors instead of an empty grep result.
+RUNTIME_URLS_TEXT=$(python3 - "$ROOT" <<'PYTHON'
+import sys
+sys.path.insert(0, sys.argv[1] + '/tools')
+from appcorpus import catalog_entry
+for name in ('Mesa 3D', 'DXVK'):
+    print(catalog_entry(name)[0])
+PYTHON
 )
+mapfile -t RUNTIME_URLS <<< "$RUNTIME_URLS_TEXT"
+URLS=("https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe"
+      "${RUNTIME_URLS[@]}")
 for u in "${URLS[@]}"; do
   f="$CACHE/$(basename "$u")"
   [ -s "$f" ] || curl -sSLf --retry 4 -o "$f" "$u"
@@ -38,7 +44,8 @@ fi
 cp "$VENUS_7Z" "$OUT/downloads/venus.7z"
 
 for arch in x86_64 i686; do
-  sfx=$([ $arch = i686 ] && echo 32 || true)
+  sfx=""
+  if [ "$arch" = i686 ]; then sfx=32; fi
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/gltest$sfx.exe" "$ROOT/tools/gltest/gltest.c" \
     -lopengl32 -lgdi32 -luser32 -lm
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/d3dtest$sfx.exe" "$ROOT/tools/d3dtest/d3dtest.c" \

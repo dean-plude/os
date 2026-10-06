@@ -54,7 +54,7 @@ SAMPLE = 'NovaOS app corpus\na needle in a haystack\nthe end\n'
 PAD_PORT = 10720                    # the game pad's peer (tools/padpeer.py); its control port is PAD_PORT + 100
 ECHO_PORT = 2323                    # the echo server PuTTY connects to (on the host)
 HTTPS_PORT = 8443                   # the HTTPS server Firefox loads a page from (on the host)
-STORE_C = os.path.join(ROOT, 'kernel', 'apps', 'store.c')
+STORE_JSON = os.path.join(ROOT, 'userland', 'store', 'catalog.json')
 SEVENZIP = 'https://github.com/ip7z/7zip/releases/download/26.03/7z2603-x64.exe'   # unpacks App Store archives
 
 
@@ -79,7 +79,7 @@ class App:
 
     @mutable: the primary URL serves changing bytes (24-hour refresh by default).
     @store: the program's name in the App Store's catalog
-    (kernel/apps/store.c), whose download @url must be.  The download is
+    (userland/store/catalog.json), whose download @url must be.  The download is
     put in C:\\Downloads under the catalog's file name and 7-Zip in
     C:\\Programs\\7-Zip, so a test with Test(store=NAME) installs it with
     the Store's own button and no network; @unpack (a function) then gets
@@ -193,11 +193,22 @@ def stage(app, archive, dest):
 
 def catalog_entry(name):
     """(download URL, file name) of @name in the App Store's catalog"""
-    m = re.search(r'\{ "' + re.escape(name) + r'", "[^"]*", "[^"]*",\s*CAT_\w+, (GH )?"([^"]+)", "([^"]+)"',
-                  open(STORE_C).read())
-    if not m:
-        raise RuntimeError(f'the App Store has no "{name}"')
-    return ('https://github.com/' if m.group(1) else '') + m.group(2), m.group(3)
+    with open(STORE_JSON, encoding='utf-8') as f:
+        catalog = json.load(f)
+    if type(catalog.get('schema_version')) is not int or catalog['schema_version'] != 1:
+        raise RuntimeError('unsupported App Store catalog schema')
+    entries = catalog.get('apps')
+    if not isinstance(entries, list):
+        raise RuntimeError('App Store catalog apps must be a list')
+    matches = [entry for entry in entries if isinstance(entry, dict) and entry.get('name') == name]
+    if len(matches) != 1:
+        raise RuntimeError(f'the App Store must have exactly one "{name}"')
+    url, file = matches[0].get('url'), matches[0].get('file')
+    if (not isinstance(url, str) or not url.startswith(('https://', 'http://')) or
+            not isinstance(file, str) or not file or file in ('.', '..') or
+            any(c in file for c in '/\\:\"\r\n')):
+        raise RuntimeError(f'invalid download fields for App Store entry "{name}"')
+    return url, file
 
 
 def catalog_file(app):
