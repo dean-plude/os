@@ -3,7 +3,7 @@
 set -euo pipefail
 profile=${1:-runtime}
 base=(qemu-system-x86 qemu-system-gui ovmf mtools dosfstools acpica-tools
-      pulseaudio pulseaudio-utils python3-pil ntfs-3g curl p7zip-full)
+      pulseaudio pulseaudio-utils python3-pil ntfs-3g curl p7zip-full ffmpeg)
 case "$profile" in
     build) base+=(cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 xorriso ccache) ;;
     graphics) base+=(gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 g++-mingw-w64-x86-64
