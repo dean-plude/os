@@ -15,7 +15,7 @@
 # from the changed box and then again with NetSurf checking every third
 # such layout against a full one; the test takes a screenshot of each run
 # (nstest-PAGE-incremental.png, nstest-PAGE-check.png) and requires the
-# two of a page to be identical above NetSurf's status bar.
+# two of a page to have identical browser client pixels above NetSurf's status bar.
 import os, re, struct, sys, time, zlib
 
 SEEN = {'why': 'nstest never started NetSurf'}     # why the screen check failed, for check()
@@ -177,37 +177,28 @@ PAGES = ('long', 'iframe', 'positioned', 'floats')
 SHOTS = {}                  # (page, mode): screenshot path
 
 
-def png_rows(path):
-    """(width, height, the decompressed scanlines with their filter bytes)"""
-    data = open(path, 'rb').read()
-    pos, idat, w, h, ctype = 8, b'', 0, 0, 2
-    while pos < len(data):
-        n, kind = struct.unpack('>I4s', data[pos:pos + 8])
-        body = data[pos + 8:pos + 8 + n]
-        if kind == b'IHDR':
-            w, h, _, ctype = struct.unpack('>IIBB', body[:10])
-        elif kind == b'IDAT':
-            idat += body
-        pos += 12 + n
-    stride = w * (4 if ctype == 6 else 3) + 1
-    raw = zlib.decompress(idat)
-    return w, h, [raw[y * stride:(y + 1) * stride] for y in range(h)]
-
-
-def same_page(a, b):
-    """None when two screenshots show the same page, else how they differ.
-    The rows from the top of the screen down to NetSurf's status bar are
-    compared (the status bar shows the load time, the taskbar a clock);
-    the same encoder filters the same rows the same way, so equal
-    scanlines mean equal pixels"""
-    wa, ha, ra = png_rows(a)
-    wb, hb, rb = png_rows(b)
+def same_page(a, b, bounds):
+    """Compare decoded RGB pixels within the reported browser client.
+    Keep the toolbar and page; omit only the 18px load-time status bar.
+    Pixel changes outside the browser cannot change the verdict."""
+    wa, ha, ra = png_rgb(a)
+    wb, hb, rb = png_rgb(b)
     if (wa, ha) != (wb, hb):
         return 'the screens differ in size'
-    bottom = ha * 1335 // 1600              # the page area ends above the status bar
-    bad = [y for y in range(bottom) if ra[y] != rb[y]]
+    if not bounds or len(bounds) != 4:
+        return 'missing browser client geometry'
+    x, y, width, height = bounds
+    if width <= 0 or height <= 18:
+        return 'invalid browser client geometry'
+    scale = wa / LOGICAL_W
+    left, top = round(x * scale), round(y * scale)
+    right, bottom = round((x + width) * scale), round((y + height - 18) * scale)
+    if not (0 <= left < right <= wa and 0 <= top < bottom <= ha):
+        return 'browser client geometry is outside the screen'
+    bad = [row for row in range(top, bottom)
+           if ra[row][left * 3:right * 3] != rb[row][left * 3:right * 3]]
     if bad:
-        return '%d screen rows differ (the first at y %d of %d)' % (len(bad), bad[0], ha)
+        return '%d browser rows differ (the first at y %d of %d)' % (len(bad), bad[0], ha)
     return None
 
 
@@ -215,7 +206,10 @@ def page_shot(page, mode):
     def act(nova):
         out = os.path.join(getattr(sys.modules['__main__'], 'OUT', '.'), 'nstest-%s-%s.png' % (page, mode))
         nova.shot(out)
-        SHOTS[(page, mode)] = out
+        with open(nova.sr.path, encoding='latin-1') as log:
+            matches = re.findall(r'\[NETSURF\] client (-?\d+) (-?\d+) (\d+) (\d+)', log.read())
+        bounds = tuple(map(int, matches[-1])) if matches else None
+        SHOTS[(page, mode)] = (out, bounds)
     return act
 
 
@@ -227,7 +221,9 @@ def all_checks(nova):
         a, b = SHOTS.get((page, 'incremental')), SHOTS.get((page, 'check'))
         if not a or not b:
             return 'no screenshot of the %s page' % page
-        diff = same_page(a, b)
+        if a[1] != b[1]:
+            return 'browser client geometry changed between page runs'
+        diff = same_page(a[0], b[0], a[1])
         if diff:
             return 'the %s page laid out from the changed box looks different from the whole-page layout: %s' % \
                 (page, diff)
