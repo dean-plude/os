@@ -1456,7 +1456,7 @@ static bool screen_csi(const char *p, int n, char final)
     if ((final == 'h' || final == 'l') && n >= 2 && p[0] == '?') {
         int v = 0;
         for (int i = 1; i < n && p[i] >= '0' && p[i] <= '9'; i++) v = v * 10 + (p[i] - '0');
-        return v == 1049 || v == 1047 || v == 47;
+        return v == 25 || v == 1049 || v == 1047 || v == 47;
     }
     return false;
 }
@@ -2069,8 +2069,11 @@ static void paint_screen(Term *t, GdiRect c)
         }
         if (cur.col >= j->vt_cols && cur.row + 1 < j->vt_rows) { cur.col = 0; cur.row++; }
     }
-    if (j->vt_cursor && t->w->active && cur.row < j->vt_rows && cur.col < j->vt_cols)
-        GdiAlphaFill(RECT(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H + 1, cell / 256, 15), T_FG, 170);
+    if (j->vt_cursor && t->w->active && cur.row < j->vt_rows && cur.col < j->vt_cols) {
+        int height = (15 * (int)(UmConsoleCursorStyle(j->con) & 0xFF) + 99) / 100;
+        GdiAlphaFill(RECT(x0 + (cur.col * cell) / 256, c.y + T_PAD + cur.row * T_LINE_H + 16 - height,
+                         cell / 256, height), T_FG, 170);
+    }
 }
 
 /* Row @r of the edit area at (x, y): pre's part in its colours, then the
