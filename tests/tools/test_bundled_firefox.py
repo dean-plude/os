@@ -89,7 +89,7 @@ class BundleTests(unittest.TestCase):
             self.assertEqual(data['sha512'], digest)
             self.assertEqual(data['version'], ff.VERSION)
 
-    def test_disk_script_grows_for_bundled_payload_and_retains_minimum(self):
+    def test_disk_script_reserves_installed_and_staged_payloads(self):
         # Run the actual image script; stub only external FAT utilities.
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -105,13 +105,17 @@ class BundleTests(unittest.TestCase):
             image = root / 'nova.img'
             import os
             env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ['PATH'])
-            for payload_mb, expected_mb in [(1, 128), (200, 256), (300, 352)]:
+            for payload_mb, expected_mb in [(1, 128), (189, 416), (200, 448), (300, 640)]:
                 with kernel.open('wb') as f:
                     f.truncate(payload_mb * 1048576)
                 subprocess.run(['bash', str(ROOT / 'scripts/create-disk.sh'),
                                 str(image), str(boot), str(kernel)],
                                env=env, check=True, stdout=subprocess.DEVNULL)
                 self.assertEqual(image.stat().st_size, expected_mb * 1048576)
+                installed = kernel.stat().st_size + boot.stat().st_size
+                # Both copies fit while retaining metadata/configuration room.
+                self.assertGreaterEqual(image.stat().st_size - 2 * installed, 32 * 1048576)
+                self.assertGreater(image.stat().st_size - installed, installed + 1048576)
 
     @unittest.skipUnless(shutil.which('cc'), 'host compiler unavailable')
     def test_shell_routes_web_and_html_to_firefox_retains_fallback_and_errors(self):

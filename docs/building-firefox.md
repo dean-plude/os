@@ -21,3 +21,10 @@ Firefox's preferences or pretending its Windows installer ran. No test CA or
 corpus policy is shipped. `browser` opens Firefox from the desktop launcher;
 NetSurf can still be launched explicitly. Full Firefox functionality remains
 subject to NovaOS application compatibility testing.
+
+The disk builder sizes the EFI image for the installed kernel and loader plus
+one similarly sized staged replacement, with another 32 MiB for FAT metadata,
+update markers and persisted configuration. It rounds up to 32 MiB boundaries
+and retains the 128 MiB minimum. This headroom is required because bundled
+applications live inside the kernel image and updates keep the current image
+until a trial boot succeeds. The updater still rejects insufficient space.

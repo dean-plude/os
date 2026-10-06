@@ -48,11 +48,13 @@ fi
 # -------------------------------------------------------------------------
 
 # Bundled application payloads may exceed the original 128 MiB ESP.
-# Reserve 32 MiB for FAT metadata, boot logs and persisted configuration,
-# rounded to a 32 MiB boundary, with the original minimum size.
+# Keep the installed kernel/loader and one similarly sized staged update
+# together: updating must not overwrite the running image before trial boot.
+# Add 32 MiB for FAT metadata, update markers and persisted configuration,
+# then round up to a 32 MiB boundary with the original minimum size.
 PAYLOAD_BYTES=$(( $(stat -c %s "$KERNEL") + $(stat -c %s "$BOOTLOADER") ))
 PAYLOAD_MB=$(( (PAYLOAD_BYTES + 1048575) / 1048576 ))
-REQUIRED_MB=$(( ((PAYLOAD_MB + 32 + 31) / 32) * 32 ))
+REQUIRED_MB=$(( ((2 * PAYLOAD_MB + 32 + 31) / 32) * 32 ))
 if (( REQUIRED_MB > DISK_SIZE_MB )); then DISK_SIZE_MB=$REQUIRED_MB; fi
 
 echo "Creating ${DISK_SIZE_MB} MiB disk image: $DISK_IMG"
