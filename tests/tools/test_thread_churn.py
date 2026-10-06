@@ -82,6 +82,57 @@ int main(void) {
 '''
         self.assertIn('fixed: 5120 creations', self.execute(harness))
 
+    def test_callback_batch_joins_teardown_and_closes_handles_before_baseline(self):
+        source = (ROOT / 'userland/programs/tpsimpletest.c').read_text()
+        join = source[source.index('static BOOL join_batch(void)'):source.index('int main(void)')]
+        harness = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#define BATCH 32
+#define TRUE 1
+#define FALSE 0
+#define WAIT_OBJECT_0 0
+typedef int BOOL;
+typedef uint32_t DWORD;
+typedef void *HANDLE;
+static HANDLE g_threads[BATCH];
+static int waited, closed, fail_wait = -1, fail_close = -1;
+static DWORD now;
+static DWORD GetTickCount(void) { return now; }
+static DWORD WaitForSingleObject(HANDLE h, DWORD timeout) {
+    assert(h == (HANDLE)(uintptr_t)(waited + 1));
+    assert(timeout == (now < 10000 ? 10000 - now : 0));
+    now += 500;
+    return waited++ == fail_wait ? 258 : WAIT_OBJECT_0;
+}
+static BOOL CloseHandle(HANDLE h) {
+    assert(h == (HANDLE)(uintptr_t)(closed + 1));
+    return closed++ != fail_close;
+}
+static void reset(void) {
+    waited = closed = 0; now = 0;
+    for (int i = 0; i < BATCH; i++) g_threads[i] = (HANDLE)(uintptr_t)(i + 1);
+}
+'''
+        harness += join + r'''
+int main(void) {
+    reset(); assert(join_batch()); assert(waited == BATCH && closed == BATCH);
+    for (int i = 0; i < BATCH; i++) assert(!g_threads[i]);
+    reset(); fail_wait = 5; assert(!join_batch()); assert(closed == BATCH);
+    reset(); fail_wait = -1; fail_close = 5; assert(!join_batch()); assert(closed == BATCH);
+    reset(); fail_close = -1; g_threads[0] = 0; waited = closed = 1;
+    assert(!join_batch()); assert(closed == BATCH);
+    puts("joined teardown; bounded waits; wait/close/missing-handle failures fail closed");
+}
+'''
+        self.assertIn('joined teardown', self.execute(harness))
+        main = source[source.index('int main(void)'):]
+        self.assertLess(main.index('if (!join_batch())'), main.index('after > before'))
+        self.assertIn('#define ROUNDS 160', source)
+        self.assertIn('#define BATCH 32', source)
+
     def test_native_warmup_initializes_before_baseline_and_fails_closed(self):
         source = (ROOT / 'userland/programs/tpsimpletest.c').read_text()
         warmup = source[source.index('static DWORD WINAPI warm_thread'):source.index('#define BATCH')]
