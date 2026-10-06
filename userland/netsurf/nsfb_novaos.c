@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <stdio.h>
 
 #include "libnsfb.h"
 #include "libnsfb_plot.h"
@@ -180,6 +181,15 @@ static int nova_initialise(nsfb_t *nsfb)
     g_surface = s;
 
     ShowWindow(s->hwnd, SW_SHOW);
+    /* CI compares browser pixels, excluding the desktop clock and the
+     * load-time status bar. Report actual logical client geometry. */
+    RECT client;
+    POINT origin = {0, 0};
+    if (GetClientRect(s->hwnd, &client) && ClientToScreen(s->hwnd, &origin)) {
+        printf("[NETSURF] client %ld %ld %ld %ld\n", (long)origin.x, (long)origin.y,
+               (long)(client.right - client.left), (long)(client.bottom - client.top));
+        fflush(stdout);
+    }
     s->dirty = true;
     present(s);
     return 0;

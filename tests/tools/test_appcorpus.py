@@ -1,6 +1,7 @@
 """Host-side corpus assertion/reporting regressions; no VM or downloads required."""
 import contextlib
 import io
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -20,11 +21,25 @@ class CorpusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             summary = Path(d) / 'summary.md'
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                appcorpus.report(SimpleNamespace(summary=str(summary)), apps, results)
+                appcorpus.report(SimpleNamespace(summary=str(summary), out=d), apps, results)
             self.assertIn('1 passed, 1 failed, 1 skipped, 2 not run (5 programs selected)', out.getvalue())
             text = summary.read_text()
             self.assertIn('| missing | 1 | ⏭ not run: no result recorded', text)
             self.assertIn('| fail | 1 | ❌ kernel panic', text)
+            report = json.loads((Path(d) / 'results.json').read_text())
+            self.assertEqual(report['counts'], {'passed': 1, 'failed': 1, 'skipped': 1, 'not run': 2})
+            self.assertEqual([p['outcome'] for p in report['programs']],
+                             ['passed', 'failed', 'skipped', 'not run', 'not run'])
+
+    def test_isolated_apps_declare_network_without_inheriting_other_apps(self):
+        for name in ('WebView2', 'Firefox', 'PuTTY'):
+            with self.subTest(app=name):
+                app = next(a for a in appcorpus.APPS if a.name == name)
+                self.assertTrue(appcorpus.network_required([app]))
+        webview = next(a for a in appcorpus.APPS if a.name == 'WebView2')
+        self.assertFalse(webview.net)  # no unrelated echo server
+        self.assertFalse(webview.https)
+        self.assertFalse(appcorpus.network_required([next(a for a in appcorpus.APPS if a.name == 'jq')]))
 
     def test_webview_requires_install_success(self):
         t = next(a for a in appcorpus.APPS if a.name == 'WebView2').tests[0]
@@ -33,6 +48,9 @@ class CorpusTests(unittest.TestCase):
         attempted = prefix + '[GoopdateImpl::DoInstall]\n' + suffix
         self.assertIsNotNone(verdict(t, attempted, True, 'cmd.exe'))
         self.assertIsNone(verdict(t, attempted + 'InstallApp returned 0x0\n', True, 'cmd.exe'))
+        self.assertIsNone(verdict(t, attempted + '[InstallApp returned][0x0][type:1][code: 0]\n', True, 'cmd.exe'))
+        for code in ('0x80070070', '0x80070002', '0x01'):
+            self.assertIsNotNone(verdict(t, attempted + f'[InstallApp returned][{code}]\n', True, 'cmd.exe'))
 
     def test_webview_requires_every_host_milestone(self):
         t = next(a for a in appcorpus.APPS if a.name == 'WebView2').tests[1]
