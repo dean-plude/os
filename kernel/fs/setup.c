@@ -189,19 +189,36 @@ static void put_name(UINT8 *e, const char *name)
 #define GPT_ESIZE     128
 #define GPT_TABLE_SEC (GPT_ENTRIES * GPT_ESIZE / BLOCK_SECTOR)      /* 32 */
 
-/* Write a protective MBR and primary + backup GPTs with the two
- * partitions; their first sectors and sizes out */
+/* Reserve the installed payload and a complete staged update, plus FAT
+ * metadata/configuration. Match the installation image's 32 MiB rounding. */
+static UINT64 setup_esp_sectors(UINT32 kernel_size, UINT32 loader_size)
+{
+    UINT64 payload_mb = ((UINT64)kernel_size + loader_size + 1048575) >> 20;
+    UINT64 mb = ((2 * payload_mb + 32 + 31) / 32) * 32;
+    if (mb < 128) mb = 128;
+    return mb * 2048;
+}
+
+/* Validate geometry before detaching volumes or erasing any disk sectors. */
+static bool setup_layout(UINT64 sectors, UINT64 esp_sectors,
+                         UINT64 *esp_lba, UINT64 *data_lba, UINT64 *data_sectors)
+{
+    if (sectors < 4096 || esp_sectors > sectors - 2048) return false;
+    *esp_lba = 2048;
+    *data_lba = *esp_lba + esp_sectors;
+    UINT64 end = (sectors - 1 - GPT_TABLE_SEC) & ~2047ull;
+    if (end <= *data_lba || end - *data_lba <= 131072) return false;
+    *data_sectors = end - *data_lba;
+    if (!g_ntfs && *data_sectors > (1ull << 31)) *data_sectors = 1ull << 31;
+    return true;
+}
+
+/* Write a protective MBR and primary + backup GPTs with the two partitions. */
 static bool write_gpt(BlockDev *d, UINT64 *esp_lba, UINT64 *esp_sectors, UINT64 *data_lba, UINT64 *data_sectors)
 {
     UINT64 last = d->sectors - 1;
     UINT64 first_usable = 2 + GPT_TABLE_SEC, last_usable = last - 1 - GPT_TABLE_SEC;
-    *esp_lba = 2048;
-    *esp_sectors = SETUP_ESP_SECTORS;
-    *data_lba = *esp_lba + *esp_sectors;                         /* 1 MiB aligned */
-    UINT64 end = (last_usable + 1) & ~2047ull;                    /* align the end down to 1 MiB */
-    if (end <= *data_lba + 131072) return false;
-    *data_sectors = end - *data_lba;
-    if (!g_ntfs && *data_sectors > (1ull << 31)) *data_sectors = 1ull << 31;   /* FAT32 with 4 KiB clusters: 1 TiB */
+    if (!setup_layout(d->sectors, *esp_sectors, esp_lba, data_lba, data_sectors)) return false;
 
     UINT8 *buf = kzalloc((2 + GPT_TABLE_SEC) * BLOCK_SECTOR);
     if (!buf) return false;
@@ -304,6 +321,12 @@ static void setup_thread(void *arg)
         return;
     }
 
+    UINT64 esp_lba, esp_sec = setup_esp_sectors(ksize, lsize), data_lba, data_sec;
+    if (!setup_layout(d->sectors, esp_sec, &esp_lba, &data_lba, &data_sec)) {
+        failed("The disk is too small for NovaOS and a staged update.");
+        return;
+    }
+
     /* C: may be saved on this very disk: stop that before erasing it */
     bool had_c = PersistActive(), c_here = PersistDevice() == d;
     if (c_here) {
@@ -313,7 +336,6 @@ static void setup_thread(void *arg)
 
     DrivesDetach(d);                                             /* (its volumes are not D:, E:, ... any more) */
     step(10, "Creating partitions");
-    UINT64 esp_lba = 2048, esp_sec, data_lba = esp_lba + SETUP_ESP_SECTORS, data_sec;
     if (!wipe(d, esp_lba, data_lba) || !write_gpt(d, &esp_lba, &esp_sec, &data_lba, &data_sec)) {
         failed("Could not write the partition table (a disk error, or the disk is too small).");
         return;

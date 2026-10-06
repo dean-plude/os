@@ -70,7 +70,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install corpus dependencies
-      run: tools/ci/install.sh runtime
+      run: tools/ci/install.sh corpus
     - name: Require working accelerator
       run: tools/ci/enable-kvm.sh required
       env:

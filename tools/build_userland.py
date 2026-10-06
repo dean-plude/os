@@ -27,6 +27,7 @@ import os, re, subprocess, sys, threading, types
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import build_netsurf
+import bundle_firefox
 
 HERE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'userland')
 def parse_args(argv):
@@ -637,6 +638,10 @@ built.append(('\\Windows\\AppStore\\default-catalog.json', os.path.join(HERE, 's
 # 3b. the NetSurf web browser
 if os.environ.get('NOVA_NO_NETSURF') != '1':
     built += results['netsurf:link']
+
+# 3c. Mozilla's pinned, checksum-verified Firefox payload (default browser).
+# Keep NetSurf available for its focused regression suite and as a fallback.
+built += bundle_firefox.stage(out)
 
 # 4. embed (.incbin: the browser alone is megabytes, too much for C arrays).
 # Files of 1 MiB or more (ICU's data and DLLs, NetSurf) go in zlib-compressed

@@ -1,0 +1,1 @@
+- **Firefox**: bundled Mozilla Windows x64 browser, default for web links; NetSurf remains available.

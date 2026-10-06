@@ -403,8 +403,13 @@ static int execute(LPCWSTR verb, LPCWSTR file, LPCWSTR params, LPCWSTR dir, HAND
 {
     WCHAR cmd[2048], prog[MAX_PATH];
     int o = 0;
-    if (starts_with(file, "http://") || starts_with(file, "https://")) {
-        u2w("C:\\Programs\\NetSurf\\netsurf.exe", prog, MAX_PATH);
+    BOOL browser = starts_with(file, "http://") || starts_with(file, "https://") ||
+                   ((ends_with(file, ".html") || ends_with(file, ".htm")) &&
+                    GetFileAttributesW(file) != INVALID_FILE_ATTRIBUTES);
+    if (browser) {
+        u2w("C:\\Programs\\Mozilla Firefox\\core\\firefox.exe", prog, MAX_PATH);
+        if (GetFileAttributesW(prog) == INVALID_FILE_ATTRIBUTES)
+            u2w("C:\\Programs\\NetSurf\\netsurf.exe", prog, MAX_PATH);
         if (GetFileAttributesW(prog) == INVALID_FILE_ATTRIBUTES) return 31;   /* SE_ERR_NOASSOC */
         params = file;
     } else if (ends_with(file, ".exe") || ends_with(file, ".com") || !wlen(file) ||
@@ -419,7 +424,20 @@ static int execute(LPCWSTR verb, LPCWSTR file, LPCWSTR params, LPCWSTR dir, HAND
     cmd[o++] = '"';
     if (params && *params) {
         cmd[o++] = ' ';
-        for (const WCHAR *c = params; *c && o < 2040; c++) cmd[o++] = *c;
+        if (browser) {
+            /* One argument even when a local HTML path contains spaces.
+             * Reject embedded quotes and oversize input rather than launch
+             * a truncated URL or append unintended browser switches. */
+            if (wlen(params) > (unsigned)(2040 - o - 2)) return 31;
+            cmd[o++] = '"';
+            for (const WCHAR *c = params; *c; c++) {
+                if (*c == '"') return 31;
+                cmd[o++] = *c;
+            }
+            cmd[o++] = '"';
+        } else {
+            for (const WCHAR *c = params; *c && o < 2040; c++) cmd[o++] = *c;
+        }
     }
     cmd[o] = 0;
     STARTUPINFOW si;

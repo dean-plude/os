@@ -5,7 +5,7 @@
 #
 # Creates a raw disk image with:
 #   - GPT partition table
-#   - One EFI System Partition (FAT32, 128 MiB; NovaOS also keeps drive C: here
+#   - One EFI System Partition (FAT32, at least 128 MiB; NovaOS also keeps drive C: here
 #     under \NOVA\C when no data disk is attached)
 #   - File layout:
 #       /EFI/BOOT/BOOTX64.EFI   — bootloader (auto-discovered by UEFI firmware)
@@ -46,6 +46,16 @@ fi
 # -------------------------------------------------------------------------
 # Create the raw disk image
 # -------------------------------------------------------------------------
+
+# Bundled application payloads may exceed the original 128 MiB ESP.
+# Keep the installed kernel/loader and one similarly sized staged update
+# together: updating must not overwrite the running image before trial boot.
+# Add 32 MiB for FAT metadata, update markers and persisted configuration,
+# then round up to a 32 MiB boundary with the original minimum size.
+PAYLOAD_BYTES=$(( $(stat -c %s "$KERNEL") + $(stat -c %s "$BOOTLOADER") ))
+PAYLOAD_MB=$(( (PAYLOAD_BYTES + 1048575) / 1048576 ))
+REQUIRED_MB=$(( ((2 * PAYLOAD_MB + 32 + 31) / 32) * 32 ))
+if (( REQUIRED_MB > DISK_SIZE_MB )); then DISK_SIZE_MB=$REQUIRED_MB; fi
 
 echo "Creating ${DISK_SIZE_MB} MiB disk image: $DISK_IMG"
 

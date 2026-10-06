@@ -19,6 +19,7 @@ static const AppInfo g_apps[APP_COUNT] = {
     [APP_NOTEPAD]     = { "Notepad",                "",   GDI_C(0x4A,0x7B,0xD0), true,  true  },
     [APP_SETTINGS]    = { "Settings",               "",   GDI_C(0x5A,0x5A,0x64), true,  false },
     [APP_CALENDAR]    = { "Calendar",               "",   GDI_C(0xD0,0x40,0x40), true,  false },
+    [APP_FIREFOX]     = { "Firefox",                "Fx", GDI_C(0xE6,0x5A,0x1C), true, true },
     [APP_NETSURF]     = { "NetSurf",                "",   GDI_C(0x3A,0x6E,0xF0), true,  true  },
     [APP_STORE]       = { "App Store",              "",   GDI_C(0x18,0x6A,0xD8), true,  false },
     [APP_PHOTOS]      = { "Photos",                 "",   GDI_C(0x2E,0xA0,0x8A), true,  true  },
@@ -77,6 +78,15 @@ static void netsurf_launch(void)
         kprintf("[APPS] Cannot start NetSurf: %s\n", exe ? "out of memory" : "not installed");
 }
 
+/* The bundled payload uses the same location as the App Store package. */
+static void firefox_launch(void)
+{
+    RamNode *exe = RamfsResolve(NULL, "\\Programs\\Mozilla Firefox\\core\\firefox.exe");
+    if (!exe) { netsurf_launch(); return; }
+    if (!UmSpawnDetached(exe, "\"C:\\Programs\\Mozilla Firefox\\core\\firefox.exe\"", exe->parent))
+        kprintf("[APPS] Cannot start Firefox: out of memory\n");
+}
+
 void AppLaunch(AppId id)
 {
     const AppInfo *a = AppGetInfo(id);
@@ -92,6 +102,7 @@ void AppLaunch(AppId id)
     case APP_SETTINGS: SettingsOpen(); break;
     case APP_CALENDAR: CalendarOpen(); break;
     case APP_NETSURF:  netsurf_launch(); break;
+    case APP_FIREFOX:  firefox_launch(); break;
     case APP_PHOTOS:   PhotosOpen(NULL); break;
     case APP_STORE:    StoreOpen(); break;
     case APP_SETUP:    SetupOpen(); break;
@@ -116,7 +127,7 @@ bool AppByName(const char *name, AppId *out)
         { "notepad",  APP_NOTEPAD  },
         { "settings", APP_SETTINGS }, { "control", APP_SETTINGS },
         { "calendar", APP_CALENDAR }, { "clock", APP_CALENDAR },
-        { "browser",  APP_NETSURF  },    /* "netsurf" itself runs the program */
+        { "browser",  APP_FIREFOX  },    /* "netsurf" itself runs the program */
         { "photos",   APP_PHOTOS   }, { "pictures", APP_PHOTOS },
         { "store",    APP_STORE    }, { "appstore", APP_STORE },
         { "setup",    APP_SETUP    }, { "installer", APP_SETUP },
@@ -326,7 +337,7 @@ static void open_link(RamNode *lnk)
     if (t->dir) { AppOpenFolder(t); return; }
     if (file_type(t) != FT_EXE) { AppOpenFile(t); return; }
     int app = AppForProgram(t->name);
-    if (app >= 0) { AppLaunch((AppId)app); return; }
+    if (app >= 0 && app != APP_FIREFOX) { AppLaunch((AppId)app); return; }
     char cmd[RAMFS_PATH_MAX + sizeof(l.args) + 8];
     ksnprintf(cmd, sizeof(cmd), "\"%s\"%s%s", l.target, l.args[0] ? " " : "", l.args);
     RamNode *dir = resolve_win_path(l.workdir);
@@ -463,6 +474,8 @@ static bool name_is(const char *a, const char *b)       /* case-insensitive */
 
 int AppForProgram(const char *exe_name)
 {
+    if (exe_name && (name_is(exe_name, "firefox.exe") || name_is(exe_name, "firefox")))
+        return APP_FIREFOX;
     if (exe_name && (name_is(exe_name, "netsurf.exe") || name_is(exe_name, "netsurf")))
         return APP_NETSURF;
     return -1;
@@ -491,7 +504,7 @@ void AppRunProgram(RamNode *exe, const char *cmdline)
 {
     if (!exe) return;
     int app = AppForProgram(exe->name);
-    if (app >= 0) { AppLaunch((AppId)app); return; }
+    if (app >= 0 && app != APP_FIREFOX) { AppLaunch((AppId)app); return; }
     /* In a Terminal: console programs need one, and GUI programs report
      * their exit status there */
     TerminalRun(cmdline && *cmdline ? cmdline : exe->name, in_programs(exe) ? NULL : exe->parent);
@@ -983,6 +996,7 @@ void AppDrawIcon(AppId id, int x, int y, int s)
                 GdiFillCircle(x + s * (34 + 16 * i) / 100, y + s * 62 / 100, s > 20 ? 2 : 1, w);
         }
         break; }
+    case APP_FIREFOX:
     case APP_NETSURF: {
         static const P eq[] = { {18,50}, {82,50} };
         tile(x, y, s, GDI_C(0x5E, 0x8E, 0xFF), GDI_C(0x2A, 0x4C, 0xD6));

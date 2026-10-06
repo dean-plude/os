@@ -11,6 +11,7 @@ case "$profile" in
         seabios ipxe-qemu ninja-build pkg-config libglib2.0-dev libpixman-1-dev
         libsdl2-dev libepoxy-dev libgbm-dev libdrm-dev libvulkan-dev libpng-dev
         glslang-tools bison flex python3-mako python3-yaml python3-venv gdb) ;;
+    corpus) base+=(cmake make gcc-mingw-w64-x86-64) ;;
     runtime) ;;
     *) echo "unknown dependency profile $profile" >&2; exit 2 ;;
 esac

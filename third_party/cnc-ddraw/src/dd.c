@@ -1395,6 +1395,21 @@ HRESULT dd_SetCooperativeLevel(HWND hwnd, DWORD dwFlags)
         g_ddraw.hwnd = hwnd;
     }
 
+#ifdef NOVAOS
+    if ((dwFlags & DDSCL_NORMAL) && !(dwFlags & DDSCL_FULLSCREEN))
+    {
+        /* DDSCL_NORMAL primary surfaces use desktop coordinates. A VLC
+         * child window must not become a 16-bit game display mode or start
+         * the fullscreen renderer or virtualize its window coordinates:
+         * its clipped Blt is presented by GDI. */
+        g_ddraw.width = real_GetSystemMetrics(SM_CXSCREEN);
+        g_ddraw.height = real_GetSystemMetrics(SM_CYSCREEN);
+        g_ddraw.bpp = 32;
+        g_ddraw.windowed_hack = FALSE;
+        return DD_OK;
+    }
+#endif
+
     if (!g_ddraw.wndproc)
     {
         hook_init();
