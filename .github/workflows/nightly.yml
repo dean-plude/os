@@ -1,182 +1,169 @@
-# Nightly app corpus: boots NovaOS built from main and runs unmodified
-# Windows programs (ripgrep, fd, jq, 7-Zip, MinGit, Python, Node.js,
-# SumatraPDF, WinMerge, VLC, Audacity, KeePassXC, Firefox (installed by the
-# App Store), Notepad++, PuTTY; one file each in
-# tests/appcorpus/) with
-# tools/appcorpus.py, then smpstress on 4 CPUs (locking under load: no deadlocks,
-# and how file and registry throughput scale).  The pass/fail table goes to the run's
-# summary and, as a comment, to the "Nightly app corpus" issue (opened on
-# the first run).  The job needs /dev/kvm and stops without it (start it by hand
-# with allow_tcg for a TCG run); the table says which accelerator ran.  Pull requests that change the corpus or this file run it too.
 name: Nightly app corpus
-
-on:
-  schedule:                     # GitHub drops or delays scheduled runs under load (the only one so far
-    - cron: '17 3 * * *'        # came 6 h late, on 2026-10-03 at 09:15, and 2026-10-04's never came), so two
-    - cron: '47 6 * * *'        # fallbacks follow at odd minutes; the "Gate" job retries failures and
-    - cron: '23 10 * * *'       # suppresses duplicates after an active or successful corpus run
+'on':
+  schedule:
+  - cron: 17 3 * * *
+  - cron: 47 6 * * *
+  - cron: 23 10 * * *
   workflow_dispatch:
     inputs:
       allow_tcg:
-        description: run on a runner without /dev/kvm (the test VMs then run under TCG, much slower)
+        description: Allow software emulation for explicit manual runs
         type: boolean
         default: false
-  pull_request:                 # a change to the corpus itself runs it too (no issue comment)
-    paths: [tools/ci/nightly_gate.py, tools/download_cache.py, tools/appcorpus.py, tests/tools/**, tests/appcorpus/**, .github/workflows/nightly.yml, tests/reference/**]
-
+  pull_request: {}
 permissions:
   contents: read
-  issues: write
-  actions: read                 # the gate lists earlier scheduled runs
-
-env:                            # ccache, as in ci.yml
-  CCACHE_BASEDIR: ${{ github.workspace }}
-  CCACHE_NOHASHDIR: 'true'
-  CCACHE_COMPILERCHECK: content
-  CCACHE_MAXSIZE: 5000M
-
-concurrency:                    # a queued run is replaced by a newer queued run in the same group:
-  group: nightly-app-corpus-${{ github.event_name }}-${{ github.ref }}   # keep manual and scheduled runs apart from pull requests
+  actions: read
+concurrency:
+  group: nightly-app-corpus-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   gate:
-    name: Gate (retry until nightly succeeds)
+    name: Gate (scope and nightly retries)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
-      run: ${{ steps.check.outputs.run }}
+      run: ${{ steps.gate.outputs.run }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Test fallback decisions
-        run: python3 -m unittest discover -s tests/tools -p test_nightly_gate.py -v
-      - id: check
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-        run: python3 tools/ci/nightly_gate.py
-
-  app-corpus:
-    name: App corpus
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install host test dependencies
+      run: |-
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq python3-yaml
+    - name: Host regressions
+      run: python3 -m unittest discover -s tests/tools -v
+    - name: Plan corpus scope
+      run: python3 tools/ci/plan.py
+      id: scope
+    - name: Decide whether to execute
+      run: python3 tools/ci/nightly_gate.py
+      id: gate
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        CORPUS_SCOPE: ${{ steps.scope.outputs.corpus }}
+    - name: Select every corpus program
+      run: echo "matrix=$(python3 tools/ci/plan.py --matrix)" >> "$GITHUB_OUTPUT"
+      id: matrix
+  build:
+    name: Build
     needs: gate
     if: needs.gate.outputs.run == 'true'
+    uses: ./.github/workflows/build.yml
+  app-corpus:
+    name: App corpus (${{ matrix.id }})
+    needs:
+    - gate
+    - build
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.gate.outputs.matrix) }}
+    env:
+      CORPUS_APP: ${{ matrix.app }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Check corpus assertions and reporting
-        run: python3 -m unittest discover -s tests/tools -v
-
-      - name: Enable KVM (fails without /dev/kvm unless allow_tcg)
-        env:
-          NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg }}
-        run: tools/ci/enable-kvm.sh
-
-      - name: Install the toolchain and QEMU
-        run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-            cmake make nasm clang lld llvm libc++-dev gcc-mingw-w64-x86-64 \
-            qemu-system-x86 qemu-system-gui ovmf mtools dosfstools p7zip-full curl python3-pil ntfs-3g ccache \
-            pulseaudio pulseaudio-utils
-          echo /usr/lib/ccache >> "$GITHUB_PATH"
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      - name: Restore the compiler cache (saved by CI's boot-test job)
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ github.run_id }}
-          restore-keys: ccache-
-
-      - name: Cache the program downloads
-        uses: actions/cache@v4
-        with:
-          path: appcorpus-cache
-          key: appcorpus-v2-${{ hashFiles('tools/download_cache.py', 'tools/appcorpus.py', 'tests/appcorpus/*.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            appcorpus-v2-${{ hashFiles('tools/download_cache.py', 'tools/appcorpus.py', 'tests/appcorpus/*.py') }}-
-            appcorpus-v2-
-
-      - name: Build NovaOS
-        run: |
-          cmake -S . -B build -G "Unix Makefiles"
-          make -C build -j"$(nproc)" || {
-            cat build/kernel_build-prefix/src/kernel_build-stamp/kernel_build-build-err.log 2>/dev/null | tail -100
-            exit 1
-          }
-
-      - name: Run the programs
-        id: corpus
-        run: |
-          python3 tools/appcorpus.py --img build/nova.img --cache appcorpus-cache --out appcorpus-out \
-            --summary appcorpus-out/table.md
-        continue-on-error: true
-
-      # The target is 3x one CPU's file and registry throughput (Phase 17.7),
-      # but a shared runner may not run the 4 emulated CPUs side by side at
-      # all (bare system calls: 0.6-1x there).  So the run measures
-      # (scaling 0: no fixed target) and fails on a hang or a failed test;
-      # where bare system calls do scale (2x or more), also on files or the
-      # registry scaling less than half as well (work under one big lock
-      # would).  The table records the figures.
-      - name: SMP stress on 4 CPUs
-        id: smp
-        run: |
-          mkdir -p appcorpus-out
-          python3 tools/novarun.py --img build/nova.img --smp 4 --timeout 900 'smpstress scaling 0' \
-            | tee appcorpus-out/smpstress.log
-          { echo; echo '### smpstress on 4 CPUs'; echo; echo '```'
-            grep -E '^  [a-z(].*(x|ms)$|smpstress: [0-9]+ passed|TIMEOUT' appcorpus-out/smpstress.log
-            echo '```'; } > appcorpus-out/smp.md
-          python3 tools/ci/check-smpstress.py appcorpus-out/smpstress.log
-        continue-on-error: true
-
-      - name: Post the table
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          mkdir -p appcorpus-out
-          [ -f appcorpus-out/table.md ] || echo '### NovaOS app corpus: did not run' > appcorpus-out/table.md
-          [ -f appcorpus-out/smp.md ] && cat appcorpus-out/smp.md >> appcorpus-out/table.md
-          cat appcorpus-out/table.md >> "$GITHUB_STEP_SUMMARY"
-          [ "$GITHUB_EVENT_NAME" != pull_request ] || exit 0
-          { cat appcorpus-out/table.md
-            echo "main at ${GITHUB_SHA::7}, [run log and screenshots]($RUN_URL)"; } > body.md
-          title='Nightly app corpus'
-          n=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
-                --jq ".[] | select(.title == \"$title\") | .number" | head -1)
-          if [ -z "$n" ]; then
-            n=$(gh issue create --title "$title" \
-                  --body "Each night's results from .github/workflows/nightly.yml are posted here as comments." |
-                grep -o '[0-9]*$')
-          fi
-          gh issue comment "$n" --body-file body.md
-
-      - name: Keep the serial log and screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: appcorpus-out
-          path: appcorpus-out
-          if-no-files-found: ignore
-
-      - name: Fail when a program failed
-        if: steps.corpus.outcome == 'failure' || steps.smp.outcome == 'failure'
-        run: exit 1
-
+    - uses: actions/checkout@v4
+    - name: Install corpus dependencies
+      run: tools/ci/install.sh runtime
+    - name: Require working accelerator
+      run: tools/ci/enable-kvm.sh required
+      env:
+        NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg || false }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: nova-image
+        path: build
+    - name: Verify tested image
+      run: python3 tools/ci/image_manifest.py verify --sha "$GITHUB_SHA"
+    - name: Program download cache
+      uses: actions/cache@v4
+      with:
+        path: appcorpus-cache
+        key: appcorpus-v3-${{ matrix.id }}-${{ hashFiles('tools/download_cache.py', 'tools/appcorpus.py', 'tests/appcorpus/**')
+          }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: appcorpus-v3-${{ matrix.id }}-${{ hashFiles('tools/download_cache.py', 'tools/appcorpus.py',
+          'tests/appcorpus/**') }}-
+    - name: Run the programs
+      run: python3 tools/appcorpus.py --img build/nova.img --only "$CORPUS_APP" --cache appcorpus-cache --out appcorpus-out
+        --summary appcorpus-out/table.md
+    - name: Show program outcome
+      run: if [ -f appcorpus-out/table.md ]; then cat appcorpus-out/table.md >> "$GITHUB_STEP_SUMMARY"; else echo
+        "Program did not produce a report." >> "$GITHUB_STEP_SUMMARY"; fi
+      if: always()
+    - name: Keep appcorpus-${{ matrix.id }}
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: appcorpus-${{ matrix.id }}
+        path: appcorpus-out
+        if-no-files-found: ignore
+        retention-days: 14
+  smp:
+    name: SMP stress
+    needs:
+    - gate
+    - build
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install runtime dependencies
+      run: tools/ci/install.sh runtime
+    - name: Require working accelerator
+      run: tools/ci/enable-kvm.sh required
+      env:
+        NOVARUN_ALLOW_TCG: ${{ inputs.allow_tcg || false }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: nova-image
+        path: build
+    - name: Verify tested image
+      run: python3 tools/ci/image_manifest.py verify --sha "$GITHUB_SHA"
+    - name: Run SMP stress
+      run: |-
+        mkdir -p smp-out
+        python3 tools/novarun.py --img build/nova.img --smp 4 --keep smp-out --timeout 900 'smpstress scaling 0' | tee smp-out/smpstress.log
+        python3 tools/ci/check-smpstress.py smp-out/smpstress.log
+    - name: Keep smp-out
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: smp-out
+        path: smp-out/*.log
+        if-no-files-found: ignore
+        retention-days: 14
   corpus-result:
     name: Corpus result
-    needs: [gate, app-corpus]
+    needs:
+    - gate
+    - build
+    - app-corpus
+    - smp
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - name: Require execution when the gate requests it
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: python3 tools/ci/check_job_results.py corpus
+    - uses: actions/checkout@v4
+    - name: Collect app reports
+      if: needs.gate.outputs.run == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        pattern: appcorpus-*
+        path: corpus-reports
+    - name: Validate and combine corpus reports
+      run: python3 tools/ci/corpus_report.py corpus-reports
+      if: always() && needs.gate.outputs.run == 'true'
+      env:
+        CORPUS_MATRIX: ${{ needs.gate.outputs.matrix }}
+    - name: Require every selected job
+      run: python3 tools/ci/results.py corpus
+      env:
+        NEEDS_JSON: ${{ toJSON(needs) }}
+      if: always()

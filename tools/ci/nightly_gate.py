@@ -32,19 +32,20 @@ def should_run(runs, jobs, current_id, branch, since):
                 return False, f"run {run['id']} is active"
         if run['created_at'] < since or run['conclusion'] != 'success':
             continue
-        for job in jobs(run['id']):
-            # continue-on-error hides a failed step in the API. Require job success
-            # AND an executed corpus step, never workflow/gate success alone.
-            if (job['name'] == 'App corpus' and job['conclusion'] == 'success' and
-                    any(s['name'] == 'Run the programs' and s['conclusion'] == 'success'
-                        for s in job.get('steps') or [])):
-                return False, f"run {run['id']} completed the corpus successfully"
+        executed = list(jobs(run['id']))
+        corpus = [job for job in executed if job['name'] == 'App corpus' or
+                  job['name'].startswith('App corpus (')]
+        if corpus and all(job['conclusion'] == 'success' and
+                any(s['name'] == 'Run the programs' and s['conclusion'] == 'success'
+                    for s in job.get('steps') or []) for job in corpus):
+            return False, f"run {run['id']} completed the corpus successfully"
     return True, 'no active run or successful corpus in the last 20 hours'
 
 
 def main():
     if os.environ['EVENT'] != 'schedule':
-        run, why = True, 'PR/manual invocation'
+        run = os.environ['EVENT'] != 'pull_request' or os.environ['CORPUS_SCOPE'] == 'true'
+        why = 'manual invocation' if os.environ['EVENT'] != 'pull_request' else 'PR corpus scope: ' + str(run)
     else:
         repo = os.environ['GITHUB_REPOSITORY']
         def get(path):

@@ -164,7 +164,7 @@ class Nova:
     """One NovaOS boot in QEMU with its Terminal open and mirrored to serial"""
 
     def __init__(self, img=None, work=None, puts=(), mem=2048, smp=2, data_mb=1024, wav=None,
-                 extra_args=(), boot_timeout=300, net=False, keep_data=False, vga=('-vga', 'std'), rec=None):
+                 extra_args=(), boot_timeout=300, net=False, keep_data=False, vga=('-vga', 'std'), rec=None, serial_path=None):
         self.work = work or tempfile.mkdtemp(prefix='novarun')
         # more monitors: QEMU display devices with an id (-device secondary-vga,id=head2), and
         # each further output of a virtio GPU with an id (-device virtio-vga,max_outputs=3,id=gpu)
@@ -177,6 +177,11 @@ class Nova:
         os.makedirs(self.work, exist_ok=True)
         data, self.serial_path, sock, mon = (os.path.join(self.work, n)
                                              for n in ('data.img', 'serial.log', 'qmp.sock', 'monitor.sock'))
+        # A caller can retain live serial evidence outside the temporary VM
+        # directory, including when a workflow timeout interrupts Python.
+        if serial_path:
+            self.serial_path = os.path.abspath(serial_path)
+            os.makedirs(os.path.dirname(self.serial_path), exist_ok=True)
         for p in (self.serial_path, sock, mon):
             if os.path.exists(p):
                 os.unlink(p)

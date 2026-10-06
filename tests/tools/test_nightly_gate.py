@@ -48,12 +48,20 @@ class GateTests(unittest.TestCase):
             calls.append(path)
             key = 'jobs' if '/jobs?' in path else 'workflow_runs'
             if path.endswith('&page=1'):
-                return {key: [job('skipped', []) if key == 'jobs' else run(id=10)] * 100}
+                return {key: [dict(name='Other job', conclusion='success', steps=[]) if key == 'jobs' else run(id=10)] * 100}
             return {key: [job() if key == 'jobs' else run()]}
         runs = gate.pages(get, 'runs?branch=main', 'workflow_runs')
         self.assertFalse(gate.should_run(runs, lambda _: gate.pages(get, 'runs/1/jobs?filter=latest', 'jobs'),
                                          10, 'main', '2026-10-04T20:00:00Z')[0])
         self.assertEqual(len(calls), 4)
+
+    def test_sharded_corpus_requires_every_executed_shard_to_succeed(self):
+        first, second = job(), job()
+        first['name'], second['name'] = 'App corpus (01)', 'App corpus (02)'
+        self.assertFalse(self.decision([run()], [first, second]))
+        for status in ('failure', 'skipped', 'cancelled'):
+            second['conclusion'] = status
+            self.assertTrue(self.decision([run()], [first, second]))
 
     def test_api_failure_is_not_permission_to_run(self):
         def broken(path):

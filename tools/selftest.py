@@ -661,12 +661,14 @@ def run_boot(a, tests, work, label, **nova_args):
     @label names the boot's serial log (serial-LABEL.log) when a suite has several"""
     results = []
     log_name = f'serial-{label}.log' if label else 'serial.log'
+    raw_log = os.path.join(a.out, log_name.replace('.log', '-raw.log'))
     t_boot = time.time()
     try:
-        nova = Nova(nova_args.pop('img', a.img), work, **nova_args)
+        nova = Nova(nova_args.pop('img', a.img), work, serial_path=raw_log, **nova_args)
     except RuntimeError as e:
         print(e)
-        shutil.copy(os.path.join(work, 'serial.log'), os.path.join(a.out, log_name))
+        if os.path.exists(raw_log):
+            shutil.copy(raw_log, os.path.join(a.out, log_name))
         return [('boot' + (f' ({label})' if label else ''), str(e).splitlines()[0], 0, '')]
     print(f'booted{" (" + label + ")" if label else ""} in {time.time() - t_boot:.0f} s', flush=True)
     full_log = nova.boot_log
