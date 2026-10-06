@@ -27,7 +27,7 @@ def sources():
 
 def cnc_flags(b):
     resdir = subprocess.run(['clang', '-print-resource-dir'], capture_output=True, text=True).stdout.strip()
-    return ['--target=' + b.TARGETS[b.ARCH], '-msse2', '-D_X86_=1', '-O2', '-fms-extensions', '-fms-compatibility',
+    return ['--target=' + b.TARGETS[b.ARCH], '-msse2', '-D_X86_=1', '-DNOVAOS=1', '-O2', '-fms-extensions', '-fms-compatibility',
             '-fms-compatibility-version=19.43', '-fgnuc-version=4.2.1', '-fno-stack-protector',
             '-mno-stack-arg-probe', '-nostdinc', '-w', '-D__USE_MINGW_ANSI_STDIO=0',
             '-isystem', os.path.join(resdir, 'include'), '-I', SHIM, '-I', os.path.join(CNC, 'inc'),

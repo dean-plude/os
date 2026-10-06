@@ -18,6 +18,37 @@
 #include "palette.h"
 
 
+#ifdef NOVAOS
+/* Windowed video players use a primary surface and an HWND clipper without
+ * SetDisplayMode. There is no game render thread in that case. Present the
+ * screen-coordinate primary pixels into the clipper's client DC directly. */
+static HRESULT nova_present_windowed_primary(IDirectDrawSurfaceImpl *surface)
+{
+    if (!(surface->caps & DDSCAPS_PRIMARYSURFACE) || g_ddraw.render.run ||
+        !surface->clipper || !surface->clipper->hwnd || !surface->surface || !surface->bmi)
+        return DD_OK;
+    HWND hwnd = surface->clipper->hwnd;
+    RECT client;
+    POINT origin = { 0, 0 };
+    if (!GetClientRect(hwnd, &client) || !ClientToScreen(hwnd, &origin))
+        return DDERR_GENERIC;
+    int sx = origin.x < 0 ? 0 : origin.x;
+    int sy = origin.y < 0 ? 0 : origin.y;
+    int right = origin.x + client.right, bottom = origin.y + client.bottom;
+    if (right > (int)surface->width) right = surface->width;
+    if (bottom > (int)surface->height) bottom = surface->height;
+    int width = right - sx, height = bottom - sy;
+    if (width <= 0 || height <= 0) return DD_OK;
+    HDC dc = GetDC(hwnd);
+    if (!dc) return DDERR_GENERIC;
+    int rows = real_StretchDIBits(dc, sx - origin.x, sy - origin.y, width, height,
+        sx, sy, width, height, surface->surface, (BITMAPINFO *)surface->bmi,
+        DIB_RGB_COLORS, SRCCOPY);
+    ReleaseDC(hwnd, dc);
+    return rows > 0 ? DD_OK : DDERR_GENERIC;
+}
+#endif
+
 LONG g_dds_gdi_handles;
 
 HRESULT dds_AddAttachedSurface(IDirectDrawSurfaceImpl* This, IDirectDrawSurfaceImpl* lpDDSurface)
@@ -464,7 +495,11 @@ HRESULT dds_Blt(
         }
     }
 
+#ifdef NOVAOS
+    return nova_present_windowed_primary(This);
+#else
     return DD_OK;
+#endif
 }
 
 HRESULT dds_BltFast(
