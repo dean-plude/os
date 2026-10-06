@@ -686,7 +686,8 @@ def gui(nova, t, a, app, echo, close):
         return out, m.group(0).split(') ', 1)[1]
     w = app.interact(nova, echo) if app.interact else None
     time.sleep(3)
-    w = check_shot(nova, a, app.name.lower() + '.png') or w
+    visual = check_shot(nova, a, app.name.lower() + '.png')
+    w = w or visual  # retain the semantic failure while always keeping a capture
     if close:
         nova.keys('alt-f4')
         out, why = settle(nova, out)

@@ -69,6 +69,8 @@ def record(nova, echo):
     time.sleep(2)
     nova.keys('ret')
     time.sleep(40)                                  # the project is written
+    nova.keys('home ctrl-f')                        # start + fit project; recording auto-scroll varies
+    time.sleep(3)
     return None
 
 
