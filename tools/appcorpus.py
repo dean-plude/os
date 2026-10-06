@@ -39,7 +39,7 @@ The exit status counts failed and unrun programs; skips do not fail the run.  --
 a Markdown pass/fail table, one row per program (the nightly workflow,
 .github/workflows/nightly.yml, posts it).
 """
-import argparse, http.server, math, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
+import argparse, json, http.server, math, os, re, shutil, socket, ssl, struct, subprocess, sys, tempfile, threading, time, zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from novarun import Nova, ROOT, accel_args
@@ -412,6 +412,22 @@ def compare(shot, ref, size=(640, 400), level=48):
     return diff.histogram()[255] / (size[0] * size[1])
 
 
+def selected_apps(apps, only):
+    if only is None:
+        selected = list(apps)
+    else:
+        names = only.split(',')
+        if not names or any(not n for n in names) or len(names) != len(set(names)):
+            raise ValueError('invalid or duplicate corpus selection')
+        selected = [app for app in apps if app.name in names]
+        missing = set(names) - {app.name for app in selected}
+        if missing:
+            raise ValueError('unknown corpus programs: ' + ', '.join(sorted(missing)))
+    if not selected:
+        raise ValueError('corpus selection must not be empty')
+    return selected
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--img', default=os.path.join(ROOT, 'build', 'nova.img'))
@@ -426,7 +442,10 @@ def main():
     ap.add_argument('--max-diff', type=float, default=0.03, help='share of differing pixels allowed')
     a = ap.parse_args()
 
-    apps = [x for x in APPS if not a.only or x.name in a.only.split(',')]
+    try:
+        apps = selected_apps(APPS, a.only)
+    except ValueError as e:
+        ap.error(str(e))
     os.makedirs(a.out, exist_ok=True)
     a.cache = DownloadCache(a.cache, a.mutable_max_age, a.download_lock,
                             os.path.join(a.out, 'downloads.json'))
@@ -481,7 +500,7 @@ def main():
         # memory runs short and read back from the data disk when wanted, so
         # 6 GB is room enough; the data disk needs room for all of C:
         nova = Nova(a.img, os.path.join(work, 'boot'), puts, mem=6144, data_mb=12288,
-                    extra_args=extra,
+                    extra_args=extra, serial_path=os.path.join(a.out, 'serial-raw.log'),
                     net=echo is not None or https is not None, rec=rec, wav=wav)
     except RuntimeError as e:
         print(e)
@@ -767,6 +786,14 @@ def report(a, apps, results):
                f'{counts["skipped"]} skipped, {counts["not run"]} not run '
                f'({len(apps)} programs selected)')
     print('\n' + summary)
+    if getattr(a, 'out', None):
+        outcomes = [{'name': app.name, 'version': app.version,
+                     'outcome': result_status(results.get(app.name, (NOT_RUN + ': no result recorded', 0, []))[0]),
+                     'reason': results.get(app.name, (NOT_RUN + ': no result recorded', 0, []))[0]}
+                    for app in apps]
+        with open(os.path.join(a.out, 'results.json'), 'w') as out:
+            json.dump({'counts': counts, 'programs': outcomes}, out, indent=2)
+
     if a.summary:
         with open(a.summary, 'a') as f:
             f.write(f'### NovaOS app corpus: {summary}\n\n')
