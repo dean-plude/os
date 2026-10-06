@@ -82,3 +82,12 @@ suite-list checks, documentation validation and conflict-marker check. Full
 native build/boot validation is supplied by the PR's Actions runs. Rebuilding
 or rerunning CI does not establish support for physical hardware or repair
 unrelated app/runtime failures.
+
+Corpus visual fixtures use the existing desktop menu to select Sunset, matching
+our full-screen reference images. A checked desktop patch fails setup if theme
+selection did not take effect. Normal OS boots keep Aurora, and screenshot
+thresholds and reference images are unchanged. The selected app declares its
+own networking independently of echo/HTTPS fixtures. VLC stages its own
+30-second H.264/AAC color-bar clip instead of relying on another app's output.
+WebView2 installation accepts the updater's bracketed success log format and
+still requires a zero result and every WebView2 host milestone.

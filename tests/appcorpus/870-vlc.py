@@ -1,5 +1,5 @@
-# VLC media player plays the H.264 and AAC MP4 the ffmpeg test made
-# (C:\Apps\in.mp4: 30 s of SMPTE colour bars with a 440 Hz tone), looping,
+# VLC media player plays its own H.264 and AAC MP4 fixture
+# (C:\Apps\VLC\corpus.mp4: 30 s of SMPTE colour bars with a 440 Hz tone), looping,
 # with its Qt interface: its screenshot must match tests/reference/vlc.png
 # and the sound NovaOS played must hold the tone (App(sound=...)).  The
 # 32-bit PortableApps package (an NSIS installer 7z unpacks; only App/vlc,
@@ -24,6 +24,12 @@ def unpack(app, files, dest):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     shutil.move(os.path.join(tmp, 'App', 'vlc'), dest)
     shutil.rmtree(tmp, ignore_errors=True)
+    # Each app can run in its own VM; do not inherit ffmpeg's guest output.
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y',
+                    '-f', 'lavfi', '-i', 'smptebars=d=30:s=320x240:r=10',
+                    '-f', 'lavfi', '-i', 'sine=f=440:d=30',
+                    '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac',
+                    os.path.join(dest, 'corpus.mp4')], check=True)
 
 
 def settled(nova, echo):
@@ -56,5 +62,5 @@ def settled(nova, echo):
 
 APP = App('VLC', '3.0.21', 'https://downloads.sourceforge.net/project/portableapps/VLC%20Media%20Player%20Portable/VLCPortable_3.0.21.paf.exe',
           'VLC', [Test('play an MP4', rf'start {A}\VLC\vlc.exe -vv --no-qt-privacy-ask --no-qt-updates-notif '
-                       rf'--avcodec-hw=none --loop --no-video-title-show {A}\in.mp4', timeout=45)],
+                       rf'--avcodec-hw=none --loop --no-video-title-show {A}\VLC\corpus.mp4', timeout=45)],
           unpack=unpack, gui=True, sound=(440, 3000), interact=settled)
