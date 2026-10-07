@@ -49,7 +49,8 @@ def first_start(nova, echo):
 APP = App('Teeworlds', '0.7.5', 'https://github.com/teeworlds/teeworlds/releases/download/0.7.5/teeworlds-0.7.5-win64.zip',
           'Teeworlds', [Test('install Mesa 3D', 'store install Mesa 3D', store='Mesa 3D', timeout=1200),
                         Test('install from the App Store', 'store install Teeworlds', store='Teeworlds', timeout=600),
-                        Test('pin daytime menu fixture', r'del C:\Programs\Teeworlds\teeworlds-0.7.5-win64\data\ui\themes\winter_night.map'),
+                        Test('pin daytime menu fixture', r'del C:\Programs\Teeworlds\teeworlds-0.7.5-win64\data\ui\themes\winter_night.map',
+                             builtin=True),
                         Test('settings with the mouse', r'start C:\Programs\Teeworlds\teeworlds-0.7.5-win64\teeworlds.exe',
                              timeout=90)],
           store='Teeworlds', gui=True, runtimes=['Mesa 3D'], sound=(None, 5000), interact=first_start)

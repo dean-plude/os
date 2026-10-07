@@ -39,10 +39,14 @@ static HRESULT nova_present_windowed_primary(IDirectDrawSurfaceImpl *surface)
     if (bottom > (int)surface->height) bottom = surface->height;
     int width = right - sx, height = bottom - sy;
     if (width <= 0 || height <= 0) return DD_OK;
+    /* StretchDIBits counts the source y from the bottom of the image, a
+     * top-down DIB's included (the guard lines below the surface too) */
+    int rows_in_dib = surface->bmi->bmiHeader.biHeight < 0 ?
+        -surface->bmi->bmiHeader.biHeight : surface->bmi->bmiHeader.biHeight;
     HDC dc = GetDC(hwnd);
     if (!dc) return DDERR_GENERIC;
     int rows = real_StretchDIBits(dc, sx - origin.x, sy - origin.y, width, height,
-        sx, sy, width, height, surface->surface, (BITMAPINFO *)surface->bmi,
+        sx, rows_in_dib - sy - height, width, height, surface->surface, (BITMAPINFO *)surface->bmi,
         DIB_RGB_COLORS, SRCCOPY);
     ReleaseDC(hwnd, dc);
     return rows > 0 ? DD_OK : DDERR_GENERIC;

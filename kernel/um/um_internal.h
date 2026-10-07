@@ -9,7 +9,8 @@
 #include "../ke/syscall.h"
 
 #define UM_MAX_PROCS     32
-#define UM_MAX_HANDLES   4096
+#define UM_MAX_HANDLES   16384    /* (Windows allows millions; a browser's main process can pass 4,096) */
+#define UM_HANDLES_MANY  4096     /* held at once: the log says by kind what they are (um_syscall.c) */
 #define UM_MAX_REGIONS   8192     /* (runtimes such as CoreCLR reserve thousands of ranges) */
 #define UM_MAX_MODULES   1024     /* (Audacity loads about 150, VLC every plugin: about 410) */
 #define UM_MAX_DLL_DIRS  16       /* AddDllDirectory's folders */
@@ -235,6 +236,7 @@ struct UmProcess {
     UINT64      image_base, image_entry;   /* the program's, between um_spawn_image and _finish */
 
     UmHandle    handles[UM_MAX_HANDLES];
+    bool        handles_many_told, handles_full_told;   /* the log said what its handles are (um_syscall.c) */
     volatile UINT8 hbusy[UM_MAX_HANDLES];   /* a slot's own lock, for object handles (see um_syscall.c) */
     UmRegion   *regions;        /* [UM_MAX_REGIONS], allocated with the process */
     int         nregions;
@@ -379,6 +381,7 @@ UINT64     um_stack_arg(int n);                 /* syscall argument n >= 5 */
 UINT64     um_now_100ns(void);                  /* system time (100 ns since 1601) */
 UINT64     um_boot_time_100ns(void);            /* the system time NovaOS started at */
 UINT64     um_handle_new_object(UmProcess *p, UmObject *o);   /* takes a reference; 0 if full */
+void       um_handles_full(UmProcess *p);  /* @p's handle table is full: say once in the log what holds it */
 UmObject  *um_handle_object(UmProcess *p, UINT64 h, UmObType type);   /* referenced; NULL if bad */
 /* The process a handle names (-1: @self); @ob holds a reference to drop
  * (um_ob_unref) when it is another process.  NULL if bad or gone. */

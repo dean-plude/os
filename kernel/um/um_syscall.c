@@ -334,6 +334,51 @@ static void slot_unlock(UmProcess *p, int i)
     __atomic_store_n(&p->hbusy[i], 0, __ATOMIC_RELEASE);
 }
 
+/* What a process's handles are, said once in the log by kind, when it
+ * first holds UM_HANDLES_MANY of them (@full false: Windows programs rarely
+ * need that many, so a program that keeps handles it no longer needs, or a
+ * NovaOS call that never lets one go, shows before it matters) and when
+ * the table is full (@full: the program gets STATUS_TOO_MANY_OPENED_FILES,
+ * Win32's ERROR_TOO_MANY_OPEN_FILES).  Read without the slot locks: a
+ * count, for diagnostics. */
+static void handle_census(UmProcess *p, bool full)
+{
+    static const char *const kinds[] = { "free", "files", "console in", "console out", "folders", "objects", "null" };
+    static const char *const types[] = { "?", "events", "mutants", "semaphores", "threads", "sockets", "windows",
+                                         "processes", "keys", "sections", "pipes", "directories", "symlinks",
+                                         "timers", "audio", "consoles", "tokens", "gpu", "afd", "keyed events" };
+    if (full ? p->handles_full_told : p->handles_many_told) return;
+    if (full) p->handles_full_told = true;
+    else p->handles_many_told = true;
+    int kind[7] = { 0 }, type[20] = { 0 }, ended_threads = 0, ended_procs = 0, named = 0;
+    for (int i = 0; i < UM_MAX_HANDLES; i++) {
+        UmHandle *h = &p->handles[i];
+        unsigned k = h->kind;
+        if (k < 7) kind[k]++;
+        if (k != H_OBJECT || !h->obj) continue;
+        UmObject *o = h->obj;
+        type[o->type < 20 ? o->type : 0]++;
+        if (o->named) named++;
+        if (o->type == UO_THREAD && o->signaled) ended_threads++;
+        if (o->type == UO_PROCESS && o->signaled) ended_procs++;
+    }
+    char line[512];
+    int n = full ? ksnprintf(line, sizeof(line), "[UM] %s (PID %u): all %d handles are taken:", p->name, p->pid, UM_MAX_HANDLES)
+                 : ksnprintf(line, sizeof(line), "[UM] %s (PID %u) holds %d handles:", p->name, p->pid, UM_HANDLES_MANY);
+    for (int k = 1; k < 7; k++)
+        if (kind[k] && k != H_OBJECT && n < (int)sizeof(line))
+            n += ksnprintf(line + n, sizeof(line) - n, " %d %s,", kind[k], kinds[k]);
+    for (int t = 0; t < 20; t++)
+        if (type[t] && n < (int)sizeof(line))
+            n += ksnprintf(line + n, sizeof(line) - n, " %d %s,", type[t], types[t]);
+    if (n < (int)sizeof(line))
+        ksnprintf(line + n, sizeof(line) - n, " (%d named; %d of the threads and %d of the processes have ended)",
+                  named, ended_threads, ended_procs);
+    kprintf("%s\n", line);
+}
+
+void um_handles_full(UmProcess *p) { handle_census(p, true); }
+
 /* A free slot, cleared and locked (the caller fills it in, kind last, and
  * unlocks it), with the process lock held shared; 0 if there is none */
 static UINT64 slot_alloc(UmProcess *p, UmHandle **out)
@@ -345,10 +390,12 @@ static UINT64 slot_alloc(UmProcess *p, UmHandle **out)
         if (p->handles[i].kind == H_FREE) {
             memset(&p->handles[i], 0, sizeof(UmHandle));
             *out = &p->handles[i];
+            if (i == UM_HANDLES_MANY - 1) handle_census(p, false);   /* (the lowest free slot is taken first) */
             return v;
         }
         slot_unlock(p, i);
     }
+    um_handles_full(p);
     return 0;
 }
 
@@ -359,9 +406,11 @@ static UINT64 handle_alloc(UmProcess *p, UmHandle **out)
         if (p->handles[i].kind == H_FREE) {
             memset(&p->handles[i], 0, sizeof(UmHandle));
             *out = &p->handles[i];
+            if (i == UM_HANDLES_MANY - 1) handle_census(p, false);
             return (UINT64)(i + 1) * 4;
         }
     }
+    um_handles_full(p);
     return 0;
 }
 
