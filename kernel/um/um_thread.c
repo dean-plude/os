@@ -1278,6 +1278,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             int free = -1;
             for (int i = 0; i < UM_MAX_HANDLES; i++) if (tp->handles[i].kind == H_FREE) { free = i; break; }
             if (free >= 0) { tp->handles[free] = src; nh = (UINT64)(free + 1) * 4; }
+            else um_handles_full(tp);
             um_unlock_excl(&tp->lock);
             if (free < 0) st = ST_TOO_MANY_HANDLES;
         }
@@ -1288,7 +1289,7 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
         }
         DesktopUnlock();
     }
-    if (!st && (options & 1)) {                              /* DUPLICATE_CLOSE_SOURCE */
+    if (options & 1) {                                       /* DUPLICATE_CLOSE_SOURCE, copied or not (as Windows) */
         if (sp == p) um_close_handle(a2);
         else {
             DesktopLock();

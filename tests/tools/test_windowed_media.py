@@ -70,7 +70,7 @@ typedef void *HWND;
 typedef void *HDC;
 typedef struct { int left, top, right, bottom; } RECT;
 typedef struct { int x, y; } POINT;
-typedef int BITMAPINFO;
+typedef struct { struct { int biHeight; } bmiHeader; } BITMAPINFO;
 typedef struct { HWND hwnd; } Clipper;
 typedef struct { int caps; Clipper *clipper; void *surface; BITMAPINFO *bmi; unsigned width, height; } IDirectDrawSurfaceImpl;
 static struct { struct { int run; } render; } g_ddraw;
@@ -81,6 +81,7 @@ static HDC GetDC(HWND h) { return fail_dc ? NULL : (void *)2; }
 static int ReleaseDC(HWND h, HDC d) { releases++; return 1; }
 static int real_StretchDIBits(HDC dc, int dx, int dy, int w, int h,
     int sx, int sy, int sw, int sh, void *bits, BITMAPINFO *bmi, int usage, int rop) {
+    sy = 768 - sy - sh;                 /* (counted from the bottom, as Windows does) */
     assert(dx==sx-ox && dy==sy-oy && w==sw && h==sh);
     assert(sx>=0 && sy>=0 && sx+w<=1024 && sy+h<=768);
     if(ox==340) assert(sx==340 && sy==172 && w==485 && h==240);
@@ -92,7 +93,7 @@ static int real_StretchDIBits(HDC dc, int dx, int dy, int w, int h,
 '''
         fixture += helper + r'''
 int main(void) {
-    BITMAPINFO bmi=0; Clipper clipper={(void *)1};
+    BITMAPINFO bmi={{-768}}; Clipper clipper={(void *)1};
     IDirectDrawSurfaceImpl s={1,&clipper,(void *)3,&bmi,1024,768};
     assert(nova_present_windowed_primary(&s)==DD_OK && presents==1 && releases==1);
     ox=-10; assert(nova_present_windowed_primary(&s)==DD_OK);
