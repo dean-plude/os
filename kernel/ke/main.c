@@ -76,6 +76,7 @@
 #include "../hal/firmware.h"
 #include "../drivers/usb.h"
 #include "../drivers/i2chid.h"
+#include "../drivers/vmbus.h"
 #include "../hal/acpi.h"
 #include "../hal/aml.h"
 #include "../hal/ioapic.h"
@@ -114,7 +115,7 @@ static void print_banner(void)
 /* -----------------------------------------------------------------------
  * Demo threads — smoke tests
  * ----------------------------------------------------------------------- */
-/* The keyboard and mouse polls (PS/2 and USB HID), once per 10 ms tick.
+/* The keyboard and mouse polls (PS/2, USB HID and Hyper-V's VMBus), once per 10 ms tick.
  * They used to run in the timer interrupt, but their port and MMIO reads
  * can block for milliseconds under emulation (QEMU serializes device
  * access), which with interrupts off delayed every Sleep and wait timeout
@@ -130,6 +131,7 @@ static void device_poll_thread(void *arg)
         sched_sleep_until_tsc(NULL, sched_tick_tsc(sched_ticks() + 1));
         ps2_poll();
         UsbPoll();
+        VmbusPoll();
     }
 }
 
@@ -428,6 +430,7 @@ void __attribute__((noreturn)) KiSystemStartup(const BootInfo *info_phys)
         ps2_init();
         UsbInit();                        /* USB keyboards, mice, hubs and sticks */
         I2cHidInit();                     /* touchpads on I2C (a thread, once ACPI is loaded) */
+        VmbusInit();                      /* Hyper-V's keyboard and mouse (CPU 0, interrupts off) */
         sched_create_thread("devpoll", device_poll_thread, NULL, PRIO_DEVICE);   /* (above programs and the desktop) */
         sched_create_thread("desktop", DesktopRun, NULL, PRIO_DESKTOP);   /* (above any program thread, boosted or not) */
         kprintf_set_fb_enabled(false);    /* WM owns the screen; logs → serial */

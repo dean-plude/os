@@ -854,6 +854,8 @@ os/
 - [docs/hardware.md](docs/hardware.md): the reference PC for real
   hardware, which of its devices NovaOS drives, and every driver NovaOS
   has.
+- [docs/hyperv.md](docs/hyperv.md): running NovaOS in a Hyper-V VM (the
+  keyboard and mouse over VMBus) and what does not work there yet.
 - [docs/ethernet.md](docs/ethernet.md): the Intel Ethernet driver, the
   I219 IDs it takes and how it brings one up.
 - [docs/install-and-power.md](docs/install-and-power.md): installing on a

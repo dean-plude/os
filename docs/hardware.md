@@ -10,7 +10,8 @@ concrete meaning and a machine anyone can buy to check it.
 | Machine | Status |
 |---|---|
 | **QEMU** (Linux with or without KVM, macOS, Windows through WSL2) | Supported and tested on every pull request: a q35 machine with OVMF firmware, as [building.md](building.md#running-in-qemu) and [macos.md](macos.md) start it |
-| **Other virtual machines** (VirtualBox, VMware, Hyper-V, UTM) | Untested; UTM is QEMU underneath ([macos.md](macos.md)).  NovaOS needs UEFI, an AHCI SATA or NVMe disk, and an Intel e1000/e1000e or virtio-net network card |
+| **Hyper-V** | A Generation 2 VM with Secure Boot off: the keyboard and mouse work over VMBus; no driver yet for its disks or network, so NovaOS runs live from the ISO ([hyperv.md](hyperv.md)) |
+| **Other virtual machines** (VirtualBox, VMware, UTM) | Untested; UTM is QEMU underneath ([macos.md](macos.md)).  NovaOS needs UEFI, an AHCI SATA or NVMe disk, and an Intel e1000/e1000e or virtio-net network card |
 | **Real PCs** | **Not yet checked on any machine.**  NovaOS should start on a UEFI PC with Secure Boot off from a USB stick, on the firmware's framebuffer; the reference machine below is the first one to be checked, by hand ([install-and-power.md](install-and-power.md#checks-on-the-t14)) |
 | **Macs** | Intel Macs from a USB stick, untested and with few drivers ([macos.md](macos.md#on-a-real-intel-mac--untested)); Apple Silicon Macs only in QEMU |
 
@@ -285,5 +286,5 @@ For reference, every driver NovaOS has, by device:
 | Network | Intel 82540EM, 82544 and 82545EM (`e1000`), Intel 82574L and I219-LM/I219-V (`e1000e`), virtio-net |
 | Audio | Intel HD Audio (class 04.03, and Intel's class 04.01 controllers with the audio DSP on), with headphone-jack sensing; the audio DSP of Tiger Lake to Raptor Lake (boots Sound Open Firmware and records the digital microphones through it, as the "Microphone Array (DSP)" recording device); USB Audio 1.0 and 2.0 |
 | USB | xHCI, EHCI, OHCI, UHCI host controllers; hubs, HID keyboards, mice, tablets, touch screens and pens, mass storage, audio |
-| Input | PS/2 keyboard and mouse, I2C-HID precision touchpads (tap to click, two-finger scrolling) on Intel LPSS I2C controllers, interrupt-driven through Intel's GPIO controllers (Tiger Lake to Meteor Lake), virtio-input tablets, touch screens and pens |
+| Input | PS/2 keyboard and mouse, I2C-HID precision touchpads (tap to click, two-finger scrolling) on Intel LPSS I2C controllers, interrupt-driven through Intel's GPIO controllers (Tiger Lake to Meteor Lake), virtio-input tablets, touch screens and pens, Hyper-V's synthetic keyboard and mouse over VMBus ([hyperv.md](hyperv.md)) |
 | Platform | ACPI through uACPI (power button, S3 and S5, low-power S0 idle, batteries, AC, lid, thermal zones, embedded controller), HPET or CPUID-calibrated TSC-deadline APIC timer, COM1 |
