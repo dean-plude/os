@@ -260,6 +260,8 @@ HRESULT color_glyph_run_translate(float ox, float oy, const DW_GLYPH_RUN *run, c
 HRESULT text_format_create(const WCHAR *family, void *coll, UINT32 weight, UINT32 style, UINT32 stretch, float size,
                            const WCHAR *locale, void **out);
 HRESULT text_layout_create(const WCHAR *s, UINT32 n, void *fmt, float w, float h, void **out);
+/* bitmap.c: IDWriteBitmapRenderTarget1 on a memory DC compatible with dc */
+HRESULT bitmap_target_create(HDC dc, UINT32 w, UINT32 h, void **out);
 /* aa: AA_GRAYSCALE puts gray coverage in the ALIASED_1x1 texture, AA_CLEARTYPE in CLEARTYPE_3x1 */
 HRESULT glyph_run_analysis_create(const DW_GLYPH_RUN *run, float ppd, const DW_MATRIX *m, UINT32 mode, UINT32 aa,
                                   float ox, float oy, void **out);
