@@ -63,6 +63,7 @@ typedef struct { ULONG fCapabilities; USHORT wVersion, wRPCID; ULONG cbMaxToken;
 #define SECPKG_CRED_INBOUND  1
 #define SECPKG_CRED_OUTBOUND 2
 
+#define ISC_REQ_MUTUAL_AUTH             0x00000002
 #define ISC_REQ_ALLOCATE_MEMORY         0x00000100
 #define ISC_REQ_MANUAL_CRED_VALIDATION  0x00080000
 #define ISC_RET_REPLAY_DETECT           0x00000004
@@ -70,6 +71,7 @@ typedef struct { ULONG fCapabilities; USHORT wVersion, wRPCID; ULONG cbMaxToken;
 #define ISC_RET_CONFIDENTIALITY         0x00000010
 #define ISC_RET_ALLOCATED_MEMORY        0x00000100
 #define ISC_RET_STREAM                  0x00008000
+#define ISC_RET_MANUAL_CRED_VALIDATION  0x00080000
 
 #define SCH_CRED_NO_SERVERNAME_CHECK    0x00000004
 #define SCH_CRED_MANUAL_CRED_VALIDATION 0x00000008
@@ -80,6 +82,7 @@ typedef struct { ULONG fCapabilities; USHORT wVersion, wRPCID; ULONG cbMaxToken;
 #define SECPKG_ATTR_SIZES                0
 #define SECPKG_ATTR_STREAM_SIZES         4
 #define SECPKG_ATTR_APPLICATION_PROTOCOL 35
+#define SECPKG_ATTR_REMOTE_CERT_CONTEXT  0x53
 #define SECPKG_ATTR_CONNECTION_INFO      0x5a
 #define SECPKG_ATTR_CIPHER_INFO          0x64
 
@@ -130,7 +133,10 @@ typedef struct {
     int done, shutdown, closed;
     ULONG req;
     unsigned char *plain;   /* DecryptMessage's plaintext, one record's worth */
+    HANDLE peer_store;      /* the server's chain, as a crypt32 store (peer_cert) */
 } Ctx;
+
+static BOOL (WINAPI *g_close_store)(HANDLE, DWORD);
 
 static Cred *cred_of(SecHandle *h)
 {
@@ -200,6 +206,7 @@ static void ctx_free(Ctx *c)
     mbedtls_ssl_config_free(&c->conf);
     free(c->out);
     free(c->plain);
+    if (c->peer_store) g_close_store(c->peer_store, 0);
     c->magic = 0;
     free(c);
 }
@@ -296,7 +303,11 @@ static SecBuffer *out_token(SecBufferDesc *out)
 static SECURITY_STATUS give_token(Ctx *c, SecBufferDesc *out, ULONG *attr)
 {
     SecBuffer *t = out_token(out);
-    if (attr) *attr = ISC_RET_REPLAY_DETECT | ISC_RET_SEQUENCE_DETECT | ISC_RET_CONFIDENTIALITY | ISC_RET_STREAM;
+    /* as Schannel: mutual authentication (the server's certificate) and
+     * manual validation come back when asked for (Qt's TLS backend
+     * refuses a connection whose flags differ from what it asked) */
+    if (attr) *attr = ISC_RET_REPLAY_DETECT | ISC_RET_SEQUENCE_DETECT | ISC_RET_CONFIDENTIALITY | ISC_RET_STREAM |
+                      (c->req & (ISC_REQ_MUTUAL_AUTH | ISC_REQ_MANUAL_CRED_VALIDATION));
     if (!t) { c->out_len = 0; return SEC_E_OK; }
     if (c->req & ISC_REQ_ALLOCATE_MEMORY) {
         if (attr) *attr |= ISC_RET_ALLOCATED_MEMORY;
@@ -547,6 +558,63 @@ typedef struct { ULONG cbHeader, cbTrailer, cbMaximumMessage, cBuffers, cbBlockS
 typedef struct { ULONG cbMaxToken, cbMaxSignature, cbBlockSize, cbSecurityTrailer; } Sizes;
 typedef struct { DWORD dwProtocol, aiCipher, dwCipherStrength, aiHash, dwHashStrength, aiExch, dwExchStrength; } ConnInfo;
 typedef struct { int status, ext; BYTE size; BYTE id[255]; } AppProto;
+typedef struct {
+    DWORD dwVersion, dwProtocol, dwCipherSuite, dwBaseCipherSuite;
+    WCHAR szCipherSuite[64], szCipher[64];
+    DWORD dwCipherLen, dwCipherBlockLen;
+    WCHAR szHash[64];
+    DWORD dwHashLen;
+    WCHAR szExchange[64];
+    DWORD dwMinExchangeLen, dwMaxExchangeLen;
+    WCHAR szCertificate[64];
+    DWORD dwKeyType;
+} CipherInfo;
+
+static void wcopy(WCHAR *d, const char *s)
+{
+    int i = 0;
+    for (; s && s[i] && i < 63; i++) d[i] = (WCHAR)(unsigned char)s[i];
+    d[i] = 0;
+}
+
+/* The suite's name as Windows spells it: Mbed TLS's "TLS1-3-AES-128-GCM-SHA256"
+ * and "TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256" become "TLS_AES_128_GCM_SHA256"
+ * and "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256" */
+static void suite_name(WCHAR *d, const char *s)
+{
+    char buf[64];
+    int i = 0;
+    if (s && !strncmp(s, "TLS1-3-", 7)) { strcpy(buf, "TLS_"); i = 4; s += 7; }
+    for (; s && *s && i < 63; s++) buf[i++] = *s == '-' ? '_' : *s;
+    buf[i] = 0;
+    wcopy(d, buf);
+}
+
+/* The server's certificate as a context (PCCERT_CONTEXT) whose store
+ * (hCertStore) holds the rest of the chain it sent; NULL if there is none.
+ * The certificate functions are crypt32's, as with Windows' Schannel. */
+static void *peer_cert(Ctx *c)
+{
+    const mbedtls_x509_crt *crt = mbedtls_ssl_get_peer_cert(&c->ssl);
+    static HMODULE crypt32;
+    if (!crt || !crt->raw.p || (!crypt32 && !(crypt32 = LoadLibraryA("crypt32.dll")))) return 0;
+    typedef HANDLE (WINAPI *OpenStore)(LPCSTR, DWORD, ULONG_PTR, DWORD, const void *);
+    typedef BOOL (WINAPI *AddEncoded)(HANDLE, DWORD, const BYTE *, DWORD, DWORD, const void **);
+    OpenStore open = (OpenStore)GetProcAddress(crypt32, "CertOpenStore");
+    AddEncoded add = (AddEncoded)GetProcAddress(crypt32, "CertAddEncodedCertificateToStore");
+    g_close_store = (BOOL (WINAPI *)(HANDLE, DWORD))GetProcAddress(crypt32, "CertCloseStore");
+    if (!open || !add || !g_close_store) return 0;
+    if (!c->peer_store &&
+        !(c->peer_store = open((LPCSTR)2 /* CERT_STORE_PROV_MEMORY */, 1 /* X509_ASN_ENCODING */, 0, 0, 0)))
+        return 0;
+    /* the store lives as long as this context: crypt32's contexts do not
+     * keep theirs open */
+    const void *leaf = 0;
+    for (const mbedtls_x509_crt *x = crt; x && x->raw.p; x = x->next)
+        add(c->peer_store, 1, x->raw.p, (DWORD)x->raw.len, 1 /* CERT_STORE_ADD_NEW */, 0);
+    add(c->peer_store, 1, crt->raw.p, (DWORD)crt->raw.len, 2 /* CERT_STORE_ADD_USE_EXISTING */, &leaf);
+    return (void *)leaf;
+}
 
 static SECURITY_STATUS query(SecHandle *ctx, ULONG attr, void *buf)
 {
@@ -587,6 +655,32 @@ static SECURITY_STATUS query(SecHandle *ctx, ULONG attr, void *buf)
         ci->aiExch = 0xAE06;                            /* CALG_ECDH_EPHEM */
         ci->dwExchStrength = 256;
         return SEC_E_OK;
+    }
+    case SECPKG_ATTR_CIPHER_INFO: {
+        CipherInfo *ci = buf;
+        const char *suite = mbedtls_ssl_get_ciphersuite(&c->ssl);
+        const char *ver = mbedtls_ssl_get_version(&c->ssl);
+        memset(ci, 0, sizeof(*ci));
+        ci->dwVersion = 1;                              /* SECPKGCONTEXT_CIPHERINFO_V1 */
+        ci->dwProtocol = ver && strstr(ver, "1.3") ? 0x0304 : 0x0303;
+        ci->dwCipherSuite = ci->dwBaseCipherSuite = (DWORD)mbedtls_ssl_get_ciphersuite_id_from_ssl(&c->ssl);
+        suite_name(ci->szCipherSuite, suite);
+        int aes256 = suite && strstr(suite, "AES-256"), cha = suite && strstr(suite, "CHACHA20");
+        wcopy(ci->szCipher, cha ? "CHACHA20_POLY1305" : "AES");
+        ci->dwCipherLen = aes256 || cha ? 256 : 128;
+        ci->dwCipherBlockLen = cha ? 1 : 16;
+        int sha384 = suite && strstr(suite, "SHA384");
+        wcopy(ci->szHash, sha384 ? "SHA384" : "SHA256");
+        ci->dwHashLen = sha384 ? 384 : 256;
+        wcopy(ci->szExchange, "ECDHE");
+        ci->dwMinExchangeLen = ci->dwMaxExchangeLen = 256;
+        wcopy(ci->szCertificate, suite && strstr(suite, "ECDSA") ? "ECDSA" : "RSA");
+        return SEC_E_OK;
+    }
+    case SECPKG_ATTR_REMOTE_CERT_CONTEXT: {
+        void *cert = peer_cert(c);
+        *(void **)buf = cert;
+        return cert ? SEC_E_OK : SEC_E_INTERNAL_ERROR;
     }
     case SECPKG_ATTR_APPLICATION_PROTOCOL: {
         AppProto *a = buf;

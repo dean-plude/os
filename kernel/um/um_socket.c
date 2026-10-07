@@ -204,7 +204,9 @@ static UINT64 tcp_table(UINT64 max, UINT64 out)
  *   11 AcceptEx's accept (arg = the listening handle; the connection
  *   replaces this handle's socket);
  *   14 the TCP connection table (no handle; up to arg NetTcpRow rows into
- *   outptr; returns how many there are) */
+ *   outptr; returns how many there are);
+ *   15 the network's state (no handle): bit 0 an address is configured
+ *   (DHCP), bit 1 the link is up, bit 2 there is an adapter */
 static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     /* 6: the network generation (select reads it before looking);
@@ -212,6 +214,11 @@ static UINT64 sys_ctl(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
     if (a2 == 6) return net_gen();
     if (a2 == 12 || a2 == 13) return (UINT64)um_afd_ctl(a1, a2, a3, a4);   /* \Device\Afd helpers (um_afd.c) */
     if (a2 == 14) return tcp_table(a3, a4);
+    if (a2 == 15) {
+        NetStatus st;
+        NetGetStatus(&st);
+        return (st.configured ? 1u : 0u) | (st.link ? 2u : 0u) | (st.present ? 4u : 0u);
+    }
     if (a2 == 5) {
         UINT64 ticks = (a4 + 9) / 10;
         if (ticks > 10) ticks = 10;

@@ -1,0 +1,1 @@
+{ "x86": true, "selftest": true, "libs": ["secur32", "crypt32", "wininet"] }

@@ -1,10 +1,12 @@
 /*
  * wininet.dll — the Internet Explorer client library.  URL parsing works
  * (InternetCrackUrl, as programs use it to split addresses); connections
- * are not made through it: InternetOpen fails, and the machine reports
- * itself offline to programs asking this library.
+ * are not made through it: InternetOpen fails.  InternetGetConnectedState
+ * reports a LAN connection while the network has an address (DHCP), as
+ * Windows does, and offline otherwise.
  */
 #include <windows.h>
+#include <winternl.h>
 
 #define INETAPI __declspec(dllexport)
 #define ERROR_INTERNET_INVALID_URL_         12005
@@ -166,8 +168,11 @@ INETAPI BOOL WINAPI InternetCrackUrlA(LPCSTR url, DWORD url_len, DWORD flags, UR
 INETAPI BOOL WINAPI InternetGetConnectedState(LPDWORD flags, DWORD reserved)
 {
     (void)reserved;
-    if (flags) *flags = 0x20;                              /* INTERNET_CONNECTION_OFFLINE */
-    return FALSE;
+    BOOL up = (NtNovaSockCtl(0, 15, 0, NULL) & 1) != 0;   /* (the kernel's: an address is configured) */
+    /* INTERNET_CONNECTION_LAN | INTERNET_CONNECTION_CONFIGURED, else INTERNET_CONNECTION_OFFLINE */
+    if (flags) *flags = up ? 0x02 | 0x40 : 0x20;
+    SetLastError(0);
+    return up;
 }
 INETAPI BOOL WINAPI InternetCheckConnectionW(LPCWSTR url, DWORD flags, DWORD reserved)
 { (void)url; (void)flags; (void)reserved; SetLastError(ERROR_INTERNET_NO_DIRECT_ACCESS_); return FALSE; }
