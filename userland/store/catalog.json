@@ -447,7 +447,7 @@
       "exe": "Cave Story\\CaveStory\\Doukutsu.exe",
       "kind": "archive",
       "size_mb": 2,
-      "note": "32-bit freeware; draws with DirectDraw (NovaOS's ddraw.dll, cnc-ddraw) and plays on NovaOS (nightly corpus)",
+      "note": "32-bit freeware; draws with DirectDraw (NovaOS's ddraw.dll, cnc-ddraw) and plays on NovaOS with the keyboard or a game pad (nightly corpus)",
       "label": "CS",
       "color": "#C04030"
     },
