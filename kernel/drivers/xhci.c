@@ -127,7 +127,8 @@
 #define RING_TRBS       256               /* one page; the last is the link */
 #define EVT_PAGES       16                /* event ring: 4,096 TRBs (the most one segment holds) */
 #define EVT_TRBS        (EVT_PAGES * PAGE_SIZE / 16)
-#define SPIN_LONG       20000000
+#define SPIN_LONG       20000000          /* (at least this many polls ...) */
+#define WAIT_MS         5000              /* (... and this long: the 5 s EHCI gives a control transfer) */
 #define MAX_TD_TRBS     16                /* a bulk transfer: 16 x 64 KiB at most */
 
 typedef struct __attribute__((packed)) {
@@ -387,18 +388,20 @@ static UINT8 command(Xhci *x, UINT64 param, UINT32 control, UINT8 *slot_out)
     UINT64 at = ring_push(&x->cmd, param, 0, control);
     doorbell(x, 0, 0);
     UINT8 code = 0;
-    int spins;
-    for (spins = SPIN_LONG; spins > 0; spins--) {
+    bool done = false;
+    UINT64 until = UsbDeadline(WAIT_MS);
+    for (int spins = SPIN_LONG; spins > 0 || !UsbPast(until); spins--) {
         events_once(x);
         if (x->cmd_done && x->cmd_trb == at) {
             if (slot_out) *slot_out = x->cmd_slot;
             code = x->cmd_code;
+            done = true;
             break;
         }
         pause_cpu();
     }
     UsbFlagDrop(&x->cmd_busy);
-    if (!spins) kprintf("[USB] command %d timed out\n", (control >> 10) & 0x3F);
+    if (!done) kprintf("[USB] command %d timed out\n", (control >> 10) & 0x3F);
     return code;
 }
 
@@ -418,7 +421,8 @@ static int xhci_control(UsbHc *hc, UsbDev *d, const UsbSetup *s, bool *stalled)
         ring_push(&xd->ep0, phys(d->buf), len, TRB_TYPE(TRB_DATA) | (in ? TRB_DIR_IN : 0));
     ring_push(&xd->ep0, 0, 0, TRB_TYPE(TRB_STATUS) | TRB_IOC | (len && in ? 0 : TRB_DIR_IN));
     doorbell(x, xd->slot, 1);
-    for (int spins = SPIN_LONG; spins > 0; spins--) {
+    UINT64 until = UsbDeadline(WAIT_MS);
+    for (int spins = SPIN_LONG; spins > 0 || !UsbPast(until); spins--) {
         events_once(x);
         if (xd->ctl_done) {
             if (xd->ctl_code == CC_STALL) {

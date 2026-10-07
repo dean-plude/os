@@ -574,6 +574,12 @@ follow the default when it moves.  Then two asynchronous speakers
 plays 48,500 frames a second (10.14 feedback) and a high-speed USB Audio
 2.0 one saying 47,600 (16.16): NovaOS must send 48.5 frames a packet to
 the first and 5.95 to the second on average, not the nominal 48 and 6.
+Then a full-speed speaker that takes three seconds to answer its first
+request (`usbredirpeer.py --slow-control 3000`), plugged into the xHCI
+controller: NovaOS must wait for the answer (a control transfer gets five
+seconds, counted in time as EHCI's always was) and play a tone on it.
+`usbredirpeer.py --log-times` (the tests' peers) logs the connection's
+events with times and, every five seconds, the packets it took and sent.
 Last, one
 `virtio-vga` card with three outputs and a monitor only on the first, for `montest hotplug`: the test
 connects a monitor to the second and third outputs and disconnects them

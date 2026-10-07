@@ -332,7 +332,7 @@ def usbaudio_boot(work):
 def peer(work, port, *args):
     """Start tools/usbredirpeer.py on @port and wait until it listens"""
     log = os.path.join(work, f'usbredirpeer-{port}.log')
-    p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'tools', 'usbredirpeer.py'), '--port', str(port), *args],
+    p = subprocess.Popen([sys.executable, os.path.join(ROOT, 'tools', 'usbredirpeer.py'), '--port', str(port), '--log-times', *args],
                          stdout=open(log, 'w'), stderr=subprocess.STDOUT)
     for _ in range(100):
         if 'listening' in open(log).read() or p.poll() is not None:
@@ -356,7 +356,9 @@ def usbheadset_boot(work):
     speakers on their own clocks that say so through a feedback endpoint:
     a full-speed USB Audio 1.0 one at 48,500 frames a second (port 10707,
     async1.wav) and a high-speed USB Audio 2.0 one at 47,600 (port 10708,
-    async2.wav) (tests/selftest/devices/usbheadset)"""
+    async2.wav), and a full-speed speaker (port 10709, slow.wav) that
+    takes three seconds to answer its first request
+    (tests/selftest/devices/usbheadset)"""
     procs = [peer(work, 10700, '--speaker', os.path.join(work, 'headset.wav'), '--mic', str(REC_HZ))]
     for n, hz in ((1, 784), (2, 659), (3, 880)):
         procs.append(peer(work, 10700 + n, '--speed', 'full', '--mic', str(hz)))
@@ -368,6 +370,8 @@ def usbheadset_boot(work):
     procs.append(peer(work, 10705, '--uac2', '--rates', '44100', '--channels', '6', '--mic-channels', '4',
                       '--product', 'Test Surround Headset', '--speaker', os.path.join(work, 'surround.wav'), '--mic', '1175'))
     procs.append(peer(work, 10706, '--speed', 'full', '--product', 'Test Speaker', '--speaker', os.path.join(work, 'spk.wav')))
+    procs.append(peer(work, 10709, '--speed', 'full', '--slow-control', '3000', '--product', 'Test Slow Speaker',
+                      '--speaker', os.path.join(work, 'slow.wav')))
     return ['-chardev', 'socket,id=headset,host=127.0.0.1,port=10700', '-device', 'usb-ehci,id=ehci',
             '-device', 'usb-redir,id=headset,chardev=headset,bus=ehci.0', '-device', 'qemu-xhci,id=xhci',
             '-device', 'pci-ohci,id=ohci', '-device', 'piix3-usb-uhci,id=uhci',
@@ -603,7 +607,7 @@ def main():
             finally:
                 for p in procs:
                     p.kill()
-                for log in ['h2server.log', 'v6peer.log', 'http.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10709)] \
+                for log in ['h2server.log', 'v6peer.log', 'http.log'] + [f'usbredirpeer-{p}.log' for p in range(10700, 10710)] \
                         + [f'padpeer-{p}.log' for p in range(10710, 10713)]:
                     if os.path.exists(os.path.join(work, log)):
                         shutil.copy(os.path.join(work, log), a.out)
