@@ -10,7 +10,8 @@
  *                                 before trusting it); and wininet's
  *                                 InternetGetConnectedState
  *                                 (prints "online" or "offline")
- *   schanneltest HOST PORT        a TLS client over SSPI with manual
+ *   schanneltest HOST PORT        a TLS client (HOST an address or a name)
+ *                                 over SSPI with manual
  *                                 certificate checks, as Qt does: the flags
  *                                 InitializeSecurityContext returns, the
  *                                 cipher and connection attributes, the
@@ -200,6 +201,12 @@ static int connect_test(const char *host, int port)
     a.sin_family = AF_INET;
     a.sin_port = htons((u_short)port);
     a.sin_addr.s_addr = inet_addr(host);
+    /* a name: looked up, and given to the server (SNI) and in the request */
+    BOOL named = a.sin_addr.s_addr == INADDR_NONE;
+    struct hostent *he = named ? gethostbyname(host) : NULL;
+    if (he) memcpy(&a.sin_addr, he->h_addr_list[0], 4);
+    WCHAR target[256] = L"novaos-test";
+    if (named) for (int i = 0; i < 255 && (target[i] = (WCHAR)(BYTE)host[i]) != 0; i++) ;
     CHECK("connect", connect(sock, (struct sockaddr *)&a, sizeof(a)) == 0);
 
     SchannelCred sc = { 0 };
@@ -218,7 +225,7 @@ static int connect_test(const char *host, int port)
         SecBufferDesc id = { 0, 2, ib };
         SecBuffer ob[1] = { { 0, SECBUFFER_TOKEN, NULL } };
         SecBufferDesc od = { 0, 1, ob };
-        st = InitializeSecurityContextW(&cred, first ? NULL : &ctx, L"novaos-test", req, 0, 0, first ? NULL : &id, 0,
+        st = InitializeSecurityContextW(&cred, first ? NULL : &ctx, target, req, 0, 0, first ? NULL : &id, 0,
                                         &ctx, &od, &attrs, NULL);
         first = 0;
         if (ob[0].pvBuffer && ob[0].cbBuffer) send_all(ob[0].pvBuffer, (int)ob[0].cbBuffer);
@@ -242,6 +249,7 @@ static int connect_test(const char *host, int port)
         }
     }
     CHECK("handshake", st == SEC_E_OK);
+    if (st != SEC_E_OK) printf("InitializeSecurityContext: 0x%08lx\n", (unsigned long)st);
     printf("returned flags 0x%lx\n", attrs);
     CHECK("manual validation flag back", attrs & ISC_REQ_MANUAL_CRED_VALIDATION);
     CHECK("mutual authentication flag back", attrs & ISC_REQ_MUTUAL_AUTH);
@@ -273,7 +281,9 @@ static int connect_test(const char *host, int port)
         CHECK("chain", CertGetCertificateChain(NULL, cert, NULL, coll, &para, 0, NULL, &chain) && chain && chain->cChain == 1);
         /* the test server's certificate is self-signed: not a trusted root */
         if (chain) {
-            CHECK("self-signed server: untrusted root", chain->TrustStatus.dwErrorStatus & TRUST_IS_UNTRUSTED_ROOT);
+            if (named) CHECK("trusted chain", chain->TrustStatus.dwErrorStatus == 0);
+            else CHECK("self-signed server: untrusted root", chain->TrustStatus.dwErrorStatus & TRUST_IS_UNTRUSTED_ROOT);
+            printf("chain status 0x%lx\n", chain->TrustStatus.dwErrorStatus);
             CertFreeCertificateChain(chain);
         }
         CertCloseStore(coll, 0);
@@ -283,7 +293,9 @@ static int connect_test(const char *host, int port)
 
     /* a request and its answer */
     static char msg[16384 + 1024];
-    const char *get = "GET /hello HTTP/1.1\r\nHost: novaos-test\r\nConnection: close\r\n\r\n";
+    char get[512];
+    snprintf(get, sizeof(get), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+             named ? "/" : "/hello", named ? host : "novaos-test");
     int glen = (int)strlen(get);
     memcpy(msg + sz.cbHeader, get, glen);
     SecBuffer eb[4] = { { sz.cbHeader, SECBUFFER_STREAM_HEADER, msg }, { (ULONG)glen, SECBUFFER_DATA, msg + sz.cbHeader },
@@ -318,7 +330,10 @@ static int connect_test(const char *host, int port)
         if (extra) memmove(in, in + have - extra, extra);
         have = extra;
     }
-    CHECK("answer", !strncmp(text, "HTTP/1.1 200", 12) && strstr(text, "Hello over HTTP/1.1"));
+    if (named) {                                        /* a real server: any HTTP answer */
+        printf("answer: %.40s\n", text);
+        CHECK("answer", !strncmp(text, "HTTP/1.1 ", 9));
+    } else CHECK("answer", !strncmp(text, "HTTP/1.1 200", 12) && strstr(text, "Hello over HTTP/1.1"));
     DeleteSecurityContext(&ctx);
     FreeCredentialsHandle(&cred);
     closesocket(sock);

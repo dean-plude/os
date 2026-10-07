@@ -1131,8 +1131,22 @@ bool um_pe_wants_admin(RamNode *f)
 
 /* Find a DLL: a path as given, else the program's directory, then the
  * system folder (System32, or SysWOW64 for 32-bit programs) */
+/* Whether @s (after "\windows\system32\") starts with folder @dir */
+static bool wow_sub(const char *s, const char *dir)
+{
+    int i = 0;
+    for (; dir[i]; i++) {
+        char c = s[i] == '/' ? '\\' : s[i] >= 'A' && s[i] <= 'Z' ? s[i] + 32 : s[i];
+        if (c != dir[i]) return false;
+    }
+    return !s[i] || s[i] == '\\' || s[i] == '/';
+}
+
 /* A 32-bit program's C:\Windows\System32\... is C:\Windows\SysWOW64\...
- * (@path is rewritten in place) */
+ * (@path is rewritten in place), except the folders Windows shares between
+ * the two (catroot, catroot2, driverstore, drivers\etc, logfiles, spool)
+ * and CertStore, NovaOS's file copy of the trusted roots certutil added
+ * (Windows keeps them in the registry, which both see) */
 void um_wow_path(UmProcess *p, char *path)
 {
     if (!p->wow) return;
@@ -1146,6 +1160,9 @@ void um_wow_path(UmProcess *p, char *path)
         if (c != sys[i]) return;
     }
     if (s[17] && s[17] != '\\' && s[17] != '/') return;
+    static const char *const shared[] = { "catroot", "catroot2", "driverstore", "drivers\\etc", "logfiles", "spool", "certstore" };
+    for (size_t i = 0; s[17] && i < sizeof(shared) / sizeof(shared[0]); i++)
+        if (wow_sub(s + 18, shared[i])) return;
     memcpy(s + 9, "SysWOW64", 8);
 }
 
