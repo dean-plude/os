@@ -77,7 +77,11 @@ named program or test demonstrates it.
   Direct3D 8–11 on Mesa's lavapipe Vulkan, through NovaOS's own
   `vulkan-1.dll` and behind NovaOS's own `d3d9.dll`, `d3d11.dll` and
   `dxgi.dll` (which load without DXVK and report no Direct3D); see
-  [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).
+  [Direct3D](HISTORY.md#direct3d-dxvk-on-mesas-vulkan).  Without DXVK,
+  `dxgi.dll` lists Windows' Microsoft Basic Render Driver and `d3d11.dll`
+  gives a WARP device that maps and copies textures, with `dcomp.dll`
+  showing its swap chains, for Chromium's software compositor
+  ([WebView2 draws its page](HISTORY.md#webview2-draws-its-page)).
 - ~~**Audio**: `winmm` wave output and WASAPI over a real sound device
   (QEMU's Intel HDA)~~ Done; see [Sound](HISTORY.md#sound-intel-hd-audio-winmm-and-wasapi).
   ~~Recording (`waveIn`, capture endpoints) and endpoint volume
@@ -209,10 +213,16 @@ named program or test demonstrates it.
   close~~ Done (`filetest`); ~~the runtime's setup unpacking its archive,
   `wer.dll`~~ Done (`wvsetuptest`); ~~the setup's permissions on its
   install folder~~ Done (`acltest`); ~~starting the runtime's browser
-  process~~ Done (`wvstarttest`, `unwindtest`).  Still to do: the
-  controller and a page (the GPU process's Direct3D 11 adapter, the
-  browser's restart, `CreateCoreWebView2Controller`), and Windows'
-  `WOW6432Node` registry view for machine-wide installs.
+  process~~ Done (`wvstarttest`, `unwindtest`); ~~the browser keeping
+  its host's connection (pipe process ids)~~ Done (`pipetest`); ~~windows
+  of one process inside another's (the host's `SetParent` and
+  `SetWindowPos` on the browser's window, another process drawing into
+  it; the controller, a page and a script)~~ Done (`xpwin`,
+  `chrometest`); ~~drawing the page without a GPU (the Basic Render
+  Driver adapter, a WARP device, DirectComposition, the GPU process's
+  window inside the browser's)~~ Done (`dcomptest`).  Still to do:
+  Windows' `WOW6432Node` registry view for machine-wide installs, and
+  drawing with ANGLE on DXVK when a GPU is there.
 - Games: ~~OpenTTD (free on GOG) to its main menu~~ Done; ~~Beneath a
   Steel Sky (free on GOG) on ScummVM, installed with its installer and
   played~~ Done; ~~Teeworlds in full screen to its start menu, its music
@@ -221,8 +231,11 @@ named program or test demonstrates it.
   music)~~ Done; ~~a game that switches the display mode for full screen
   (Blobby Volley 2: 800x600 in Direct3D 9 exclusive full screen, and back
   when it ends)~~ Done; ~~an SDL 1.2 game (LBreakout2: GDI drawing, 640x480
-  full screen with the window's frame taken off, and back)~~ Done (all six
-  in the nightly corpus).  Still to do:
+  full screen with the window's frame taken off, and back)~~ Done; ~~a
+  DirectDraw game (Cave Story on cnc-ddraw: 640x480 full screen, its title
+  screen and a new game)~~ Done; ~~a game played with a game pad (SuperTux:
+  SDL 1.2 through winmm's joystick functions, into its first level)~~ Done
+  (all eight in the nightly corpus).  Still to do:
   joining a Teeworlds game on its own server (it times out under TCG
   while Mesa compiles its shaders; its menus follow the mouse with its
   default settings, SDL recentring the pointer with `SetCursorPos`), GOG
@@ -245,10 +258,12 @@ named program or test demonstrates it.
   `linktest` and a restart in the core suite).
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
-- The Win32 console screen-buffer calls (`SetConsoleCursorPosition`,
-  `FillConsoleOutputCharacter`... are still no-ops), so programs that draw
-  through them rather than VT sequences work and `less` can be the real
-  one (git pages through NovaOS's own `less` today).
+- Win32 console screen buffers: cursor positioning, size and visibility
+  controls now reach the Terminal (`consolecursortest`, x64 and x86).
+  Still to do: current cursor position in `GetConsoleScreenBufferInfo`,
+  cell reads and writes, fills, scrolling, text attributes and independent
+  screen buffers. Verify a real console-screen API application before
+  claiming full coverage; Git still uses NovaOS's own `less`.
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
 - ~~Move files, the registry, process creation and the console off the
