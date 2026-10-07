@@ -316,6 +316,17 @@ static int wsa_of(long e)
     return WSAGetLastError();
 }
 
+/* A socket's pending error as SO_ERROR reads it (wsa.c: the error codes
+ * WSAEventSelect reports), without touching WSAGetLastError */
+int ws_so_error(SOCKET s)
+{
+    DWORD saved = WSAGetLastError();
+    long r = NtNovaSockCtl((INT_PTR)s, 10, KO_ERROR, 0);
+    int e = r > 0 ? wsa_of(r) : 0;
+    set_err((int)saved);
+    return e;
+}
+
 int getsockopt(SOCKET s, int level, int opt, char *val, int *len)
 {
     if (!val || !len) { set_err(WSAEFAULT); return SOCKET_ERROR; }

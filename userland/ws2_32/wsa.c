@@ -681,7 +681,11 @@ int WSAEnumProtocolsA(int *protocols, LPWSAPROTOCOL_INFOA buf, LPDWORD len) { re
  * ----------------------------------------------------------------------- */
 WINBASEAPI VOID WINAPI Sleep(DWORD ms);
 
-typedef struct { SOCKET s; WSAEVENT ev; long mask, pending; int closed; HWND hwnd; UINT msg; } EvSel;
+/* err: each reported event's error code (iErrorCode, by FD_*_BIT);
+ * connect_done: FD_CONNECT was reported (once per connect, as on Windows);
+ * connect_failed: with an error (no other event follows it) */
+typedef struct { SOCKET s; WSAEVENT ev; long mask, pending; int closed, connect_done, connect_failed; HWND hwnd; UINT msg; int err[FD_MAX_EVENTS]; } EvSel;
+int ws_so_error(SOCKET s);                          /* ws2_32.c: SO_ERROR */
 typedef BOOL (WINAPI *POSTMSG)(HWND, UINT, WPARAM, LPARAM);
 static POSTMSG g_post;                              /* user32's PostMessageW, found when first needed */
 /* The registrations, as many as the program makes (a browser registers
@@ -704,32 +708,44 @@ static fd_set *fdset_new(int n)
 static DWORD WINAPI evsel_thread(void *arg)
 {
     (void)arg;
-    fd_set *rd = 0, *wr = 0;
+    fd_set *rd = 0, *wr = 0, *ex = 0;
     int room = 0;
     for (;;) {
         es_lock();
         if (g_nevsel > room) {
-            HeapFree(GetProcessHeap(), 0, rd); HeapFree(GetProcessHeap(), 0, wr);
+            HeapFree(GetProcessHeap(), 0, rd); HeapFree(GetProcessHeap(), 0, wr); HeapFree(GetProcessHeap(), 0, ex);
             room = g_nevsel;
-            rd = fdset_new(room); wr = fdset_new(room);
-            if (!rd || !wr) { room = 0; es_unlock(); Sleep(20); continue; }
+            rd = fdset_new(room); wr = fdset_new(room); ex = fdset_new(room);
+            if (!rd || !wr || !ex) { room = 0; es_unlock(); Sleep(20); continue; }
         }
-        rd->fd_count = wr->fd_count = 0;
+        rd->fd_count = wr->fd_count = ex->fd_count = 0;
         for (int i = 0; i < g_nevsel; i++) {
             if (!g_evsel[i].ev) continue;
+            BOOL conn = (g_evsel[i].mask & FD_CONNECT) && !g_evsel[i].connect_done;
             if (g_evsel[i].mask & (FD_READ | FD_ACCEPT | FD_CLOSE)) rd->fd_array[rd->fd_count++] = g_evsel[i].s;
-            if (g_evsel[i].mask & (FD_WRITE | FD_CONNECT)) wr->fd_array[wr->fd_count++] = g_evsel[i].s;
+            if ((g_evsel[i].mask & FD_WRITE) || conn) wr->fd_array[wr->fd_count++] = g_evsel[i].s;
+            if (conn) ex->fd_array[ex->fd_count++] = g_evsel[i].s;   /* a connect that fails */
         }
         es_unlock();
         if (!rd->fd_count && !wr->fd_count) { Sleep(20); continue; }
         struct timeval tv = { 0, 20000 };
-        int sr = select(0, rd, wr, 0, &tv);
+        int sr = select(0, rd, wr, ex, &tv);
         if (sr <= 0) { Sleep(5); continue; }
         es_lock();
         for (int i = 0; i < g_nevsel; i++) {
             EvSel *e = &g_evsel[i];
             if (!e->ev) continue;
             long got = 0;
+            int failed = !e->connect_done && (e->mask & FD_CONNECT) && __WSAFDIsSet(e->s, ex);
+            if (failed) {
+                /* a refused connect is FD_CONNECT with its error, and nothing else (Chromium tries
+                 * the next address on it; reported as a success it sent its request to nobody) */
+                got = FD_CONNECT & ~e->pending;
+                e->connect_done = e->connect_failed = 1;
+                e->err[FD_CONNECT_BIT] = ws_so_error(e->s);
+                if (!e->err[FD_CONNECT_BIT]) e->err[FD_CONNECT_BIT] = WSAECONNREFUSED;
+                goto report;
+            }
             if (__WSAFDIsSet(e->s, rd)) {
                 long n = NtNovaSockCtl((INT_PTR)e->s, 7, 0, 0);    /* bytes waiting; bit 31: closed; bit 30: listening */
                 if (n > 0 && (n & 0x40000000)) got |= FD_ACCEPT;
@@ -739,15 +755,28 @@ static DWORD WINAPI evsel_thread(void *arg)
                 }
             }
             if (__WSAFDIsSet(e->s, wr)) got |= (e->mask & (FD_CONNECT | FD_WRITE));
+            if (e->connect_done) got &= ~FD_CONNECT;
+            if (got & FD_CONNECT) {                    /* (writable before connect was even called is not it) */
+                struct sockaddr_storage pn;
+                int pl = sizeof(pn);
+                if (getpeername(e->s, (struct sockaddr *)&pn, &pl)) got &= ~FD_CONNECT;
+            }
+            if (e->connect_failed) got = 0;             /* (the socket is only good for closing) */
             got &= e->mask & ~e->pending;
             if (e->closed) got &= ~FD_READ;
+            if (got & FD_CONNECT) { e->connect_done = 1; e->err[FD_CONNECT_BIT] = 0; }
+            if (got & FD_CLOSE) e->err[FD_CLOSE_BIT] = ws_so_error(e->s);    /* 0: closed in order; else reset */
+        report:
             if (!got) continue;
             e->pending |= got;
             if (!e->hwnd) { SetEvent(e->ev); continue; }
             /* WSAAsyncSelect: one message per event, in the order Windows posts them */
             static const long order[] = { FD_CONNECT, FD_ACCEPT, FD_READ, FD_WRITE, FD_OOB, FD_CLOSE };
             for (unsigned k = 0; k < sizeof order / sizeof order[0]; k++)
-                if (got & order[k]) { g_post(e->hwnd, e->msg, (WPARAM)e->s, MAKELPARAM(order[k], 0)); }
+                if (got & order[k]) {
+                    int bit = __builtin_ctz((unsigned)order[k]);
+                    g_post(e->hwnd, e->msg, (WPARAM)e->s, MAKELPARAM(order[k], e->err[bit]));
+                }
         }
         es_unlock();
         Sleep(5);
@@ -783,7 +812,10 @@ static int evsel_register(SOCKET s, WSAEVENT ev, HWND hwnd, UINT msg, long event
     }
     if (at >= 0 && (!ev || !events)) memset(&g_evsel[at], 0, sizeof(EvSel));
     else if (at >= 0) {
-        g_evsel[at].s = s; g_evsel[at].ev = ev; g_evsel[at].mask = events; g_evsel[at].pending = 0; g_evsel[at].closed = 0;
+        /* (a socket registered again keeps whether its connect was reported) */
+        int done = g_evsel[at].s == s && g_evsel[at].ev ? g_evsel[at].connect_done : 0;
+        memset(&g_evsel[at], 0, sizeof(EvSel));
+        g_evsel[at].s = s; g_evsel[at].ev = ev; g_evsel[at].mask = events; g_evsel[at].connect_done = done;
         g_evsel[at].hwnd = hwnd; g_evsel[at].msg = msg;
     }
     es_unlock();
@@ -841,6 +873,8 @@ int WSAEnumNetworkEvents(SOCKET s, WSAEVENT ev, LPWSANETWORKEVENTS out)
     for (int i = 0; i < g_nevsel; i++) {
         if (!g_evsel[i].ev || g_evsel[i].s != s) continue;
         out->lNetworkEvents = g_evsel[i].pending;
+        for (int b = 0; b < FD_MAX_EVENTS; b++)
+            if (g_evsel[i].pending & (1L << b)) out->iErrorCode[b] = g_evsel[i].err[b];
         g_evsel[i].pending = 0;
         break;
     }
