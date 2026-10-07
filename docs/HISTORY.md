@@ -7154,6 +7154,56 @@ stopped: it loads `cabinet.dll` to unpack the payloads attached to its
   prefix in a document whose elements are in a default namespace, which
   MSXML 3's XSLPattern matches and XPath does not.
 
+## Cave Story: DirectDraw, from cnc-ddraw
+
+The seventh free game is the first on DirectDraw, which NovaOS did not
+have: Cave Story (Studio Pixel's 2004 freeware, in Aeon Genesis' English
+translation, 32-bit), from the App Store.  NovaOS's `ddraw.dll` is
+cnc-ddraw (MIT, vendored in `third_party/cnc-ddraw`), the DirectDraw that
+players of old Windows games already use on Windows 10 and 11: every
+surface lives in memory, and a render thread draws the primary surface
+with Direct3D 9 (DXVK, when installed), OpenGL (Mesa) or GDI.  It is
+32-bit code, so it is built for SysWOW64 alone (`x86_only` in its
+`dll.json`), with its `ddraw.ini` beside it: cnc-ddraw's own defaults,
+with `hook=0` (it leaves the program's import tables alone) and nothing
+saved back.  The game's DirectInput 7 joystick code needed `dinput.dll`,
+now built from `dinput8`'s source with the DirectInput 3 to 7 interfaces.
+
+NovaOS gaps the game found:
+
+- **Missing functions**: kernel32's `SetHandleCount`, msvcrt's `_strcmpi`
+  and `_makepath`, and ntdll's `RtlVerifyVersionInfo`, which cnc-ddraw
+  asks for by name.  `VerifyVersionInfoW` now compares with the version
+  NovaOS reports instead of always answering yes.
+- **A black screen**: gdi32 mapped a 16-bit DIB section's file mapping at
+  the offset the program gave, which must be a multiple of the allocation
+  granularity for a view, but need only be a multiple of 4 for a DIB
+  section (cnc-ddraw puts guard rows before each surface's pixels).  The
+  view now starts at the mapping's beginning.
+- **No keys**: activating a window gave it the keyboard focus only through
+  `DefWindowProc`'s `WM_ACTIVATE`; Cave Story answers `WM_ACTIVATE`
+  itself, so its keys came as `WM_SYSKEYDOWN` to a window without focus.
+  As on Windows, the focus now moves into a window that becomes active
+  unless its procedure put it there or set it to NULL.
+- **No text**: the game writes its text with GDI on surface DCs, which
+  gdi32 draws on 32-bit pixels and copies to a 16-bit section's own bits
+  only at its sync points, none of which cnc-ddraw reached.  `SaveDC` and
+  `RestoreDC` (which cnc-ddraw's `GetDC` and `ReleaseDC` call) now sync,
+  as a non-batched call flushes Windows' GDI batch: the surface's pixels
+  come in before the text is drawn (the game clears its line with
+  DirectDraw first, which before cut off each line's first letter) and the
+  text goes out after.
+- **The pointer over the game**: with `hook=0`, cnc-ddraw's mouse lock
+  still balanced `ShowCursor` against a count only its hooks keep, and
+  showed the pointer the game had hidden; it now stays off when nothing
+  is hooked (one change in the vendored code, noted in its
+  `NOVA-VENDOR.txt`).
+
+The corpus test (`tests/appcorpus/945-cave-story.py`) installs the game,
+checks the title screen at 640x480, starts a new game with Z, checks its
+opening line's screenshot, ends the game with Alt+F4 and checks the
+display is back at 2560x1600.
+
 ## Chromium's GPU process on Direct3D 11
 
 Steam's browser (`steamwebhelper.exe`, Chromium 126) started its GPU
@@ -7450,6 +7500,55 @@ signature.  Not there yet: pinging and cleaning up after a client process
 that dies, the typelib marshaler (`PSOAInterface` for interfaces other
 than `IDispatch`), handler marshaling and the free-threaded marshaler.
 
+## Windows of one process inside another's
+
+A WebView2 host shows the page by moving the browser process's window
+into its own: `SetParent` on a window another process made, then
+`SetWindowPos` and `MoveWindow` to keep it in place, as every Chromium
+embedder does.  NovaOS's window handles worked only in the process that
+made them (beyond asking where another process's window was), so
+`SetParent` failed with `ERROR_INVALID_WINDOW_HANDLE` and
+`CreateCoreWebView2Controller` with `0x80070578`.  Window handles now
+work across processes:
+
+- **Messages**: `SendMessage`, `SendMessageTimeout`, `SendNotifyMessage`
+  and `PostMessage` to another process's window go through the kernel to
+  the thread that owns it, which runs the window procedure and answers;
+  the sender keeps answering messages sent to it while it waits, as on
+  Windows, so two processes calling each other do not deadlock.
+  `WM_SETTEXT`, `WM_GETTEXT` and `WM_COPYDATA` carry their data across;
+  other messages that carry pointers are refused, as Windows refuses
+  them between processes.
+- **Calls on the window**: `SetWindowPos`, `MoveWindow`, `ShowWindow`,
+  `Get`/`SetWindowLong(Ptr)`, `EnableWindow`, `SetFocus`,
+  `GetWindowText`, `GetClassName`, `GetWindowThreadProcessId` and
+  `IsWindowEnabled` run in the owning thread.
+- **`SetParent`**: a top-level window of another process goes inside a
+  window of this one, child window or top-level.  It keeps its numeric
+  position, now in the parent's client area, loses its frame, moves and
+  hides with its parent and is clipped to it; clicking it gives it the
+  keyboard while its parent's window stays the active one.
+  `GetParent`, `GetAncestor`, `IsChild` and `MapWindowPoints` answer
+  for it in both processes, and `SetParent(NULL)` (or the parent going
+  away) makes it a top-level window again.
+- **Drawing from a third process**: `GetDC` on another process's window
+  gives a device context whose drawing lands in that window, as
+  Chromium's GPU process draws into the browser's window in software.
+
+The new `xpwin` selftest covers all of this with three processes.  With
+it, `wv2host` gets its WebView2 controller, the page loads and a script
+runs in it.  The browser then subscribed to the event log; wevtapi's
+missing `EvtCreateBookmark` was a breakpoint through its delay-load hook,
+so wevtapi now has the rest of the Event Log API, answering as a system
+with no event channels (a subscription that never fires, a log with no
+records, empty channel and publisher lists), and shell32 has
+`SHCreateAssociationRegistration`.  The page is not drawn yet: Chromium's
+software output in the GPU process asks for a DXGI factory, which
+Windows gives even without a GPU and NovaOS does not.  For Chromium's
+Direct3D path, a window that is a child of another process's window from
+the start (the GPU process's own child window) and a DXGI swap chain
+presenting to it remain.
+
 ## A d3d9.dll in the base system, for GOG GALAXY's client
 
 GOG GALAXY's client (`GalaxyClient.exe`, 64-bit Qt 6 WebEngine) did not
@@ -7705,6 +7804,53 @@ faulted inside `RtlVirtualUnwind` (the client, after its NTFS warning).
   `E_NOINTERFACE`).  The service still fails the client's "write Vulkan
   registry keys" request ([compatibility.md](../compatibility.md)).
 
+## Direct3D 11 textures and fences shared between devices, on lavapipe
+
+GOG GALAXY's client draws its window with Qt WebEngine, whose Chromium
+renders each web page with Direct3D 11 (ANGLE on DXVK) into a texture it
+shares, by handle, with Qt's own Direct3D 11 device.  On the App Store's
+Mesa 3D, DXVK runs on lavapipe, which has no Windows build of the Vulkan
+extensions DXVK shares textures with, so Chromium's compositor lost its
+context and the client stopped.  NovaOS's Vulkan loader now provides them,
+and the client gets past that point
+([compatibility.md](../compatibility.md)).
+
+- **Shared memory** (`userland/vulkan-1/shared.c`): for a driver that can
+  use memory it is handed (`VK_EXT_external_memory_host`) but lacks
+  `VK_KHR_external_memory_win32`, `vulkan-1.dll` adds the extension.
+  Memory allocated for export is a section (`CreateFileMapping`) mapped
+  into the process and given to the driver as host memory; its handle is
+  a new handle to the section, and importing it maps the same pages, in
+  the same process or another one the handle reached.  Images, buffers,
+  format queries and device creation are answered as a driver with the
+  extension would.  Only NT handles are provided, not the older global
+  (KMT) handles.
+- **Shared fences**: `VK_KHR_external_semaphore_win32` the same way, for
+  timeline semaphores (`ID3D11Fence` with `D3D11_FENCE_FLAG_SHARED`, which
+  Chromium creates for Qt): the value lives in a section, and a thread of
+  the loader copies a new value between each device's semaphore and the
+  section, so a wait on one device ends when another signals.  DXVK used
+  to call a missing `vkGetSemaphoreWin32HandleKHR` there and crash.
+- **A shared texture's description**: DXVK keeps it with the handle
+  through `DeviceIoControl` (Proton's `sharedgpures.sys` requests).  For a
+  section handle the kernel now stores and returns it
+  (`kernel/um/um_thread.c`), and kernel32's `DeviceIoControl` passes
+  video-device requests to `NtDeviceIoControlFile`.
+- **Module file names past the 64th module**: `GetModuleFileName` and
+  `EnumProcessModules` only looked at a process's first 64 modules.  The
+  client has 89, and MFC's `DllMain` throws when `GetModuleFileName` does
+  not know `mfc140u.dll`, so since a refused `DllMain` ends the process
+  (as on Windows) the client did not start at all.
+- **Tests**: `d3dtest shared` (graphics suite, on lavapipe, 64- and
+  32-bit, 13 checks) shares a texture between two devices both ways and
+  with a child process, and a fence signalled on either device;
+  `dlltest` (core suite) loads more than 64 modules and checks every
+  one's file name.
+- **Where the client stops now**: Chromium's ANGLE compiles its shaders
+  with `d3dcompiler_47.dll`, and NovaOS's has no HLSL compiler, so
+  Chromium's compositor still loses its context and the client ends on a
+  `CHECK` in `qt6webenginecore.dll`.
+
 ## GOG GALAXY: Qt finds the system's OpenGL (a Direct3D 9 adapter for the display card)
 
 GOG GALAXY's client opened its sign-in window and started its first
@@ -7933,6 +8079,52 @@ last-available index means virglrenderer took it and never finished it (look
 for a missing worker and a `segfault` line); a request out that QEMU never
 took means the notification was lost; no request out means the guest never
 sent the one the program waits for.
+
+## An HLSL compiler: d3dcompiler_47 on vkd3d-shader
+
+NovaOS's `d3dcompiler_47.dll` had the blob functions and a `D3DCompile`
+that answered "no HLSL compiler", because no permissively licensed one
+exists.  Chromium's ANGLE compiles its Direct3D 11 shaders from HLSL at
+run time, so GOG Galaxy's web view (Qt WebEngine) stopped at "Failed to
+create D3D Shaders", and Steam's and WebView2's Chromium would stop there
+too once they draw with Direct3D 11.
+
+The compiler is now **vkd3d-shader 1.19**, Wine's HLSL compiler
+(`third_party/vkd3d-shader`, LGPL-2.1, unchanged; its bison and flex
+outputs are generated once and committed), compiled into
+`d3dcompiler_47.dll` alone, 64- and 32-bit.  The DLL's own sources stay
+MIT and use only vkd3d-shader's public API:
+
+- `D3DCompile`, `D3DCompile2`, `D3DCompileFromFile`: vs/ps/gs/hs/ds/cs
+  4_0 to 5_1 to DXBC, 1_x to 3_0 to Direct3D 9 bytecode, fx profiles to
+  effects; macros, `#include` through the caller's `ID3DInclude` or
+  `D3D_COMPILE_STANDARD_FILE_INCLUDE` (beside the including file), the
+  matrix packing and backwards-compatibility flags, and the compiler's
+  messages in the error blob.
+- `D3DPreprocess` and `D3DDisassemble` (vkd3d-shader's preprocessor and
+  assembly writer).
+- `D3DReflect`: `ID3D11ShaderReflection` (every IID the SDKs have used,
+  and `ID3D12ShaderReflection`) read from the shader's RDEF, signature,
+  STAT, SHEX and SFI0 sections: constant buffers, variables and their
+  types, bound resources, input/output/patch-constant parameters,
+  instruction counts, thread group size, minimum feature level.
+- The container: `D3DGetBlobPart` and the signature and debug-info
+  shortcuts, `D3DStripShader`, `D3DSetBlobPart` (private data),
+  `D3DReadFileToBlob`, `D3DWriteBlobToFile`.  The rest of the export
+  table (`D3DAssemble`, the linker and function-linking graph, shader
+  compression, trace disassembly) returns `E_NOTIMPL`, as vkd3d-shader has
+  nothing to build them on.
+
+The SPIR-V headers vkd3d-shader's SPIR-V back end includes are Khronos'
+(`third_party/spirv-headers`, MIT).  The README's licence section names
+the LGPL library and how to rebuild it.
+
+- Tested: `tools/hlsltest` (graphics suite, `225-hlsltest`, 64- and
+  32-bit, 36 checks): the profiles ANGLE uses, errors, `#include` and
+  macros, the preprocessor, reflection, the disassembler and the
+  container parts, then the vs/ps 4_0 and 5_0 shaders drawn with
+  Direct3D 11 on DXVK (a textured, tinted triangle read back exactly).
+  `delaytest` now checks that `D3DCompile` turns HLSL into DXBC.
 
 ## Installer ACLs: the VC++ Redistributable installs its first package
 
@@ -9005,6 +9197,38 @@ the offline installer (`tests/appcorpus/095-webview2.py`).
   mark, as Edge Update's log does) as text, as Windows' does.
 - The `edgeupdtest` self-test checks them, 64- and 32-bit.
 
+## WebView2: the browser keeps its host's connection
+
+With the runtime's browser process running, the host still got no
+controller: the browser connected to the host's Mojo pipe and closed it
+at once, the host started a second browser, and
+`CreateCoreWebView2Controller` failed with `RPC_E_DISCONNECTED`.  The
+GPU process's missing Direct3D 11 adapter, blamed before, was not the
+cause (it fails later and the browser falls back to software).
+
+- **Who is at the other end of a pipe**: Chromium checks that the
+  server of the pipe it is given is the process named in the pipe's
+  name (the host), with `GetNamedPipeServerProcessId`.  NovaOS answered
+  0 for it and for `GetNamedPipeClientProcessId`, so the browser dropped
+  the host.  Pipes now keep the process that created the server end and
+  the one that connected, and answer `FSCTL_PIPE_GET_PIPE_ATTRIBUTE`
+  (`ServerProcessId`, `ClientProcessId` and the session ids) as Windows'
+  pipe file system does; kernel32 asks it, and gained
+  `GetNamedPipeClientSessionId` and `GetNamedPipeServerSessionId`.
+- **shlwapi by ordinal**: the browser's delay-load hook turned the
+  missing ordinal 14 (`GetAcceptLanguagesA`) into a breakpoint; shlwapi
+  now exports it, `GetAcceptLanguagesW` (15), `ConnectToConnectionPoint`
+  (168) and `IUnknown_GetWindow` (172).
+- **Tests**: `pipetest` connects a child process to a pipe and checks
+  each side's process and session ids.
+- **Where it stops now**: the browser accepts the host and makes the
+  WebView's window, and the host then moves it into its own window with
+  `SetWindowPos` and `SetParent` on the browser's window, a window of
+  another process.  NovaOS's windows belong to one process each (user32
+  keeps the window tree in the process), so both fail with
+  `ERROR_INVALID_WINDOW_HANDLE` and the controller with `0x80070578`
+  ([compatibility.md](../compatibility.md#webview2)).
+
 ## WebView2: the runtime installs (drive C:'s root permissions)
 
 The WebView2 runtime's own setup (Chromium's `setup.exe`) copied the
@@ -9290,5 +9514,444 @@ behaves as Windows does; it does not change Roblox, defeat its checks or
 hide the virtual machine.  `gatetest` covers the selectors, the far jumps
 to and from 32-bit code, the wrapped fetch and its CONTEXT, the calling
 thread's context and `__fastfail`.
+
+## Aurora desktop workspace
+
+The default desktop now follows the Aurora reference's blue and peach
+sunrise palette, translucent floating panels, left launcher, top search
+and centered dock. The generated city wallpaper is bundled as
+`C:\Pictures\Aurora-Sunrise.png`; it is decoded once at shell startup
+outside the file-system lock, then reused by painting, theme previews and
+other monitors. A deterministic procedural skyline supplies a fallback
+if the asset is missing or decoding fails. Sample assets participate in
+the build's dependencies so wallpaper changes rebuild the embedded files.
+
+At logical resolutions of at least 900x640, the sidebar groups Home, Apps,
+Create and Explore above pinned Notes, Calendar, Photos and Terminal,
+followed by Settings and (on live installation media) Install NovaOS.
+These launch actual NovaOS applications; user-created desktop files remain
+compact double-click icons beside the sidebar. Search uses Ctrl+K or the
+existing Win+S shortcut. The header displays the configured user's name,
+initials and actual local date. A live calendar opens Calendar, and a
+second glass card greets the user and opens Explorer, Notepad and NetSurf.
+The calendar handles leap years and six-week months; it refreshes with the
+shell's minute timer and time-zone changes. App windows cover these
+background cards normally. Hovering a dock item raises it visually while
+its input rectangle remains stable.
+
+Explorer opts into the Aurora acrylic backdrop and opens wider when room
+permits. Its native preview pane shows the selected file's thumbnail,
+name, type, size and decoded PNG dimensions (or a folder's item count).
+Open uses the existing file/folder handler; Copy path writes its real path
+to the system clipboard. The pane collapses below a 902x400 client size,
+leaving the existing list and scroll bars their full width. Selection,
+keyboard navigation, drive handling and file operations retain their
+existing implementations.
+Smaller logical displays retain the icon grid. The Sunset, Ocean and
+Twilight themes keep their prior indices, appearance and interactions.
+Dock task buttons, running indicators, menus, full-screen behavior and
+keyboard shortcuts retain their existing implementations. Weather, AI
+chat and resource gauges from the concept image are not implemented.
+
+The wallpaper was created with the built-in image-generation tool using
+the supplied screenshot as the edit reference: remove all interface
+overlays and reconstruct the cinematic city, river, bridges, mountain,
+sunrise and subtle crescent planet, with no text or logos. The final asset
+is `userland/samples/Aurora-Sunrise.png`.
+
+Validation: the shell translation unit compiles with the kernel's
+freestanding GCC flags; Explorer and the window manager also compile. A temporary host harness decoded the bundled PNG
+with NovaOS's decoder and rendered the workspace with its actual GDI,
+fonts and icons at 1672x941, 900x640 and 800x600. It also checked hotspot
+counts and that all 24 user-file cells clear the cards and dock at the
+workspace's minimum size. Preview checks cover the size thresholds,
+Open's file dispatch, folder navigation, Copy path's clipboard payload,
+empty selection and clicks outside the pane. `docs/screenshots/aurora-preview.png` is this
+host-rendered preview with a fixed date and Explorer displaying the real bundled PNG through
+file-system stubs; it is not an OS boot screenshot. Manifest, self-test discovery, generated-document,
+conflict-marker and whitespace checks pass. A full kernel build and QEMU
+boot were not available on this host (no clang, NASM or QEMU); they remain
+required before merging.
+
+## CI completion checks and cancellation scope
+
+Every standard CI run executes host compatibility and workflow regressions
+before building. The `CI result` check requires successful preflight checks
+and successful build/boot and graphics jobs for code changes. Docs-only
+build skips are accepted only with an explicit `code=false` output.
+`Corpus result` requires the corpus job to succeed when the nightly gate
+requests execution. Missing outputs, failed/cancelled dependencies and
+unexpected skips fail the result checks, with a job-result summary. These
+job results do not replace per-program passed/failed/skipped/not-run reports.
+External cancellation of an entire workflow can prevent its summary job
+from starting; GitHub still records the cancelled run.
+
+Concurrency groups separate workflow events, and only superseded PR runs
+cancel active work. Scheduled, manual, merge-group and release work retain
+active execution. GitHub can still replace pending runs in a concurrency
+group; the nightly retry gate continues to ignore cancelled runs. Existing
+full suites, strict WebView2 assertions and the corpus/SMP failure gate remain.
+The result checks are available for branch protection; this change does not
+edit repository rules or remove existing required checks.
+
+## A bounded compatibility smoke suite before the full boot tests
+
+PRs changing kernel, userland, headers, build definitions, core test definitions
+or the smoke harness run seven existing regressions on four CPUs: dlltest on
+x64 and x86, waitmigrationtest on x64 and x86, chrometest on x64, unwindtest and wvstarttest.
+They exercise loader/TLS, scheduler migration and waits, shared-memory mapping/access rights, exception
+unwinding and browser runtime APIs. Each retains its core assertions and exit
+checks; starting successfully alone cannot pass. The per-test limits total at
+most 21 minutes and the workflow step has a 25-minute limit. There are no external
+installers, audio tests, deliberate panics or reboots in this selection.
+
+The suite runs immediately after the existing build, before the longer boot
+suites. Serial logs, screenshots and JUnit are kept in compat-smoke-out. Missing
+or duplicate test definitions fail host validation, and missing VM results fail
+the suite. CI runs host regressions on every PR.
+
+Configure `Compatibility smoke` as a required check alongside `Checks (conflict
+markers, manifests, generated docs)`, `Build and boot-test` and `Graphics tests
+(OpenGL, Direct3D)`. The smoke check always runs: out-of-scope PRs explicitly
+report the scope skip as success; an in-scope smoke failure, cancellation or
+missing execution fails. There is no workflow-level path filter that leaves a
+required check pending. Repository branch rules are not changed by this PR.
+The existing full core suites and nightly corpus/failure gate remain intact.
+
+## Classic console cursor controls reach the Terminal
+
+`SetConsoleCursorPosition` used to return success without moving anything;
+`SetConsoleCursorInfo` ignored its argument, and `GetConsoleCursorInfo`
+always reported a visible 25 percent cursor. The calls now go through
+`NtNovaConsole`, with the same fixed-width arguments on x64 and x86.
+
+- Positions are checked against the Terminal's grid, including negative
+  coordinates. Only console output handles are accepted.
+- Positioning and visibility controls are queued through the same writer
+  lock as ordinary text. A complete control sequence waits for room before
+  entering the ring; cancellation cannot leave half an escape sequence.
+- Cursor size (1 through 100 percent) and visibility are stored per
+  console, shared by duplicated handles and processes attached to it.
+  The Terminal uses the size when painting its cursor, and recognizes
+  visibility controls even before it enters screen mode.
+- `consolecursortest` joins both native core suites. The host test
+  `python3 -m unittest discover -s tests/tools -p test_console_cursor.py`
+  exercises the actual queue code: emitted sequences, boundaries, shared
+  state, cancellation and a full ring that must drain before a control.
+
+This is an incremental console implementation. `GetConsoleScreenBufferInfo`
+still does not report the current cursor position; cell readback, fills,
+scrolling, alternate screen buffers and ConPTY remain open. Raw VT cursor
+visibility changes are rendered but do not update the classic API's stored
+visibility. No new application is marked compatible from this change alone.
+
+## Corpus downloads have identities and a refresh policy
+
+Downloads use the entire source URL as their cache identity, preventing equal
+filenames and query URLs from colliding. Roblox, Steam and evergreen WebView2
+refresh after 24 hours by default (`--mutable-max-age 0` forces refresh).
+Versioned inputs keep their cache entries. Failed refreshes fail staging and
+leave the previous bytes intact; downloads and metadata are atomically replaced.
+
+Each run retains `downloads.json` with source and resolved URLs, SHA-256 hashes,
+fetch times, declared versions and versions found in resolved URL paths when
+available. WebView2 runtime discovery and Roblox version-directory output also
+record observed versions with their evidence. Unknown resolved versions stay null; a filename is not proof of an
+installed runtime version. Content-addressed blobs retain prior inputs, and
+`--download-lock PATH` replays a previous downloads.json without refreshing,
+rejecting missing lock entries or bytes that differ from its hashes. A lock can
+replay an old mutable installer only while its bytes are cached or still served
+by its source URL; it does not freeze an installer's subsequent network requests.
+
+Actions restores previous caches but saves refreshed entries under a new run
+key, since Actions cache entries are immutable. Legacy basename caches are not
+trusted or migrated. The full nightly failure gate and app assertions are unchanged.
+
+## Read the current thread without retaining another CPU's KPCR
+
+The scheduler's current-thread lookup read `GS:0` (the CPU's KPCR), then
+read its `CurrentThread` field. Preemption and migration between those
+instructions could make the second read return the previous CPU's next
+thread. In particular, its idle thread has no `UmThread`.
+
+`KiGetCurrentThread` now reads `GS:KPCR_CURRENT_THREAD` in one instruction,
+and the scheduler uses that getter. A migration before or after this
+instruction preserves the caller's identity.
+
+The failed Roblox installer corpus run faulted writing address `0xe0` in
+`wait_objects`, which registers the caller in the waiter list. This race
+fits the null user-thread pointer in that path. The earlier missing DXVK
+and WebView2 messages are not evidence that those dependencies caused the
+kernel panic; a new corpus run is still needed to confirm recovery.
+
+`waitmigrationtest` repeatedly yields and performs timed wait-any and
+wait-all calls from multiple workers, in both x64 and x86 core suites.
+The nightly workflow's failure gate remains unchanged.
+
+## Nightly fallbacks retry failures
+
+The nightly gate now retries failed, cancelled and gate-only scheduled runs.
+An active run or a successful App corpus job that actually ran the programs
+suppresses a fallback; workflow success alone does not. API pagination includes
+all runs and the latest attempt's jobs. The 20-hour success window is unchanged,
+and API errors fail the gate. Later queued fallbacks cannot block the earlier
+run that owns the concurrency slot. Manual runs are also considered by scheduled
+fallbacks. The full corpus and SMP failure gate remain intact.
+
+## One-shot thread-pool callbacks release their resources
+
+`TrySubmitThreadpoolCallback` previously created a persistent work object
+and an idle event for every submission and never released either. Repeated
+submissions could exhaust the process's 4096 handle slots. It also called
+the two-argument simple callback as a three-argument work callback, which
+does not match the x86 callee-cleaned calling convention.
+
+One-shot submissions now use a small callback context that the worker
+releases before calling the application, without allocating an idle event.
+The worker uses the two-argument callback signature. Thread creation failure
+returns `FALSE`, preserves the error, and releases the context.
+
+`tpsimpletest` submits 5120 callbacks in batches and checks callback context
+and handle counts on x64 and x86. This fixes a runtime resource leak useful
+to desktop applications; Firefox's latest nightly crash reported error 4
+(too many open files), but that application's recovery still needs a corpus
+run and is not claimed here.
+
+## SuperTux: a game played with a game pad
+
+The eighth free game is the first played with a game pad: SuperTux 0.1.3
+(2005, GPL, 32-bit, SDL 1.2), installed from the App Store with its Inno
+Setup installer.  SDL 1.2 reads pads through winmm's joystick functions,
+which NovaOS had only as stubs answering "unplugged".
+
+NovaOS gaps the game found:
+
+- **Joysticks in winmm**: `joyGetNumDevs`, `joyGetDevCaps`, `joyGetPos`,
+  `joyGetPosEx`, the thresholds and `joySetCapture` (its `MM_JOY1MOVE`
+  and button messages) now answer from NovaOS's game controllers, each
+  present controller one joystick ID, with the axes Windows' own driver
+  gives an Xbox 360 pad: X and Y the left stick, Z the triggers, R and U
+  the right stick, and the D-pad as the point of view.
+- **Garbled installer text**: Delphi programs such as Inno Setup make
+  their own window classes from the built-in ones (`GetClassInfoA` on
+  `BUTTON`, then `CallWindowProcA` on its procedure).  NovaOS's built-in
+  procedures are Unicode, and `CallWindowProcA` converted the messages
+  only for the window's own procedure or its class's, so the buttons read
+  ANSI text as UTF-16.  It now converts for any built-in class procedure.
+- **"Failed to expand 'group' constant"**: the installer finds the Start
+  menu through `shfolder.dll`, using its own copy unless the system's is
+  as new; NovaOS had none, and the bundled one reads Explorer registry
+  keys NovaOS does not keep.  `shfolder.dll` is now NovaOS's, forwarding
+  to `shell32`'s `SHGetFolderPath`, with Windows 10's version number.
+- **Missing DLLs and functions**: `crtdll.dll` (the NT 3 C runtime, which
+  the game's `zlib.dll` imports), now forwarding to `msvcrt`; msvcrt's
+  `_ftol`, `_ftol2`, `_ftol2_sse`, `_ctype`, `_pctype` and
+  `_adjust_fdiv`; kernel32's 32-bit `InterlockedIncrement` family, which
+  old compilers called as functions.
+- **A crash in SDL's blitter**: SDL 1.2 writes its stretching code into its
+  data and calls it.  On Windows, 32-bit programs not marked
+  NX-compatible run with data execution prevention off; NovaOS now does
+  the same (an instruction fetch from a non-executable page of such a
+  process makes the page executable, and `VirtualQuery` still reports the
+  protection the program asked for).
+- **Crashes nobody saw**: an exception that reaches a program's own
+  unhandled-exception filter (SDL's "parachute", MinGW's runtime) is now
+  written to the serial log with its address and module first.
+
+The corpus can now plug in a game pad: `App(pad='xbox360')` boots NovaOS
+with `tools/padpeer.py` behind QEMU's `usb-redir`, and the test's `pad()`
+lines press its buttons and move its sticks.  The test
+(`tests/appcorpus/947-supertux.py`) installs the game silently, starts a
+new game with the pad's A button, walks Tux to the first level with the
+stick, enters it with B, checks the stick moves Tux, aborts the level
+from the pause menu, checks the world map's screenshot, and checks the
+display is back at 2560x1600 after Alt+F4.
+
+## Short-lived threads reuse slots before the background poll
+
+The core CI failures shared by PRs 243–247 were in tpsimpletest, including on
+main: x64/x86 reported one extra handle, and an x86 run exhausted its 96 thread
+slots. A burst of callbacks can create threads faster than UmPoll reaps their
+exited kernel objects. um_create_thread now invokes the same reaper under the
+process lock before selecting a slot. Only exited threads that the scheduler
+confirms are dead and off CPU are eligible. Live threads and exited threads
+still on CPU keep their slots; object references held by handles remain valid.
+
+The test's cold baseline also preceded the loader critical section's first
+contention. That creates one persistent process-wide event, rather than a leaked
+callback handle. The test now forces loader-lock contention with a joined warm-up
+thread before recording its baseline. It still checks every one of 160 measured
+batches (5120 callbacks) for correct context, x86 calling convention and no
+handle-count growth. Timeouts remain failures; no sleep-based tolerance or extra
+handle allowance is added. Host source-based regressions cover slot reuse and
+reaper safety plus the lazy contention event. Native x64/x86 SMP validation is
+required in Actions. The existing scheduler migration fix is preserved.
+
+The callback stress regression now duplicates and joins each callback thread
+before starting the next batch. The completion event marks callback work,
+not completion of `DLL_THREAD_DETACH` and thread exit. Starting batches on
+that event alone could accumulate live teardown threads and reach WOW64's
+96-thread limit (CI #577 failed submission 2742 with `STATUS_TOO_MANY_THREADS`).
+Temporary join handles are closed before the exact leak baseline check;
+all 5120 submissions and callback assertions remain. A host fixture checks
+bounded joins and failure handling for timeouts, missing handles and close
+failures. Native x64/x86 execution remains covered by CI.
+
+## WebView2 draws its page
+
+With the browser's window inside the host's, WebView2 loaded its page and
+ran its scripts, but the window stayed black.  On a PC without a GPU,
+Chromium's GPU process draws with its software compositor, and the
+current one (Chromium 154, under the WebView2 runtime) does not paint the
+window with GDI: it draws each frame into a mapped Direct3D 11 staging
+texture on WARP, copies the changed part into a DXGI 1.2 swap chain made
+for DirectComposition and presents it, and a DirectComposition visual
+shows the swap chain in a window the GPU process makes and the browser
+process parents in its own.  NovaOS gave no DXGI factory interface past
+`IDXGIFactory1`, no WARP device and no DirectComposition, so the GPU
+process stopped on its first call (`CreateDXGIFactory1` for an
+`IDXGIFactory2`) and the browser gave up after three tries.  Now the
+host's window shows the page.  Nothing in the runtime is changed.
+
+- **dxgi.dll**: without DXVK its factory is `IDXGIFactory7` and lists
+  one adapter, as Windows does on a PC without a display driver: the
+  Microsoft Basic Render Driver (VendorId `0x1414`, DeviceId `0x8c`, a
+  software adapter with no outputs; `EnumWarpAdapter`,
+  `EnumAdapterByLuid`, video memory queries, the driver version
+  Chromium reads).  It makes swap chains on the software device, for a
+  window (presented with GDI) and for composition (`IDXGISwapChain1`,
+  `Present1` with dirty rectangles).  The Khronos Vulkan loader skips
+  software adapters, so it is unaffected.
+- **d3d11.dll**: `D3D11CreateDevice` with `D3D_DRIVER_TYPE_WARP` (or the
+  Basic Render Driver adapter) gives a software device of feature level
+  9_1 whose textures live in memory: created, mapped, updated and copied
+  by the CPU.  It does not rasterize, and a request that needs feature
+  level 9_3 or higher (ANGLE's) is refused, so ANGLE reports no renderer
+  and Chromium takes its software path.  64-bit only.  With DXVK
+  installed everything still goes to DXVK.
+- **dcomp.dll** (new): a DirectComposition device, targets on windows and
+  visuals with offsets and children; a visual whose content is a swap
+  chain draws each present into its target's window.  Only
+  `DCompositionCreateDevice` is exported, so Chromium keeps its hardware
+  DirectComposition path (which needs a GPU) off.
+- **Windows of other processes**: the window the GPU process composites
+  into is a child of a hidden window of its own until the browser calls
+  `SetParent` on it.  NovaOS now tells the GPU process, whose child window
+  then becomes a desktop window of its own that the desktop keeps in the
+  browser's window (it stays `WS_CHILD`, and `GetParent` gives the
+  browser's window).
+
+The new self-test `dcomptest` (64- and 32-bit) does what Chromium does:
+the adapter, a WARP device, a composition swap chain shown by a visual,
+dirty-rectangle presents read back from the window, a swap chain on a
+window, and the GPU process's window parented by another process and
+drawn into.
+
+## Firefox bundled as the default browser
+
+The image includes Mozilla Firefox 157.0 for Windows x64 at
+`C:\Programs\Mozilla Firefox\core\firefox.exe`, the same path used by the
+App Store. The build downloads the pinned official full installer and its
+Mozilla SHA512SUMS manifest over HTTPS, verifies the installer, and embeds
+its unmodified core files. Provenance is kept in the build directory.
+No custom browser policies, test CAs, extensions or preference changes are
+added to the shipped payload. NetSurf remains installed for its regressions
+and as a fallback when Firefox is missing.
+
+HTTP/HTTPS links and local HTML files opened through ShellExecute launch
+Firefox. Desktop, Start, dock and Aurora browser actions select Firefox.
+Program shortcuts retain their arguments. Disk-image sizing expands beyond
+the original 128 MiB minimum when the payload requires it. Builds need 7z;
+CI installs p7zip-full. Download/extraction and routing regressions run on
+the host; native startup and page rendering still require QEMU validation.
+Firefox compatibility failures in the app corpus remain separate runtime
+work; bundling does not claim that every site or browser feature works.
+
+## CI orchestration rebuilt
+
+Replace duplicated build-and-test jobs with a reusable image build, verified
+image artifacts, separate core/network/devices/graphics/compatibility jobs and
+always-present CI result reporting. Rebuild nightly orchestration around
+explicit PR scope, paginated fallback decisions, one app per VM/job, independent
+SMP and complete per-app reports. Preserve release artifacts and publication
+gates, scheduler race fixes, strict WebView2 assertions, download provenance,
+mutable refresh and accurate skipped/not-run reporting.
+
+Centralize runner dependencies, settle KVM permissions and probe VM creation.
+Preserve full callback stress while joining teardown between batches. Correct
+TCG CPUID recognition without changing timing thresholds. Compare decoded
+NetSurf client pixels using reported geometry, eliminating desktop-clock noise
+while retaining page assertions. Host regressions exercise scope, job outcomes,
+workflow graph, image corruption, app selection/report completeness, fallback
+pagination, KVM probing and graphics comparison. See `docs/ci.md` for required
+check migration, reruns and runtime validation limits.
+
+## Independently updateable App Store catalog
+
+The App Store's 37 existing entries now live in `userland/store/catalog.json`
+instead of a compiled C table. The OS image embeds that JSON as an offline
+fallback at `C:\Windows\AppStore\default-catalog.json`; a refreshed copy at
+`C:\Windows\AppStore\catalog.json` takes precedence when opening the Store.
+
+**Refresh**, **F5**, or `store refresh` downloads the catalog over HTTPS and
+replaces the saved copy after validating the complete document. The default
+source is the repository's `main/userland/store/catalog.json`; an optional
+`C:\Windows\AppStore\catalog-url.txt` selects another HTTPS endpoint.
+Adding or removing entries, changing installer URLs, and updating compatibility
+notes no longer require installing an OS update or restarting NovaOS.
+
+The Store retains its current catalog after network errors, unsupported schemas,
+malformed documents, unsafe installation paths, or failed cache writes. Cached
+files are replaced through a temporary file and rename. Refresh cannot replace
+app indices during an active download or unpack, and app actions wait during a
+refresh. Closing the window releases an outstanding catalog request. Offline
+operation uses the saved list or the bundled fallback.
+
+The bounded native parser limits catalogs to 512 KiB and 256 apps, checks required
+fields and UTF-8/JSON escapes, rejects duplicate app names and download filenames,
+and validates archive destinations and system-file arguments. It preserves the
+existing download, installation, runtime and OS-update behaviors. New catalog
+entries describe packages; they do not add compatibility APIs to NovaOS.
+
+Host regression tests execute the production parser and refresh state machine,
+covering catalog edits, Unicode, limits, malformed JSON, path validation, failed
+requests, write/rename failures, busy operations, successful replacement, and
+saved/offline fallback. CI's Checks job runs these tests. Freestanding compilation
+checks cover Store and Terminal; full boot and HTTPS refresh testing require CI.
+See `docs/app-store-catalog.md` for the format and update procedure.
+
+## Windowed DirectDraw video and stable recording captures
+
+VLC selected DirectDraw but its primary surface remained black. A windowed
+player attaches an HWND clipper and does not call SetDisplayMode, so cnc-ddraw's
+game render thread never starts. NovaOS now presents a primary Blt to that
+clipper's client DC in this case, converting screen coordinates and clipping
+the source bounds. Fullscreen/game render-thread paths retain their behavior.
+The adaptation is compiled only for NovaOS.
+
+Audacity's recording viewport depends on how far recording auto-scrolled.
+After saving, the corpus moves to the start and fits the project width before
+comparing the existing reference. Recording, file checks and screenshot
+thresholds remain required. GUI test reporting preserves an interaction failure
+instead of replacing it with the later screenshot difference, and still saves
+the capture for diagnosis.
+
+## Installer capacity and app-corpus fixes
+
+The disk installer sizes its EFI partition for the bundled kernel and boot
+loader, a complete staged update, and 32 MiB of filesystem/configuration
+space, rounded to 32 MiB with a 128 MiB minimum. It checks the layout before
+detaching volumes or erasing the target disk. This matches the installation
+image's capacity policy as bundled applications grow.
+
+Windowed DirectDraw uses a 32-bit desktop primary surface and preserves
+window coordinates without installing the fullscreen game hooks. VLC's
+clipped video blits can then reach its child window. Fullscreen games retain
+the existing renderer.
+
+The app-corpus runner installs the MinGW compiler, CMake and Make used to
+build PuTTY. Teeworlds' screenshot fixture keeps only the winter day map, so
+its menu uses the same background regardless of the host's hour. Screenshot
+tolerances, video-content assertions and the full app matrix remain intact.
 
 <!-- END generated:history -->
