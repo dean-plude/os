@@ -48,7 +48,11 @@ makes NovaOS run at close to the computer's own speed instead of being
 emulated.  Add `-device intel-hda -device hda-duplex` for sound and a
 microphone.  QEMU's network works without any options.
 
-Other virtual machines (VirtualBox, VMware, Hyper-V) are untested.  A
+In Hyper-V, make a Generation 2 VM with Secure Boot off and start it
+from the ISO: the keyboard and mouse work, but NovaOS cannot see the VM's
+disks or network yet ([hyperv.md](hyperv.md)).
+
+Other virtual machines (VirtualBox, VMware) are untested.  A
 VirtualBox or VMware machine set to "Other 64-bit", with EFI on, a SATA
 disk and an Intel network card, is the closest match to what NovaOS
 drives.

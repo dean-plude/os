@@ -1,0 +1,1 @@
+- **Hyper-V**: a VMBus driver (hypercalls, the SynIC, channel offers, ring buffers) with Hyper-V's synthetic keyboard and mouse, the only input a Generation 2 VM has ([docs/hyperv.md](docs/hyperv.md)).
