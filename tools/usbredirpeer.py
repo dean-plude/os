@@ -4,7 +4,7 @@ QEMU usb-redir device.
 
     tools/usbredirpeer.py --port 10700 [--speed high|full] [--uac2] [--speaker OUT.wav] [--mic HZ]
                           [--rates 44100,96000] [--channels N] [--mic-channels N] [--product NAME]
-                          [--feedback HZ]
+                          [--feedback HZ] [--slow-control MS]
 
 QEMU's usb-redir device forwards everything the guest sends a USB device
 over a chardev, in the usbredir protocol, to a program that is the device:
@@ -54,6 +54,19 @@ must then fill each packet with HZ / packets-a-second frames on average
 instead of the nominal rate's: OUT.wav.fb gets the packets and frames
 received once the feedback has been running for half a second.
 
+--slow-control holds the first control request's answer back MS milliseconds,
+as a device (or a busy host) that is slow to answer its first descriptor
+request: NovaOS must wait for it rather than give the device up.
+
+The program is as cheap as a Python program can be at 8,000 packets a
+second a direction (CI runs it beside QEMU on a shared machine): it reads
+the socket in big chunks, converts and writes the speaker's samples in
+batches, and sends the microphone's packets one by one (a burst of them in a single write makes QEMU's buffer overflow).  With
+--log-times (selftest's logs) it prints what happens on the connection (the
+control requests, stream starts and stops, resets), each with the time
+since the program started, and every five seconds the packets it has
+taken and sent, so a stall shows in the log.
+
 The protocol is usbredir's (usbredirproto.h in spice/usbredir): packets of
 a header (type, length, id) and a type-specific header and data.  QEMU
 answers SET_ADDRESS itself and turns SET_CONFIGURATION and SET_INTERFACE
@@ -64,6 +77,9 @@ packets at its own pace, which QEMU hands to the guest as it asks for
 them.  Used by tools/selftest.py --suite devices.
 """
 import argparse, math, os, signal, socket, struct, sys, threading, time
+
+T0 = time.monotonic()
+LOG_TIMES = False                                   # --log-times
 
 # usbredir packet types
 HELLO, DEVICE_CONNECT, RESET, INTERFACE_INFO, EP_INFO = 0, 1, 3, 4, 5
@@ -221,14 +237,20 @@ class Headset:
 class Wav:
     """A 16-bit stereo WAV file (48 kHz until the host sets another rate),
     its header kept current; @extra counts the speaker's samples beyond its
-    first two channels that are not silent (written to PATH.extra)"""
+    first two channels that are not silent (written to PATH.extra).  The
+    speaker's packets are queued by add() and converted in batches (@sub,
+    @ch: bytes a sample slot, channels of the device's own format)"""
 
-    def __init__(self, path):
+    BATCH = 256                                        # packets
+
+    def __init__(self, path, sub=2, ch=2):
         self.f = open(path, 'wb')
         self.path = path
         self.n = 0
         self.rate = RATE
         self.extra = 0
+        self.sub, self.ch = sub, ch
+        self.pending = []
         self.lock = threading.Lock()
         self._header()
 
@@ -238,13 +260,51 @@ class Wav:
                      struct.pack('<IHHIIHH', 16, 1, 2, self.rate, self.rate * 4, 4, 16) + b'data' + struct.pack('<I', self.n))
         self.f.seek(0, 2)
 
-    def write(self, data):
-        with self.lock:
+    def convert(self, pcm):
+        """@pcm (whole frames of the device's format) as 16-bit stereo: the
+        top 16 bits of each slot, the first two channels (a mono one's twice);
+        the other channels' samples that are not silent go into @extra"""
+        sub, ch = self.sub, self.ch
+        if sub != 2:
+            lo, hi = pcm[sub - 2::sub], pcm[sub - 1::sub]
+            pcm = bytearray(2 * len(lo))
+            pcm[0::2], pcm[1::2] = lo, hi
+        if ch == 2:
+            return bytes(pcm)
+        step = 2 * ch
+        out = bytearray(2 * len(pcm) // ch)
+        if ch == 1:
+            out[0::4] = out[2::4] = pcm[0::2]
+            out[1::4] = out[3::4] = pcm[1::2]
+            return bytes(out)
+        for k in range(4):
+            out[k::4] = pcm[k::step]
+        for k in range(2, ch):
+            lo, hi = pcm[2 * k::step], pcm[2 * k + 1::step]
+            if lo.strip(b'\0') or hi.strip(b'\0'):
+                self.extra += sum(1 for a, b in zip(lo, hi) if a or b)
+        return bytes(out)
+
+    def _drain(self):
+        if self.pending:
+            data = self.convert(b''.join(self.pending))
+            self.pending = []
             self.f.write(data)
             self.n += len(data)
 
+    def add(self, packet):
+        """One speaker packet (a partial last frame is dropped)"""
+        fb = self.sub * self.ch
+        if len(packet) % fb:
+            packet = packet[:len(packet) // fb * fb]
+        with self.lock:
+            self.pending.append(packet)
+            if len(self.pending) >= self.BATCH:
+                self._drain()
+
     def sync(self):
         with self.lock:
+            self._drain()
             self._header()
             self.f.flush()
             with open(self.path + '.extra', 'w') as x:
@@ -254,25 +314,28 @@ class Wav:
 class Conn:
     """One QEMU usb-redir connection"""
 
-    def __init__(self, sock, dev, wav, mic_hz):
+    def __init__(self, sock, dev, wav, mic_hz, slow_control=0):
         self.sock, self.dev, self.wav, self.mic_hz = sock, dev, wav, mic_hz
+        self.slow_control = slow_control / 1000            # (the first control answer waits this long)
         self.wlock = threading.Lock()
+        self.rbuf = bytearray()
         self.ids64 = False
-        self.mic_on = False
-        self.mic_phase = 0
-        self.mic_rate = 0
+        self.mic_stop = None                               # the running microphone loop's Event (set: stop)
+        self.mic_wave = None                               # (rate, a second of frames)
+        self.spk_packets = self.mic_sent = 0               # (for the log)
         self.fb_on = False
         self.fb_since = None                           # when feedback started (for the counts)
         self.fb_packets = self.fb_frames = 0
 
     def make_mic_wave(self):
-        """A second of the microphone's frames at its rate (a whole number of
-        cycles for a whole HZ): the sine on its first two channels, 300 Hz on
-        any others; 16-bit samples in the top bytes of the device's slots"""
+        """(rate, a second of the microphone's frames at its rate: a whole
+        number of cycles for a whole HZ; the sine on its first two channels,
+        300 Hz on any others; 16-bit samples in the top bytes of the device's
+        slots), made once for each rate the host sets"""
         d, sub = self.dev, self.dev.mic_sub
         rate = d.rate or RATE
-        if self.mic_rate == rate:
-            return
+        if self.mic_wave and self.mic_wave[0] == rate:
+            return self.mic_wave
         def slot(v):
             return struct.pack('<i', int(v) << 16)[4 - sub:]
         frames = []
@@ -280,7 +343,8 @@ class Conn:
             a = slot(12000 * math.sin(2 * math.pi * self.mic_hz * i / rate))
             b = slot(12000 * math.sin(2 * math.pi * 300 * i / rate))
             frames.append(a * min(2, d.mic_channels) + b * max(0, d.mic_channels - 2))
-        self.mic_wave, self.mic_rate, self.mic_phase, self.mic_acc = b''.join(frames), rate, 0, 0
+        self.mic_wave = (rate, b''.join(frames))           # (one assignment: a running loop sees whole ones)
+        return self.mic_wave
 
     def send(self, ptype, hdr=b'', data=b'', pid=0):
         h = struct.pack('<II', ptype, len(hdr) + len(data)) + struct.pack('<Q' if self.ids64 else '<I', pid)
@@ -288,13 +352,31 @@ class Conn:
             self.sock.sendall(h + hdr + data)
 
     def recv_exact(self, n):
-        buf = b''
+        """The next @n bytes (the socket is read in big chunks: at 16,000
+        packets a second a recv for each would be most of this program's work)"""
+        buf = self.rbuf
         while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
+            chunk = self.sock.recv(65536)
             if not chunk:
                 raise EOFError
             buf += chunk
-        return buf
+        out = bytes(buf[:n])
+        del buf[:n]
+        return out
+
+    def stats(self):
+        """Every five seconds, what moved (to the log: a stall shows there)"""
+        last = (0, 0)
+        while self.alive:
+            time.sleep(5)
+            now = (self.spk_packets, self.mic_sent)
+            if now != last:
+                self.log(f'speaker packets taken {now[0]}, microphone packets sent {now[1]}')
+                last = now
+
+    def log(self, text):
+        if LOG_TIMES:
+            print(f'usbredirpeer: +{time.monotonic() - T0:.3f}s {text}', flush=True)
 
     def send_info(self):
         d = self.dev
@@ -307,37 +389,56 @@ class Conn:
             types[i], intervals[i], ifs[i], mps[i] = t, iv, iface, m
         self.send(EP_INFO, bytes(types) + bytes(intervals) + bytes(ifs) + struct.pack('<32H', *mps))
 
-    def mic_packets(self, n):
+    def mic_packets(self, run, n):
         """The next @n packets of the microphone's sine (a whole number of
-        frames each, averaging its rate)"""
+        frames each, averaging its rate); @run is the loop's phase [frame, remainder]"""
         out = []
-        self.make_mic_wave()
-        rate, per_s, fb = self.mic_rate, self.dev.mic_per_s, self.dev.mic_sub * self.dev.mic_channels
+        rate, wave = self.make_mic_wave()
+        per_s, fb = self.dev.mic_per_s, self.dev.mic_sub * self.dev.mic_channels
         for _ in range(n):
-            self.mic_acc += rate
-            frames, self.mic_acc = self.mic_acc // per_s, self.mic_acc % per_s
-            a, b = self.mic_phase, self.mic_phase + frames
-            pkt = self.mic_wave[a * fb:b * fb]
+            run[1] += rate
+            frames, run[1] = run[1] // per_s, run[1] % per_s
+            a, b = run[0], run[0] + frames
+            pkt = wave[a * fb:b * fb]
             if b > rate:
-                pkt += self.mic_wave[:(b - rate) * fb]
+                pkt += wave[:(b - rate) * fb]
             out.append(pkt)
-            self.mic_phase = b % rate
+            run[0] = b % rate
         return out
 
-    def mic_loop(self):
-        """Send the microphone's packets in real time while its stream runs"""
-        t0, sent = time.monotonic(), 0
-        while self.mic_on:
-            due = int((time.monotonic() - t0) * self.dev.mic_per_s)
-            if due - sent > self.dev.mic_per_s // 5:    # (stalled: don't flood)
-                sent = due - self.dev.mic_per_s // 50
-            try:
-                for pkt in self.mic_packets(due - sent):
-                    self.send(ISO_PACKET, struct.pack('<BBH', EP_MIC, OK, len(pkt)), pkt)
-            except OSError:                            # (QEMU went away)
-                return
-            sent = due
+    def mic_loop(self, stop):
+        """Send the microphone's packets in real time until @stop is set, a
+        write for each (a burst of them in one write overflows QEMU's buffer
+        and the guest hears nothing; a loop of its own for each start: a stop
+        and a start close together never leave two running)"""
+        t0, sent, run = time.monotonic(), 0, [0, 0]
+        per_s = self.dev.mic_per_s
+        while not stop.is_set():
+            due = int((time.monotonic() - t0) * per_s)
+            if due - sent > per_s // 5:                 # (stalled: don't flood)
+                sent = due - per_s // 50
+            if due > sent:
+                pkts = self.mic_packets(run, due - sent)
+                tail = struct.pack('<Q' if self.ids64 else '<I', 0)
+                try:
+                    for pk in pkts:
+                        with self.wlock:
+                            self.sock.sendall(struct.pack('<II', ISO_PACKET, 4 + len(pk)) + tail + struct.pack('<BBH', EP_MIC, OK, len(pk)) + pk)
+                except OSError:                         # (QEMU went away)
+                    return
+                self.mic_sent += len(pkts)
+                sent = due
             time.sleep(0.002)
+
+    def mic_start(self):
+        self.mic_stop_loop()
+        self.mic_stop = threading.Event()
+        threading.Thread(target=self.mic_loop, args=(self.mic_stop,), daemon=True).start()
+
+    def mic_stop_loop(self):
+        if self.mic_stop:
+            self.mic_stop.set()
+            self.mic_stop = None
 
     def fb_value(self):
         """The feedback endpoint's value: the frames the device plays, at high
@@ -371,6 +472,10 @@ class Conn:
         ep, req, rtype, _, value, index, length = struct.unpack('<BBBBHHH', hdr)
         d = self.dev
         reply, status = b'', OK
+        self.log(f'control type {rtype:02x} request {req:02x} value {value:04x} index {index:04x} length {length}')
+        if self.slow_control:                          # the first request's answer comes late
+            time.sleep(self.slow_control)
+            self.slow_control = 0
         if rtype == 0x80 and req == 6:                 # GET_DESCRIPTOR
             kind, i = value >> 8, value & 0xFF
             reply = {1: d.device(), 2: d.cfg}.get(kind) if kind != 3 else d.string(i)
@@ -415,6 +520,8 @@ class Conn:
             self.wav.rate = self.dev.rates[0]           # (until the host sets one)
         self.send(HELLO, b'novaos usbredirpeer'.ljust(64, b'\0') + struct.pack('<I', CAPS))
         connected = False
+        self.alive = True
+        threading.Thread(target=self.stats, daemon=True).start()
         try:
             while True:
                 hlen = 16 if self.ids64 else 12
@@ -433,6 +540,7 @@ class Conn:
                 elif ptype == CONTROL_PACKET:
                     self.control(pid, body[:10], body[10:])
                 elif ptype == SET_CONFIGURATION:
+                    self.log(f'set configuration {body[0]}')
                     self.dev.config, self.dev.alt = body[0], {}
                     self.send_info()
                     self.send(CONFIGURATION_STATUS, bytes([OK, self.dev.config]), pid=pid)
@@ -440,6 +548,7 @@ class Conn:
                     self.send(CONFIGURATION_STATUS, bytes([OK, self.dev.config]), pid=pid)
                 elif ptype == SET_ALT_SETTING:
                     iface, alt = body[0], body[1]
+                    self.log(f'set interface {iface} alternate setting {alt}')
                     ok = any(f[0] == iface for f in self.dev.ifaces) and alt <= (1 if iface else 0)
                     if ok:
                         self.dev.alt[iface] = alt
@@ -448,43 +557,40 @@ class Conn:
                 elif ptype == GET_ALT_SETTING:
                     self.send(ALT_SETTING_STATUS, bytes([OK, body[0], self.dev.alt.get(body[0], 0)]), pid=pid)
                 elif ptype == START_ISO_STREAM:
+                    self.log(f'start iso stream {body[0]:02x}')
                     self.send(ISO_STREAM_STATUS, bytes([OK, body[0]]), pid=pid)
-                    if body[0] == EP_MIC and not self.mic_on:
-                        self.mic_on = True
-                        threading.Thread(target=self.mic_loop, daemon=True).start()
+                    if body[0] == EP_MIC and not self.mic_stop:
+                        self.mic_start()
                     if body[0] == EP_FB and not self.fb_on:
                         self.fb_on = True
                         threading.Thread(target=self.fb_loop, daemon=True).start()
                 elif ptype == STOP_ISO_STREAM:
+                    self.log(f'stop iso stream {body[0]:02x}')
                     if body[0] == EP_MIC:
-                        self.mic_on = False
+                        self.mic_stop_loop()
                     if body[0] == EP_FB:
                         self.fb_on = False
                     self.send(ISO_STREAM_STATUS, bytes([OK, body[0]]), pid=pid)
                 elif ptype == ISO_PACKET:
                     ep, st, n = struct.unpack('<BBH', body[:4])
                     if ep == EP_SPK and self.wav:
-                        pcm = body[4:4 + n]
-                        sub, ch = self.dev.spk_sub, self.dev.channels
+                        self.spk_packets += 1
                         if self.fb_since and time.monotonic() - self.fb_since > 0.5:
                             self.fb_packets += 1
-                            self.fb_frames += n // (sub * ch)
+                            self.fb_frames += n // (self.dev.spk_sub * self.dev.channels)
                             if self.fb_packets % 500 == 0:
                                 self.fb_sync()
-                        if sub != 2:                   # the top 16 bits of each sample
-                            pcm = b''.join(pcm[i + sub - 2:i + sub] for i in range(0, len(pcm) - sub + 1, sub))
-                        if ch != 2:                    # the first two channels (mono: twice); count the rest
-                            frames = [pcm[i:i + 2 * ch] for i in range(0, len(pcm) - 2 * ch + 1, 2 * ch)]
-                            self.wav.extra += sum(1 for f in frames for k in range(2, ch) if f[2 * k:2 * k + 2] != b'\0\0')
-                            pcm = b''.join(f[:4] if ch > 1 else f[:2] * 2 for f in frames)
-                        self.wav.write(pcm)
+                        self.wav.add(body[4:4 + n])
                 elif ptype == RESET:
+                    self.log('reset')
                     self.dev.alt = {}
                 # (anything else: filters, cancels, disconnect acks: nothing to do)
         except (EOFError, ConnectionError):
             pass
         finally:
-            self.mic_on = self.fb_on = False
+            self.alive = False
+            self.mic_stop_loop()
+            self.fb_on = False
             if self.wav:
                 self.wav.sync()
                 self.fb_sync()
@@ -502,11 +608,16 @@ def main():
     ap.add_argument('--mic-channels', type=int, default=1, help="the microphone's channels")
     ap.add_argument('--product', help='its product string')
     ap.add_argument('--feedback', type=int, default=0, help="the speaker's own rate, sent on a feedback endpoint (Hz)")
+    ap.add_argument('--slow-control', type=int, default=0, metavar='MS', help="answer the first control request MS late")
+    ap.add_argument('--log-times', action='store_true', help='log the connection\'s events with times')
     a = ap.parse_args()
+    global LOG_TIMES
+    LOG_TIMES = a.log_times
     rates = [int(r) for r in a.rates.split(',')]
     if not a.speaker and not a.mic:
         sys.exit('a --speaker, a --mic or both')
-    wav = Wav(a.speaker) if a.speaker else None
+    uac2_slots = (4, a.channels) if a.uac2 else (2, a.channels)     # (the speaker's slot bytes, channels)
+    wav = Wav(a.speaker, *uac2_slots) if a.speaker else None
 
     def done(*_):
         if wav:
@@ -531,7 +642,7 @@ def main():
         print('usbredirpeer: QEMU connected', flush=True)
         dev = Headset(SPEED_HIGH if a.speed == 'high' else SPEED_FULL, bool(a.speaker), bool(a.mic), a.uac2,
                       rates, a.channels, a.mic_channels, a.product, a.feedback)
-        Conn(s, dev, wav, a.mic or 0).run()
+        Conn(s, dev, wav, a.mic or 0, a.slow_control).run()
         print('usbredirpeer: QEMU disconnected', flush=True)
 
 
