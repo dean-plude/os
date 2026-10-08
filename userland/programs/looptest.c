@@ -5,7 +5,9 @@
  * resolving to ::1 and 127.0.0.1 without DNS, and socket options
  * (setsockopt/getsockopt) that read back and change what a socket does,
  * connect on a UDP socket, and a socket handed to another process
- * (WSADuplicateSocket). */
+ * (WSADuplicateSocket), and WSAEventSelect's FD_CONNECT carrying a
+ * refused connect's error (Chromium dialling "localhost" tries ::1, then
+ * 127.0.0.1 when ::1 refuses). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -143,6 +145,64 @@ static void localhost(void)
     struct hostent *he = gethostbyname("localhost");
     check("gethostbyname(\"localhost\") gives 127.0.0.1",
           he && *(ULONG *)he->h_addr_list[0] == htonl(INADDR_LOOPBACK));
+}
+
+/* One non-blocking connect through WSAEventSelect: the FD_CONNECT error code, or -1 when none came */
+static int event_connect(int family, USHORT port, long *events)
+{
+    SOCKET c = socket(family, SOCK_STREAM, IPPROTO_TCP);
+    WSAEVENT ev = WSACreateEvent();
+    struct sockaddr_storage a;
+    memset(&a, 0, sizeof(a));
+    int len;
+    if (family == AF_INET) {
+        struct sockaddr_in *v4 = (struct sockaddr_in *)&a;
+        v4->sin_family = AF_INET; v4->sin_port = port; v4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        len = sizeof(*v4);
+    } else {
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&a;
+        v6->sin6_family = AF_INET6; v6->sin6_port = port; v6->sin6_addr = in6addr_loopback;
+        len = sizeof(*v6);
+    }
+    int code = -1;
+    *events = 0;
+    if (c != INVALID_SOCKET && WSAEventSelect(c, ev, FD_CONNECT | FD_READ | FD_WRITE | FD_CLOSE) == 0 &&
+        (connect(c, (struct sockaddr *)&a, len) == 0 || WSAGetLastError() == WSAEWOULDBLOCK) &&
+        WaitForSingleObject(ev, 3000) == WAIT_OBJECT_0) {
+        WSANETWORKEVENTS ne;
+        if (WSAEnumNetworkEvents(c, ev, &ne) == 0 && (ne.lNetworkEvents & FD_CONNECT)) {
+            code = ne.iErrorCode[FD_CONNECT_BIT];
+            *events = ne.lNetworkEvents;
+            if (code) {                                 /* nothing more after a refused connect */
+                WaitForSingleObject(ev, 300);
+                if (WSAEnumNetworkEvents(c, ev, &ne) == 0) *events |= ne.lNetworkEvents << 16;
+            }
+        }
+    }
+    WSACloseEvent(ev);
+    if (c != INVALID_SOCKET) closesocket(c);
+    return code;
+}
+
+/* A server on 127.0.0.1 only (Steam's UI transport): ::1 refuses with
+ * WSAECONNREFUSED in FD_CONNECT, 127.0.0.1 connects with 0 */
+static void event_select_connect(void)
+{
+    SOCKET l = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    struct sockaddr_in a = { AF_INET };
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int al = sizeof(a);
+    int ok = l != INVALID_SOCKET && bind(l, (struct sockaddr *)&a, sizeof(a)) == 0 && listen(l, 5) == 0 &&
+             getsockname(l, (struct sockaddr *)&a, &al) == 0;
+    check("a listener on 127.0.0.1 only", ok);
+    if (!ok) { if (l != INVALID_SOCKET) closesocket(l); return; }
+    long evs = 0;
+    int code = event_connect(AF_INET6, a.sin_port, &evs);
+    check("WSAEventSelect: a connect to ::1 that is refused is FD_CONNECT with WSAECONNREFUSED", code == WSAECONNREFUSED);
+    check("... and no other event follows it", (evs & ~FD_CONNECT) == 0);
+    code = event_connect(AF_INET, a.sin_port, &evs);
+    check("WSAEventSelect: the connect to 127.0.0.1 is FD_CONNECT with error 0", code == 0);
+    closesocket(l);
 }
 
 /* Winsock 1.1 (wsock32.dll): NSPR imports it by ordinal, and three of its
@@ -503,6 +563,7 @@ int main(int argc, char **argv)
     pair(AF_INET6, "::1");
     shutdown_both();
     localhost();
+    event_select_connect();
     winsock11();
     sockopts();
     udp_connected();

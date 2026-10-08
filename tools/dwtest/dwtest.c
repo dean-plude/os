@@ -182,6 +182,52 @@ int main(int argc, char **argv)
     CHECK("Arabic is drawn to the right of the Latin", ar->x0 >= lat->x1 - 1);
     CHECK("Devanagari is drawn to the right of the Arabic", dv->x0 >= ar->x1 - 1);
 
+    /* GDI interop: a bitmap render target is a memory DC on a 32-bit DIB
+     * section; DrawGlyphRun blends the text colour into its pixels (Steam's
+     * vgui draws its text this way) */
+    IDWriteGdiInterop *gi = NULL;
+    IDWriteBitmapRenderTarget *bt = NULL;
+    IDWriteRenderingParams *rp = NULL;
+    CHECK("GetGdiInterop", SUCCEEDED(IDWriteFactory_GetGdiInterop(g_f, &gi)) && gi);
+    if (gi) hr = IDWriteGdiInterop_CreateBitmapRenderTarget(gi, NULL, 200, 60, &bt);
+    CHECK("CreateBitmapRenderTarget", gi && SUCCEEDED(hr) && bt);
+    if (!bt) goto done;
+    SIZE sz = { 0, 0 };
+    HDC mdc = IDWriteBitmapRenderTarget_GetMemoryDC(bt);
+    DIBSECTION ds;
+    memset(&ds, 0, sizeof(ds));
+    HGDIOBJ hb = mdc ? GetCurrentObject(mdc, OBJ_BITMAP) : NULL;
+    CHECK("the target's size", SUCCEEDED(IDWriteBitmapRenderTarget_GetSize(bt, &sz)) && sz.cx == 200 && sz.cy == 60);
+    CHECK("its DC holds a 32-bit top-down DIB section",
+          hb && GetObjectW(hb, sizeof(ds), &ds) == sizeof(ds) && ds.dsBm.bmBitsPixel == 32 && ds.dsBm.bmBits &&
+          ds.dsBmih.biHeight < 0 && ds.dsBm.bmWidth == 200);
+    if (!ds.dsBm.bmBits) goto done;
+    RECT all = { 0, 0, 200, 60 }, box = { 0, 0, 0, 0 };
+    FillRect(mdc, &all, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    UINT32 hi[2] = { 'H', 'i' };
+    UINT16 gids[2] = { 0, 0 };
+    IDWriteFontFace_GetGlyphIndices(lat->face, hi, 2, gids);
+    DWRITE_GLYPH_RUN gr = { lat->face, 30.0f, 2, gids, NULL, NULL, FALSE, 0 };
+    IDWriteFactory_CreateRenderingParams(g_f, &rp);
+    hr = IDWriteBitmapRenderTarget_DrawGlyphRun(bt, 10, 40, DWRITE_MEASURING_MODE_NATURAL, &gr, rp, RGB(255, 0, 0), &box);
+    CHECK("DrawGlyphRun", SUCCEEDED(hr) && box.right > box.left && box.bottom > box.top && box.top < 40 && box.left >= 8);
+    const DWORD *px = ds.dsBm.bmBits;
+    int red = 0, other = 0;
+    for (int y = 0; y < 60; y++)
+        for (int x = 0; x < 200; x++) {
+            DWORD p = px[y * 200 + x];
+            BOOL inside = x >= box.left && x < box.right && y >= box.top && y < box.bottom;
+            if (inside && (p & 0xFFFFFF) == 0xFF0000 && !(p >> 24)) red++;          /* full coverage: the text colour, alpha 0 */
+            if (!inside && (p & 0xFFFFFF) != 0xFFFFFF) other++;
+        }
+    CHECK("the glyphs are drawn in the text colour inside the black box", red > 20);
+    CHECK("nothing is drawn outside the black box", other == 0);
+    CHECK("Resize", SUCCEEDED(IDWriteBitmapRenderTarget_Resize(bt, 300, 80)) &&
+          SUCCEEDED(IDWriteBitmapRenderTarget_GetSize(bt, &sz)) && sz.cx == 300 && sz.cy == 80 &&
+          GetCurrentObject(IDWriteBitmapRenderTarget_GetMemoryDC(bt), OBJ_BITMAP) != hb);
+    if (rp) IDWriteRenderingParams_Release(rp);
+    IDWriteBitmapRenderTarget_Release(bt);
+
     if (secs > 0) {
         WNDCLASSW wc = { 0, wndproc, 0, 0, GetModuleHandleW(NULL), 0, LoadCursor(NULL, IDC_ARROW), 0, 0, L"dwtest" };
         RegisterClassW(&wc);

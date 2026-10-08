@@ -289,6 +289,14 @@ WSAAPI_DECL WSAEVENT WSACreateEvent(void);
 #define FD_CLOSE    0x20
 #define FD_MAX_EVENTS 10
 #endif
+#ifndef FD_CONNECT_BIT
+#define FD_READ_BIT     0
+#define FD_WRITE_BIT    1
+#define FD_OOB_BIT      2
+#define FD_ACCEPT_BIT   3
+#define FD_CONNECT_BIT  4
+#define FD_CLOSE_BIT    5
+#endif
 #ifndef MSG_PEEK
 #define MSG_PEEK    0x2
 #endif

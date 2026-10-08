@@ -1088,10 +1088,9 @@ static HRESULT STDMETHODCALLTYPE gi_face_from_hdc(GdiInterop *g, HDC dc, void **
 
 static HRESULT STDMETHODCALLTYPE gi_bitmap_target(GdiInterop *g, HDC dc, UINT32 w, UINT32 h, void **out)
 {
-    (void)g; (void)dc; (void)w; (void)h;
-    dw_log("unimplemented IDWriteGdiInterop::CreateBitmapRenderTarget");
-    *out = NULL;
-    return E_NOTIMPL;
+    (void)g;
+    if (!out) return E_INVALIDARG;
+    return bitmap_target_create(dc, w, h, out);
 }
 static const void *const gi_vtbl[] = {
     gi_qi, gi_addref, gi_release, gi_from_logfont, gi_to_logfont, gi_face_to_logfont, gi_face_from_hdc, gi_bitmap_target,
