@@ -336,11 +336,45 @@ CRYPT32API BOOL WINAPI CertGetCertificateContextProperty(const void *cv, DWORD i
     return TRUE;
 }
 
-CRYPT32API BOOL WINAPI CertGetEnhancedKeyUsage(const void *c, DWORD flags, void *usage, DWORD *n)
+/* The certificate's extended key usages (CERT_ENHKEY_USAGE: the count, the
+ * OID strings' pointers, then the strings).  As on Windows, a certificate
+ * with no such extension is good for every usage: TRUE with none listed and
+ * CRYPT_E_NOT_FOUND as the last error (Chromium trusts a root from the
+ * Windows stores for servers only when this says so).  Contexts carry no
+ * usage property here, so CERT_FIND_PROP_ONLY_ENHKEY_USAGE_FLAG finds none */
+CRYPT32API BOOL WINAPI CertGetEnhancedKeyUsage(const void *cv, DWORD flags, void *usage, DWORD *n)
 {
-    (void)c; (void)flags; (void)usage; (void)n;
-    SetLastError(CRYPT_E_NOT_FOUND_);                   /* (good for every usage) */
-    return FALSE;
+    const Cert *c = cv;
+    if (!c || !n) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    mbedtls_x509_crt x;
+    mbedtls_x509_crt_init(&x);
+    char oids[16][64];
+    DWORD count = 0, need = 2 * sizeof(DWORD_PTR);      /* the count (padded) and the array's pointer */
+    if (!(flags & 0x4 /* CERT_FIND_PROP_ONLY_ENHKEY_USAGE_FLAG */) &&
+        !mbedtls_x509_crt_parse_der(&x, c->der, c->ctx.cbCertEncoded) &&
+        (x.MBEDTLS_PRIVATE(ext_types) & MBEDTLS_X509_EXT_EXTENDED_KEY_USAGE))
+        for (const mbedtls_x509_sequence *q = &x.ext_key_usage; q && q->buf.p && count < 16; q = q->next) {
+            oid_text(&q->buf, oids[count], sizeof(oids[count]));
+            need += sizeof(char *) + (DWORD)strlen(oids[count]) + 1;
+            count++;
+        }
+    mbedtls_x509_crt_free(&x);
+    if (!usage) { *n = need; SetLastError(count ? 0 : CRYPT_E_NOT_FOUND_); return TRUE; }
+    if (*n < need) { *n = need; SetLastError(ERROR_MORE_DATA); return FALSE; }
+    struct { DWORD c; char **rg; } *u = usage;
+    char **ptrs = (char **)((BYTE *)usage + 2 * sizeof(DWORD_PTR));
+    char *text = (char *)(ptrs + count);
+    u->c = count;
+    u->rg = count ? ptrs : NULL;
+    for (DWORD i = 0; i < count; i++) {
+        size_t len = strlen(oids[i]) + 1;
+        memcpy(text, oids[i], len);
+        ptrs[i] = text;
+        text += len;
+    }
+    *n = need;
+    SetLastError(count ? 0 : CRYPT_E_NOT_FOUND_);
+    return TRUE;
 }
 
 /* -----------------------------------------------------------------------
@@ -470,13 +504,23 @@ CRYPT32API BOOL WINAPI CertAddStoreToCollection(HANDLE coll, HANDLE sib, DWORD f
     return ok;
 }
 
+/* @s and the members of its collection, and theirs (a collection may hold
+ * collections: Chromium's all-certificates store holds its roots and
+ * intermediates collections), depth first and each once, into @all; how many */
+static DWORD flatten(Store *s, Store **all, DWORD na, DWORD cap, int depth)
+{
+    for (DWORD i = 0; i < na; i++) if (all[i] == s) return na;    /* (a store twice: once is enough) */
+    if (na < cap) all[na++] = s;
+    for (DWORD i = 0; depth < 4 && i < s->nsib; i++) na = flatten(s->sib[i], all, na, cap, depth + 1);
+    return na;
+}
+
 /* The certificate after @prev in @s and its collection members, or NULL */
 static Cert *next_in(Store *s, const Cert *prev)
 {
     BOOL seen = prev == NULL;
-    Store *all[9] = { s };
-    DWORD na = 1;
-    for (DWORD i = 0; i < s->nsib; i++) all[na++] = s->sib[i];
+    Store *all[64];
+    DWORD na = flatten(s, all, 0, 64, 0);
     for (DWORD k = 0; k < na; k++)
         for (DWORD i = 0; i < all[k]->n; i++) {
             if (seen) return all[k]->certs[i];
