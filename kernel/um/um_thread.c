@@ -1254,6 +1254,10 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             if (src.kind == H_FILE || src.kind == H_DIR) RamfsRef(src.node);
             if (src.kind == H_FILE) um_fpos_ref(src.fp);         /* a duplicate shares the position */
             if (src.kind == H_OBJECT) um_ob_ref(src.obj);
+            if (src.kind == H_CON_OUT && src.console) {
+                um_console_ref(src.console);
+                um_console_screen_ref(src.console, src.con_screen);
+            }
         }
         um_unlock_excl(&sp->lock);
         if (!ok) st = ST_INVALID_HANDLE;
@@ -1286,6 +1290,10 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             if (src.kind == H_FILE || src.kind == H_DIR) RamfsUnref(src.node);
             if (src.kind == H_FILE) um_fpos_unref(src.fp);
             if (src.kind == H_OBJECT) um_ob_unref(src.obj);
+            if (src.kind == H_CON_OUT && src.console) {
+                um_console_screen_unref(src.console, src.con_screen);
+                UmConsoleRelease(src.console);
+            }
         }
         DesktopUnlock();
     }
@@ -1301,6 +1309,10 @@ static UINT64 sys_duplicate_object(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
             if (old.kind == H_FILE || old.kind == H_DIR) RamfsUnref(old.node);
             if (old.kind == H_FILE) um_fpos_unref(old.fp);
             if (old.kind == H_OBJECT) um_ob_unref(old.obj);
+            if (old.kind == H_CON_OUT && old.console) {
+                um_console_screen_unref(old.console, old.con_screen);
+                UmConsoleRelease(old.console);
+            }
             DesktopUnlock();
         }
     }

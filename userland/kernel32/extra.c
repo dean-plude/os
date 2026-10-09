@@ -2814,22 +2814,27 @@ WINBASEAPI BOOL WINAPI IsDBCSLeadByteEx(UINT cp, BYTE c) { (void)cp; (void)c; re
  * ----------------------------------------------------------------------- */
 WINBASEAPI BOOL WINAPI GetConsoleScreenBufferInfo(HANDLE h, PCONSOLE_SCREEN_BUFFER_INFO info)
 {
-    ULONG size = 0;
-    NTSTATUS s = NtNovaConsole(h, 7, 0, 0, &size);       /* the Terminal's size in cells */
-    if (!NT_SUCCESS(s)) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
-    SHORT cols = (SHORT)(size & 0xFFFF), rows = (SHORT)(size >> 16);
+    if (!info) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    NOVA_CONSOLE_SCREEN_INFO screen;
+    ULONG result = 0;
+    NTSTATUS s = NtNovaConsole(h, CON_SCREEN_INFO, &screen, sizeof(screen), &result);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
     memset(info, 0, sizeof(*info));
-    info->dwSize.X = cols; info->dwSize.Y = rows;
-    info->wAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-    info->srWindow.Right = (SHORT)(cols - 1); info->srWindow.Bottom = (SHORT)(rows - 1);
-    info->dwMaximumWindowSize.X = cols; info->dwMaximumWindowSize.Y = rows;
+    info->dwSize.X = screen.cols; info->dwSize.Y = screen.rows;
+    info->dwCursorPosition.X = screen.cursor_x; info->dwCursorPosition.Y = screen.cursor_y;
+    info->wAttributes = screen.attributes;
+    info->srWindow.Left = screen.window_left; info->srWindow.Top = screen.window_top;
+    info->srWindow.Right = screen.window_right; info->srWindow.Bottom = screen.window_bottom;
+    info->dwMaximumWindowSize.X = screen.max_cols; info->dwMaximumWindowSize.Y = screen.max_rows;
     return TRUE;
 }
 
 WINBASEAPI BOOL WINAPI SetConsoleTextAttribute(HANDLE h, WORD attr)
 {
-    (void)attr;                             /* the Terminal draws plain text */
-    if (GetFileType(h) != FILE_TYPE_CHAR) { SetLastError(ERROR_INVALID_HANDLE); return FALSE; }
+    NOVA_CONSOLE_SCREEN_REQUEST req = { .value = attr };
+    ULONG result = 0;
+    NTSTATUS s = NtNovaConsole(h, CON_SCREEN_SET_ATTR, &req, sizeof(req), &result);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
     return TRUE;
 }
 
@@ -2901,7 +2906,11 @@ static BOOL cursor_call(HANDLE h, ULONG op, ULONG value, ULONG *result)
 }
 WINBASEAPI BOOL WINAPI SetConsoleCursorPosition(HANDLE h, COORD c)
 {
-    return cursor_call(h, 9, (ULONG)(USHORT)c.X | ((ULONG)(USHORT)c.Y << 16), 0);
+    NOVA_CONSOLE_SCREEN_REQUEST req = { .x = c.X, .y = c.Y };
+    ULONG result = 0;
+    NTSTATUS s = NtNovaConsole(h, CON_SCREEN_SET_CURSOR, &req, sizeof(req), &result);
+    if (!NT_SUCCESS(s)) { SetLastError(RtlNtStatusToDosError(s)); return FALSE; }
+    return TRUE;
 }
 WINBASEAPI BOOL WINAPI GetConsoleCursorInfo(HANDLE h, LPVOID i)
 {
@@ -2920,8 +2929,36 @@ WINBASEAPI BOOL WINAPI SetConsoleCursorInfo(HANDLE h, LPCVOID i)
     ULONG style = ((const DWORD *)i)[0] | (((const BOOL *)i)[1] ? 0x100 : 0);
     return cursor_call(h, 11, style, 0);
 }
-WINBASEAPI BOOL WINAPI FillConsoleOutputCharacterW(HANDLE h, WCHAR c, DWORD n, COORD at, LPDWORD done) { (void)h; (void)c; (void)at; if (done) *done = n; return TRUE; }
-WINBASEAPI BOOL WINAPI FillConsoleOutputAttribute(HANDLE h, WORD a, DWORD n, COORD at, LPDWORD done) { (void)h; (void)a; (void)at; if (done) *done = n; return TRUE; }
+static BOOL console_linear(HANDLE h, ULONG op, COORD at, DWORD count, WORD value,
+                           void *output, LPDWORD done)
+{
+    if (count > 1024 * 1024 || ((op == CON_SCREEN_READ_TEXT || op == CON_SCREEN_READ_ATTR) && count && !output)) {
+        SetLastError(ERROR_INVALID_PARAMETER); return FALSE;
+    }
+    DWORD unit = sizeof(NOVA_CONSOLE_SCREEN_REQUEST);
+    BOOL reading = op == CON_SCREEN_READ_TEXT || op == CON_SCREEN_READ_ATTR;
+    DWORD bytes = unit + (reading ? count * sizeof(WORD) : 0);
+    BYTE *payload = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bytes);
+    if (!payload) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    NOVA_CONSOLE_SCREEN_REQUEST *req = (NOVA_CONSOLE_SCREEN_REQUEST *)payload;
+    req->x = at.X; req->y = at.Y; req->count = count; req->value = value;
+    DWORD actual = 0;
+    NTSTATUS s = NtNovaConsole(h, op, payload, bytes, &actual);
+    if (NT_SUCCESS(s)) {
+        if (reading && actual) memcpy(output, payload + unit, actual * sizeof(WORD));
+        if (done) *done = actual;
+    } else SetLastError(RtlNtStatusToDosError(s));
+    HeapFree(GetProcessHeap(), 0, payload);
+    return NT_SUCCESS(s);
+}
+WINBASEAPI BOOL WINAPI FillConsoleOutputCharacterW(HANDLE h, WCHAR c, DWORD n, COORD at, LPDWORD done)
+{
+    return console_linear(h, CON_SCREEN_FILL_CHAR, at, n, c, 0, done);
+}
+WINBASEAPI BOOL WINAPI FillConsoleOutputAttribute(HANDLE h, WORD a, DWORD n, COORD at, LPDWORD done)
+{
+    return console_linear(h, CON_SCREEN_FILL_ATTR, at, n, a, 0, done);
+}
 
 /* -----------------------------------------------------------------------
  * Time zones
@@ -3788,31 +3825,27 @@ WINBASEAPI DWORD WINAPI GetLargestConsoleWindowSize(HANDLE h)
     return (DWORD)240 | ((DWORD)80 << 16);              /* COORD {X=240, Y=80} */
 }
 
-/* The console's screen buffer cannot be read back: ReadConsoleOutput
- * reports blanks (compat.c), and so do the character reads */
 WINBASEAPI BOOL WINAPI ReadConsoleOutputCharacterW(HANDLE h, LPWSTR buf, DWORD n, COORD at, LPDWORD read)
 {
-    (void)h; (void)at;
-    if (!buf) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    for (DWORD i = 0; i < n; i++) buf[i] = L' ';
-    if (read) *read = n;
-    return TRUE;
+    return console_linear(h, CON_SCREEN_READ_TEXT, at, n, 0, buf, read);
 }
 WINBASEAPI BOOL WINAPI ReadConsoleOutputCharacterA(HANDLE h, LPSTR buf, DWORD n, COORD at, LPDWORD read)
 {
-    (void)h; (void)at;
-    if (!buf) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    for (DWORD i = 0; i < n; i++) buf[i] = ' ';
-    if (read) *read = n;
-    return TRUE;
+    if (n > 1024 * 1024 || (n && !buf)) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    WORD *wide = HeapAlloc(GetProcessHeap(), 0, n ? n * sizeof(*wide) : 1);
+    if (!wide) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    DWORD got = 0;
+    BOOL ok = console_linear(h, CON_SCREEN_READ_TEXT, at, n, 0, wide, &got);
+    if (ok) {
+        for (DWORD i = 0; i < got; i++) buf[i] = wide[i] <= 0xFF ? (CHAR)wide[i] : '?';
+        if (read) *read = got;
+    }
+    HeapFree(GetProcessHeap(), 0, wide);
+    return ok;
 }
 WINBASEAPI BOOL WINAPI ReadConsoleOutputAttribute(HANDLE h, LPWORD buf, DWORD n, COORD at, LPDWORD read)
 {
-    (void)h; (void)at;
-    if (!buf) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    for (DWORD i = 0; i < n; i++) buf[i] = 7;
-    if (read) *read = n;
-    return TRUE;
+    return console_linear(h, CON_SCREEN_READ_ATTR, at, n, 0, buf, read);
 }
 
 /* win.ini: the profile calls write C:\Windows\win.ini (profile.c) */
@@ -3884,4 +3917,3 @@ WINBASEAPI BOOL WINAPI FindActCtxSectionGuid(DWORD flags, const GUID *ext, ULONG
 
 /* a thread's UI language: the user's (0 asks which it is) */
 WINBASEAPI LANGID WINAPI SetThreadUILanguage(LANGID lang) { return lang ? lang : GetUserDefaultUILanguage(); }
-

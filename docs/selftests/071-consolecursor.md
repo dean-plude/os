@@ -1,1 +1,1 @@
-| `consolecursortest` | Classic console cursor controls: valid positions, size and visibility shared by output handles, invalid coordinates, sizes and handles; x64 and x86. |
+| `consolecursortest` | Classic console screen buffers: cursor position and visibility, cell reads/writes, fills, scrolling, attributes, resizing, independent buffers, and invalid handles/coordinates; x64 and x86. |

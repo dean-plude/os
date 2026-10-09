@@ -456,8 +456,9 @@ To make the ISO yourself from a fresh build, run
   `dlltest` (DllMain, static TLS, and a DllMain returning FALSE stopping
   the program with 0xC0000142, module file names past the 64th module,
   64- and 32-bit), `sectest`, `acltest` (64- and 32-bit),
-  `consolecursortest` (classic console cursor positioning, size,
-  visibility and shared state; 64- and 32-bit), `guitest auto`,
+  `consolecursortest` (classic console screen buffers: cursor, cell I/O,
+  fills, scrolling, attributes and independent buffers; 64- and 32-bit),
+  `guitest auto`,
   `inputtest` (side buttons, horizontal wheel, volume keys), `usbcheck`
   (media keys, AC Pan, pen pressure, tilt and twist, virtio pens and
   tablets), `anitest` (animated cursors and program pointers),

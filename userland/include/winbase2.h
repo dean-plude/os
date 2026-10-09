@@ -102,6 +102,40 @@ typedef struct _CONSOLE_SCREEN_BUFFER_INFO {
     SMALL_RECT srWindow;
     COORD dwMaximumWindowSize;
 } CONSOLE_SCREEN_BUFFER_INFO, *PCONSOLE_SCREEN_BUFFER_INFO;
+typedef struct _CHAR_INFO { union { WCHAR UnicodeChar; CHAR AsciiChar; } Char; WORD Attributes; } CHAR_INFO;
+typedef CHAR_INFO NOVA_CONSOLE_CELL;
+typedef struct {
+    SHORT x, y, width, height, left, top, right, bottom, dest_x, dest_y;
+    DWORD count;
+    WORD value, attributes;
+    SHORT clip_left, clip_top, clip_right, clip_bottom;
+    DWORD flags;
+} NOVA_CONSOLE_SCREEN_REQUEST;
+typedef struct {
+    SHORT cols, rows, cursor_x, cursor_y;
+    WORD attributes;
+    SHORT window_left, window_top, window_right, window_bottom, max_cols, max_rows;
+} NOVA_CONSOLE_SCREEN_INFO;
+#if defined(__cplusplus)
+static_assert(sizeof(NOVA_CONSOLE_SCREEN_REQUEST) == 40 && sizeof(NOVA_CONSOLE_SCREEN_INFO) == 22,
+              "console syscall wire layout");
+#else
+_Static_assert(sizeof(NOVA_CONSOLE_SCREEN_REQUEST) == 40 && sizeof(NOVA_CONSOLE_SCREEN_INFO) == 22,
+               "console syscall wire layout");
+#endif
+#define CON_SCREEN_INFO        12
+#define CON_SCREEN_SET_ATTR    13
+#define CON_SCREEN_SET_CURSOR  14
+#define CON_SCREEN_FILL_CHAR   15
+#define CON_SCREEN_FILL_ATTR   16
+#define CON_SCREEN_READ_TEXT   17
+#define CON_SCREEN_READ_ATTR   18
+#define CON_SCREEN_WRITE_CELLS 19
+#define CON_SCREEN_READ_CELLS  20
+#define CON_SCREEN_SCROLL      21
+#define CON_SCREEN_SET_SIZE    22
+#define CON_SCREEN_CREATE      23
+#define CON_SCREEN_ACTIVATE   24
 typedef BOOL (WINAPI *PHANDLER_ROUTINE)(DWORD type);
 #define FOREGROUND_BLUE      0x0001
 #define FOREGROUND_GREEN     0x0002
@@ -494,6 +528,21 @@ WINBASEAPI BOOL   WINAPI EnumTimeFormatsEx(TIMEFMT_ENUMPROCEX fn, LPCWSTR loc, D
 /* console */
 WINBASEAPI BOOL   WINAPI GetConsoleScreenBufferInfo(HANDLE h, PCONSOLE_SCREEN_BUFFER_INFO info);
 WINBASEAPI BOOL   WINAPI SetConsoleTextAttribute(HANDLE h, WORD attr);
+WINBASEAPI BOOL   WINAPI FillConsoleOutputCharacterW(HANDLE h, WCHAR c, DWORD n, COORD at, LPDWORD written);
+WINBASEAPI BOOL   WINAPI FillConsoleOutputCharacterA(HANDLE h, CHAR c, DWORD n, COORD at, LPDWORD written);
+WINBASEAPI BOOL   WINAPI FillConsoleOutputAttribute(HANDLE h, WORD attr, DWORD n, COORD at, LPDWORD written);
+WINBASEAPI BOOL   WINAPI ReadConsoleOutputCharacterW(HANDLE h, LPWSTR buf, DWORD n, COORD at, LPDWORD read);
+WINBASEAPI BOOL   WINAPI ReadConsoleOutputCharacterA(HANDLE h, LPSTR buf, DWORD n, COORD at, LPDWORD read);
+WINBASEAPI BOOL   WINAPI ReadConsoleOutputAttribute(HANDLE h, LPWORD buf, DWORD n, COORD at, LPDWORD read);
+WINBASEAPI BOOL   WINAPI WriteConsoleOutputW(HANDLE h, const CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region);
+WINBASEAPI BOOL   WINAPI WriteConsoleOutputA(HANDLE h, const CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region);
+WINBASEAPI BOOL   WINAPI ReadConsoleOutputW(HANDLE h, CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region);
+WINBASEAPI BOOL   WINAPI ReadConsoleOutputA(HANDLE h, CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region);
+WINBASEAPI BOOL   WINAPI ScrollConsoleScreenBufferW(HANDLE h, const SMALL_RECT *r, const SMALL_RECT *clip, COORD dest, const CHAR_INFO *fill);
+WINBASEAPI BOOL   WINAPI ScrollConsoleScreenBufferA(HANDLE h, const SMALL_RECT *r, const SMALL_RECT *clip, COORD dest, const CHAR_INFO *fill);
+WINBASEAPI BOOL   WINAPI SetConsoleScreenBufferSize(HANDLE h, COORD size);
+WINBASEAPI HANDLE WINAPI CreateConsoleScreenBuffer(DWORD access, DWORD share, const SECURITY_ATTRIBUTES *sa, DWORD flags, LPVOID data);
+WINBASEAPI BOOL   WINAPI SetConsoleActiveScreenBuffer(HANDLE h);
 WINBASEAPI BOOL   WINAPI SetConsoleCtrlHandler(PHANDLER_ROUTINE fn, BOOL add);
 WINBASEAPI BOOL   WINAPI ReadConsoleW(HANDLE h, LPVOID buf, DWORD n, LPDWORD read, LPVOID c);
 WINBASEAPI BOOL   WINAPI SetConsoleCP(UINT cp);
@@ -626,4 +675,3 @@ WINBASEAPI WORD WINAPI GlobalDeleteAtom(WORD a);
 #define ERROR_MENU_ITEM_NOT_FOUND 1456
 #define ERROR_RESOURCE_NAME_NOT_FOUND 1814
 #define ERROR_RESOURCE_TYPE_NOT_FOUND 1813
-
