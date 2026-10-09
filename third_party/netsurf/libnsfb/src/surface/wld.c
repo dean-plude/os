@@ -1334,6 +1334,10 @@ update_and_redraw(struct wldstate_s *wldstate,
 		  int width,
 		  int height)
 {
+    if (width <= 0 || height <= 0) {
+	return 0;
+    }
+
     wl_surface_attach(wldstate->window->surface,
 		      wldstate->shm_buffer->buffer,
 		      0,
