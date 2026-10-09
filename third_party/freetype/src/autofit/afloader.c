@@ -268,15 +268,6 @@
 #endif /* AF_CONFIG_OPTION_TT_SIZE_METRICS */
     }
 
-    /*
-     * TODO: This code currently doesn't support fractional advance widths,
-     * i.e., placing hinted glyphs at anything other than integer
-     * x-positions.  This is only relevant for the warper code, which
-     * scales and shifts glyphs to optimize blackness of stems (hinting on
-     * the x-axis by nature places things on pixel integers, hinting on the
-     * y-axis only, i.e., LIGHT mode, doesn't touch the x-axis).  The delta
-     * values of the scaler would need to be adjusted.
-     */
     scaler.face    = face;
     scaler.x_scale = size_internal->autohint_metrics.x_scale;
     scaler.x_delta = 0;
@@ -475,19 +466,12 @@
           slot->rsb_delta = loader->pp2.x - pp2x;
         }
       }
-      /* `light' mode uses integer advance widths */
-      /* but sets `lsb_delta' and `rsb_delta'     */
+      /* `light' mode doesn't hint the x-axis, so preserve its fractional */
+      /* advance width instead of rounding phantom points to the grid.    */
       else
       {
-        FT_Pos  pp1x = loader->pp1.x;
-        FT_Pos  pp2x = loader->pp2.x;
-
-
-        loader->pp1.x = FT_PIX_ROUND( pp1x );
-        loader->pp2.x = FT_PIX_ROUND( pp2x );
-
-        slot->lsb_delta = loader->pp1.x - pp1x;
-        slot->rsb_delta = loader->pp2.x - pp2x;
+        slot->lsb_delta = 0;
+        slot->rsb_delta = 0;
       }
 
       break;
@@ -562,7 +546,8 @@
       slot->metrics.vertAdvance = FT_MulFix( slot->metrics.vertAdvance,
                                              style_metrics->scaler.y_scale );
 
-      slot->metrics.horiAdvance = FT_PIX_ROUND( slot->metrics.horiAdvance );
+      if ( scaler.render_mode != FT_RENDER_MODE_LIGHT )
+        slot->metrics.horiAdvance = FT_PIX_ROUND( slot->metrics.horiAdvance );
       slot->metrics.vertAdvance = FT_PIX_ROUND( slot->metrics.vertAdvance );
 
       slot->format  = FT_GLYPH_FORMAT_OUTLINE;
