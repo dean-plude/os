@@ -220,11 +220,12 @@ typedef struct {
     Hdr h;
     char *host;                                        /* without brackets */
     WORD port;
+    struct Conn *idle;
 } Connect;
 
 enum { BODY_NONE, BODY_LENGTH, BODY_CHUNKED, BODY_CLOSE };
 
-typedef struct {
+typedef struct Conn {
     SOCKET s;
     int tls;
     SecHandle cred, ctx;
@@ -234,6 +235,7 @@ typedef struct {
     Buf plain;                                         /* decrypted, not handed out yet */
     int eof;
     int receive_ms;
+    ULONGLONG idle_since;
     char alpn[32];
 } Conn;
 
@@ -249,6 +251,7 @@ typedef struct {
     Buf body;
     DWORD body_total;
     int sent, received, redirects;
+    int websocket_upgrade;
     /* the response */
     Conn *conn;
     int http2;
@@ -275,6 +278,20 @@ typedef struct {
     LONG busy;                                         /* a lookup is running */
     DWORD_PTR lookup_ctx;
 } Resolver;
+#define WINHTTP_HANDLE_TYPE_WEBSOCKET_ 5
+typedef struct {
+    Hdr h;
+    Conn *conn;
+    Buf in;
+    unsigned long long frame_left;
+    int frame_opcode, frame_fin, message_opcode;
+    int close_received, close_sent;
+    USHORT close_status;
+    BYTE close_reason[123];
+    DWORD close_reason_len;
+} WebSocket;
+
+__declspec(dllimport) BOOLEAN WINAPI SystemFunction036(PVOID buf, ULONG len);
 
 static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
 static BOOL CALLBACK init_once(PINIT_ONCE o, PVOID p, PVOID *c)
@@ -339,6 +356,7 @@ static void reset_response(Request *r)
     r->stream = 0;
     r->left = 0;
     r->body_sent = 0;
+    r->websocket_upgrade = 0;
 }
 
 static void free_hdr(Hdr *h)
@@ -347,9 +365,14 @@ static void free_hdr(Hdr *h)
     if (h->type == WINHTTP_HANDLE_TYPE_SESSION) {
         free(((Session *)h)->agent);
     } else if (h->type == WINHTTP_HANDLE_TYPE_CONNECT) {
+        conn_close((Conn *)InterlockedExchangePointer((PVOID volatile *)&((Connect *)h)->idle, 0));
         free(((Connect *)h)->host);
     } else if (h->type == WINHTTP_HANDLE_TYPE_PROXY_RESOLVER_) {
         /* (nothing of its own) */
+    } else if (h->type == WINHTTP_HANDLE_TYPE_WEBSOCKET_) {
+        WebSocket *ws = (WebSocket *)h;
+        conn_close(ws->conn);
+        buf_free(&ws->in);
     } else {
         Request *r = (Request *)h;
         reset_response(r);
@@ -669,6 +692,8 @@ static size_t header_end(Buf *b)
     return 0;
 }
 
+static int header_has_token(Headers *hs, const char *name, const char *token);
+
 static DWORD h1_receive(Request *r)
 {
     DWORD err = 0;
@@ -709,10 +734,15 @@ static DWORD h1_receive(Request *r)
             l = le + 2;
         }
         r->in.off += end;
-        if (status >= 200 || status < 100) break;
+        if (status == 101 || status >= 200 || status < 100) break;
     }
+    r->websocket_upgrade = r->status == 101 &&
+        header_has_token(&r->resp, "Upgrade", "websocket") &&
+        header_has_token(&r->resp, "Connection", "upgrade") &&
+        hdr_find(&r->resp, "Sec-WebSocket-Accept", 0) != 0;
     Header *te = hdr_find(&r->resp, "Transfer-Encoding", 0), *cl = hdr_find(&r->resp, "Content-Length", 0);
-    if (ieq(r->verb, "HEAD") || r->status == 204 || r->status == 304) r->framing = BODY_NONE;
+    if (r->websocket_upgrade || ieq(r->verb, "HEAD") || r->status == 204 || r->status == 304)
+        r->framing = BODY_NONE;
     else if (te && strstr(te->value, "chunked")) r->framing = BODY_CHUNKED;
     else if (cl) {
         r->framing = BODY_LENGTH;
@@ -967,10 +997,64 @@ static DWORD do_connect(Request *r)
 {
     reset_response(r);
     int h2 = r->secure && (r->h.protocols & WINHTTP_PROTOCOL_FLAG_HTTP2);
+    Connect *parent = (Connect *)r->h.parent;
+    if (!h2 && parent && parent->h.magic == HMAGIC && parent->h.type == WINHTTP_HANDLE_TYPE_CONNECT &&
+        parent->port == r->port && ieq(parent->host, r->host)) {
+        Conn *idle = (Conn *)InterlockedExchangePointer((PVOID volatile *)&parent->idle, 0);
+        if (idle) {
+            fd_set rd;
+            FD_ZERO(&rd);
+            FD_SET(idle->s, &rd);
+            struct timeval tv = { 0, 0 };
+            if (GetTickCount64() - idle->idle_since < 30000 && select(0, &rd, 0, 0, &tv) == 0) {
+                idle->receive_ms = r->h.timeouts[3];
+                r->conn = idle;
+                return 0;
+            }
+            conn_close(idle);
+        }
+    }
     DWORD e = conn_open(&r->conn, r->host, r->port, r->secure, r->h.security, h2, r->h.timeouts[3]);
     if (e) return e;
     r->http2 = r->conn->tls && !strcmp(r->conn->alpn, "h2");
     return 0;
+}
+
+static int header_has_token(Headers *hs, const char *name, const char *token)
+{
+    Header *h = hdr_find(hs, name, 0);
+    if (!h) return 0;
+    const char *p = h->value;
+    size_t tn = strlen(token);
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        const char *end = p;
+        while (*end && *end != ',') end++;
+        const char *trim = end;
+        while (trim > p && (trim[-1] == ' ' || trim[-1] == '\t')) trim--;
+        if ((size_t)(trim - p) == tn && ieq_n(p, token, tn)) return 1;
+        p = end;
+    }
+    return 0;
+}
+
+static void cache_connection(Request *r)
+{
+    if (!r->conn || r->http2 || r->websocket_upgrade || r->framing == BODY_CLOSE ||
+        buf_avail(&r->in) || header_has_token(&r->req, "Connection", "close") ||
+        header_has_token(&r->resp, "Connection", "close") ||
+        (!r->resp_version || strcmp(r->resp_version, "HTTP/1.1"))) return;
+    Connect *parent = (Connect *)r->h.parent;
+    if (!parent || parent->h.type != WINHTTP_HANDLE_TYPE_CONNECT || parent->h.magic != HMAGIC ||
+        parent->port != r->port || !ieq(parent->host, r->host)) return;
+    fd_set rd;
+    FD_ZERO(&rd);
+    FD_SET(r->conn->s, &rd);
+    struct timeval tv = { 0, 0 };
+    if (select(0, &rd, 0, 0, &tv) != 0) return;
+    r->conn->idle_since = GetTickCount64();
+    if (!InterlockedCompareExchangePointer((PVOID volatile *)&parent->idle, r->conn, 0))
+        r->conn = 0;
 }
 
 static DWORD do_send(Request *r)
@@ -1075,6 +1159,7 @@ static DWORD do_read(Request *r, void *buf, DWORD len, DWORD *got)
     memcpy(buf, r->out.p + r->out.off, k);
     r->out.off += k;
     *got = (DWORD)k;
+    if (r->eof && !buf_avail(&r->out)) cache_connection(r);
     return 0;
 }
 
@@ -1234,6 +1319,222 @@ WINHTTPAPI BOOL WINAPI WinHttpCloseHandle(HINTERNET h)
     if (!x) return FALSE;
     release(x);
     return TRUE;
+}
+
+static DWORD ws_send_frame(WebSocket *ws, BYTE opcode, int fin, const BYTE *data, DWORD len)
+{
+    if (len && !data) return ERROR_INVALID_PARAMETER;
+    BYTE mask[4], head[14];
+    if (!SystemFunction036(mask, sizeof(mask))) return ERROR_WINHTTP_INTERNAL_ERROR;
+    size_t hn = 0;
+    head[hn++] = (BYTE)((fin ? 0x80 : 0) | opcode);
+    if (len < 126) head[hn++] = (BYTE)(0x80 | len);
+    else if (len <= 0xffff) {
+        head[hn++] = 0x80 | 126;
+        head[hn++] = (BYTE)(len >> 8);
+        head[hn++] = (BYTE)len;
+    } else {
+        head[hn++] = 0x80 | 127;
+        memset(head + hn, 0, 4);
+        hn += 4;
+        head[hn++] = (BYTE)(len >> 24);
+        head[hn++] = (BYTE)(len >> 16);
+        head[hn++] = (BYTE)(len >> 8);
+        head[hn++] = (BYTE)len;
+    }
+    memcpy(head + hn, mask, sizeof(mask));
+    hn += sizeof(mask);
+    DWORD e = conn_write(ws->conn, head, hn);
+    BYTE tmp[4096];
+    for (DWORD off = 0; !e && off < len;) {
+        DWORD n = len - off < sizeof(tmp) ? len - off : sizeof(tmp);
+        for (DWORD i = 0; i < n; i++) tmp[i] = data[off + i] ^ mask[(off + i) & 3];
+        e = conn_write(ws->conn, tmp, n);
+        off += n;
+    }
+    return e;
+}
+
+static DWORD ws_read_exact(WebSocket *ws, BYTE *dst, size_t len)
+{
+    DWORD err = 0;
+    while (buf_avail(&ws->in) < len) {
+        int n = conn_read(ws->conn, &ws->in, &err);
+        if (n < 0) return err;
+        if (!n) return ERROR_WINHTTP_CONNECTION_ERROR;
+    }
+    memcpy(dst, ws->in.p + ws->in.off, len);
+    ws->in.off += len;
+    return 0;
+}
+
+static DWORD ws_read_frame_header(WebSocket *ws)
+{
+    BYTE h[2];
+    DWORD e = ws_read_exact(ws, h, sizeof(h));
+    if (e) return e;
+    if ((h[0] & 0x70) || (h[1] & 0x80)) return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+    ws->frame_fin = (h[0] & 0x80) != 0;
+    ws->frame_opcode = h[0] & 0x0f;
+    ws->frame_left = h[1] & 0x7f;
+    if (ws->frame_left == 126) {
+        BYTE ext[2];
+        if ((e = ws_read_exact(ws, ext, sizeof(ext)))) return e;
+        ws->frame_left = ((unsigned long long)ext[0] << 8) | ext[1];
+    } else if (ws->frame_left == 127) {
+        BYTE ext[8];
+        if ((e = ws_read_exact(ws, ext, sizeof(ext)))) return e;
+        if (ext[0] & 0x80) return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+        ws->frame_left = 0;
+        for (int i = 0; i < 8; i++) ws->frame_left = (ws->frame_left << 8) | ext[i];
+    }
+    if (ws->frame_opcode >= 8 && (!ws->frame_fin || ws->frame_left > 125))
+        return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+    if (ws->frame_opcode == 1 || ws->frame_opcode == 2) {
+        if (ws->message_opcode) return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+        ws->message_opcode = ws->frame_opcode;
+    } else if (ws->frame_opcode == 0) {
+        if (!ws->message_opcode) return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+    } else if (ws->frame_opcode < 8 || ws->frame_opcode > 10) {
+        return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+    }
+    return 0;
+}
+
+WINHTTPAPI HINTERNET WINAPI WinHttpWebSocketCompleteUpgrade(HINTERNET request, DWORD_PTR context)
+{
+    Request *r = (Request *)get(request, WINHTTP_HANDLE_TYPE_REQUEST);
+    if (!r) return 0;
+    if (!r->received || !r->websocket_upgrade || !r->conn) {
+        SetLastError(ERROR_WINHTTP_INCORRECT_HANDLE_STATE);
+        return 0;
+    }
+    WebSocket *ws = xcalloc(sizeof(WebSocket));
+    if (!ws) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    inherit(&ws->h, r->h.parent, WINHTTP_HANDLE_TYPE_WEBSOCKET_);
+    ws->h.ctx = context;
+    ws->conn = r->conn;
+    r->conn = 0;
+    notify(&ws->h, WINHTTP_CALLBACK_STATUS_HANDLE_CREATED, &ws, sizeof(ws));
+    return ws;
+}
+
+WINHTTPAPI DWORD WINAPI WinHttpWebSocketSend(HINTERNET websocket, WINHTTP_WEB_SOCKET_BUFFER_TYPE type,
+                                              PVOID buffer, DWORD length)
+{
+    WebSocket *ws = (WebSocket *)get(websocket, WINHTTP_HANDLE_TYPE_WEBSOCKET_);
+    if (!ws) return GetLastError();
+    BYTE opcode;
+    int fin;
+    switch (type) {
+    case WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE: opcode = 2; fin = 1; break;
+    case WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE: opcode = 2; fin = 0; break;
+    case WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE: opcode = 1; fin = 1; break;
+    case WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE: opcode = 1; fin = 0; break;
+    case WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE: opcode = 8; fin = 1; break;
+    default: return ERROR_INVALID_PARAMETER;
+    }
+    if (opcode == 8 && (length > 125 || length == 1)) return ERROR_INVALID_PARAMETER;
+    DWORD e = ws_send_frame(ws, opcode, fin, buffer, length);
+    if (!e && opcode == 8) ws->close_sent = 1;
+    return e;
+}
+
+WINHTTPAPI DWORD WINAPI WinHttpWebSocketReceive(HINTERNET websocket, PVOID buffer, DWORD length,
+                                                 LPDWORD read, WINHTTP_WEB_SOCKET_BUFFER_TYPE *type)
+{
+    WebSocket *ws = (WebSocket *)get(websocket, WINHTTP_HANDLE_TYPE_WEBSOCKET_);
+    if (!ws) return GetLastError();
+    if (!read || !type || (length && !buffer)) return ERROR_INVALID_PARAMETER;
+    *read = 0;
+    for (;;) {
+        if (!ws->frame_left && !ws->close_received) {
+            DWORD e = ws_read_frame_header(ws);
+            if (e) return e;
+            if (ws->frame_opcode == 8) {
+                BYTE payload[125];
+                DWORD n = (DWORD)ws->frame_left;
+                if (n && (e = ws_read_exact(ws, payload, n))) return e;
+                if (n == 1) return ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+                ws->close_status = n >= 2 ? (USHORT)((payload[0] << 8) | payload[1]) : 1005;
+                ws->close_reason_len = n > 2 ? n - 2 : 0;
+                if (ws->close_reason_len) memcpy(ws->close_reason, payload + 2, ws->close_reason_len);
+                ws->close_received = 1;
+                if (!ws->close_sent) {
+                    e = ws_send_frame(ws, 8, 1, n ? payload : 0, n);
+                    if (e) return e;
+                    ws->close_sent = 1;
+                }
+                *type = WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE;
+                return 0;
+            }
+            if (ws->frame_opcode == 9 || ws->frame_opcode == 10) {
+                BYTE payload[125];
+                DWORD n = (DWORD)ws->frame_left;
+                if (n && (e = ws_read_exact(ws, payload, n))) return e;
+                ws->frame_left = 0;
+                if (ws->frame_opcode == 9 && (e = ws_send_frame(ws, 10, 1, payload, n))) return e;
+                continue;
+            }
+        }
+        if (ws->close_received) {
+            *type = WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE;
+            return 0;
+        }
+        if (ws->frame_left && !length) return ERROR_INSUFFICIENT_BUFFER;
+        DWORD n = ws->frame_left < length ? (DWORD)ws->frame_left : length;
+        DWORD e = n ? ws_read_exact(ws, buffer, n) : 0;
+        if (e) return e;
+        ws->frame_left -= n;
+        *read = n;
+        if (!ws->frame_left && ws->frame_fin) {
+            *type = ws->message_opcode == 1 ? WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE :
+                                              WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE;
+            ws->message_opcode = 0;
+        } else {
+            *type = ws->message_opcode == 1 ? WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE :
+                                              WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE;
+        }
+        return 0;
+    }
+}
+
+WINHTTPAPI DWORD WINAPI WinHttpWebSocketShutdown(HINTERNET websocket, USHORT status, PVOID reason, DWORD length)
+{
+    WebSocket *ws = (WebSocket *)get(websocket, WINHTTP_HANDLE_TYPE_WEBSOCKET_);
+    if (!ws) return GetLastError();
+    if (ws->close_sent || length > 123 || (length && !reason)) return ERROR_INVALID_PARAMETER;
+    BYTE payload[125] = { (BYTE)(status >> 8), (BYTE)status };
+    if (length) memcpy(payload + 2, reason, length);
+    DWORD e = ws_send_frame(ws, 8, 1, payload, length + 2);
+    if (!e) ws->close_sent = 1;
+    return e;
+}
+
+WINHTTPAPI DWORD WINAPI WinHttpWebSocketClose(HINTERNET websocket, USHORT status, PVOID reason, DWORD length)
+{
+    WebSocket *ws = (WebSocket *)get(websocket, WINHTTP_HANDLE_TYPE_WEBSOCKET_);
+    if (!ws) return GetLastError();
+    if (!ws->close_sent) {
+        DWORD e = WinHttpWebSocketShutdown(websocket, status, reason, length);
+        if (e) return e;
+    }
+    return WinHttpCloseHandle(websocket) ? 0 : GetLastError();
+}
+
+WINHTTPAPI DWORD WINAPI WinHttpWebSocketQueryCloseStatus(HINTERNET websocket, USHORT *status, PVOID reason,
+                                                          DWORD length, LPDWORD reason_length)
+{
+    WebSocket *ws = (WebSocket *)get(websocket, WINHTTP_HANDLE_TYPE_WEBSOCKET_);
+    if (!ws) return GetLastError();
+    if (!status || !reason_length) return ERROR_INVALID_PARAMETER;
+    if (!ws->close_received) return ERROR_WINHTTP_INCORRECT_HANDLE_STATE;
+    *status = ws->close_status;
+    *reason_length = ws->close_reason_len;
+    if (length < ws->close_reason_len) return ERROR_INSUFFICIENT_BUFFER;
+    if (ws->close_reason_len && !reason) return ERROR_INVALID_PARAMETER;
+    if (ws->close_reason_len) memcpy(reason, ws->close_reason, ws->close_reason_len);
+    return 0;
 }
 
 /* Headers in "Name: value\r\n" lines */

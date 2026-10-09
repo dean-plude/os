@@ -14,7 +14,7 @@
 //              written as fast as the client takes them (userland/programs/dltest.c)
 // tools/selftest.py --suite network starts it with a throwaway certificate.
 'use strict';
-const fs = require('fs'), http = require('http'), http2 = require('http2');
+const crypto = require('crypto'), fs = require('fs'), http = require('http'), http2 = require('http2');
 
 const [cert, key, httpsPort = 8443, httpPort = 8080] = process.argv.slice(2);
 const log = (m) => console.log('[h2server] ' + m);
@@ -22,7 +22,12 @@ const log = (m) => console.log('[h2server] ' + m);
 function handle(req, res) {
     log(`${req.method} ${req.url} HTTP/${req.httpVersion}`);
     const head = { 'x-protocol': req.httpVersion };
-    if (req.url === '/hello') {
+    if (req.url === '/conn') {
+        let id = connections.get(req.socket);
+        if (!id) connections.set(req.socket, id = nextConnection++);
+        res.writeHead(200, { ...head, 'content-length': String(id).length });
+        res.end(String(id));
+    } else if (req.url === '/hello') {
         res.writeHead(200, { ...head, 'content-type': 'text/html' });
         res.end(`<html><body><h1>Hello over HTTP/${req.httpVersion === '2.0' ? '2' : req.httpVersion}</h1></body></html>\n`);
     } else if (req.url === '/big') {
@@ -73,6 +78,54 @@ function handle(req, res) {
     }
 }
 
+const connections = new WeakMap();
+let nextConnection = 1;
+function websocket(req, socket, head) {
+    const key = req.headers['sec-websocket-key'];
+    if (req.url !== '/websocket' || !key) return socket.destroy();
+    const accept = crypto.createHash('sha1').update(key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+                 `Sec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    let pending = head;
+    socket.on('data', (chunk) => {
+        pending = Buffer.concat([pending, chunk]);
+        while (pending.length >= 2) {
+            const opcode = pending[0] & 0x0f, masked = pending[1] & 0x80;
+            let length = pending[1] & 0x7f, offset = 2;
+            if (length === 126) {
+                if (pending.length < 4) return;
+                length = pending.readUInt16BE(2); offset = 4;
+            } else if (length === 127) {
+                if (pending.length < 10) return;
+                const wide = pending.readBigUInt64BE(2);
+                if (wide > BigInt(Number.MAX_SAFE_INTEGER)) return socket.destroy();
+                length = Number(wide); offset = 10;
+            }
+            if (!masked) return socket.destroy();
+            if (pending.length < offset + 4 + length) return;
+            const mask = pending.subarray(offset, offset + 4);
+            const data = Buffer.from(pending.subarray(offset + 4, offset + 4 + length));
+            for (let i = 0; i < data.length; i++) data[i] ^= mask[i & 3];
+            pending = pending.subarray(offset + 4 + length);
+            if (opcode === 1 || opcode === 2) {
+                const frame = Buffer.alloc(data.length + 2);
+                frame[0] = 0x80 | opcode;
+                frame[1] = data.length;
+                data.copy(frame, 2);
+                socket.write(frame);
+            } else if (opcode === 8) {
+                socket.write(Buffer.from([0x88, data.length, ...data]));
+                socket.end();
+                return;
+            } else if (opcode === 9) {
+                socket.write(Buffer.from([0x8a, data.length, ...data]));
+            }
+        }
+    });
+}
+
 http2.createSecureServer({ cert: fs.readFileSync(cert), key: fs.readFileSync(key), allowHTTP1: true }, handle)
     .listen(+httpsPort, '127.0.0.1', () => log(`HTTPS (h2, http/1.1) on 127.0.0.1:${httpsPort}`));
-http.createServer(handle).listen(+httpPort, '127.0.0.1', () => log(`HTTP on 127.0.0.1:${httpPort}`));
+const httpServer = http.createServer(handle);
+httpServer.on('upgrade', websocket);
+httpServer.listen(+httpPort, '127.0.0.1', () => log(`HTTP on 127.0.0.1:${httpPort}`));
