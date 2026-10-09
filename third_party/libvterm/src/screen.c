@@ -79,6 +79,25 @@ static inline void clearcell(const VTermScreen *screen, ScreenCell *cell)
   cell->pen = screen->pen;
 }
 
+static int screenpen_equal(const ScreenPen *a, const ScreenPen *b)
+{
+  return a->bold == b->bold &&
+         a->underline == b->underline &&
+         a->italic == b->italic &&
+         a->blink == b->blink &&
+         a->reverse == b->reverse &&
+         a->conceal == b->conceal &&
+         a->strike == b->strike &&
+         a->font == b->font &&
+         a->small == b->small &&
+         a->baseline == b->baseline &&
+         a->protected_cell == b->protected_cell &&
+         a->dwl == b->dwl &&
+         a->dhl == b->dhl &&
+         vterm_color_is_equal(&a->fg, &b->fg) &&
+         vterm_color_is_equal(&a->bg, &b->bg);
+}
+
 static inline ScreenCell *getcell(const VTermScreen *screen, int row, int col)
 {
   if(row < 0 || row >= screen->rows)
@@ -178,27 +197,51 @@ static int putglyph(VTermGlyphInfo *info, VTermPos pos, void *user)
   if(!cell)
     return 0;
 
+  ScreenPen pen = screen->pen;
+  pen.protected_cell = info->protected_cell;
+  pen.dwl = info->dwl;
+  pen.dhl = info->dhl;
+
   int i;
+  for(i = 0; i < VTERM_MAX_CHARS_PER_CELL && info->chars[i]; i++)
+    if(cell->chars[i] != info->chars[i])
+      break;
+  bool changed = i < VTERM_MAX_CHARS_PER_CELL &&
+    (info->chars[i] ? cell->chars[i] != info->chars[i] : cell->chars[i] != 0);
+  if(!changed && !screenpen_equal(&cell->pen, &pen))
+    changed = true;
+
+  for(int col = 1; !changed && col < info->width; col++) {
+    ScreenCell *widecell = getcell(screen, pos.row, pos.col + col);
+    if(widecell && widecell->chars[0] != (uint32_t)-1)
+      changed = true;
+  }
+
+  if(!changed)
+    return 1;
+
   for(i = 0; i < VTERM_MAX_CHARS_PER_CELL && info->chars[i]; i++) {
     cell->chars[i] = info->chars[i];
-    cell->pen = screen->pen;
   }
   if(i < VTERM_MAX_CHARS_PER_CELL)
     cell->chars[i] = 0;
+  cell->pen = pen;
 
-  for(int col = 1; col < info->width; col++)
-    getcell(screen, pos.row, pos.col + col)->chars[0] = (uint32_t)-1;
+  for(int col = 1; col < info->width; col++) {
+    ScreenCell *widecell = getcell(screen, pos.row, pos.col + col);
+    if(widecell)
+      widecell->chars[0] = (uint32_t)-1;
+  }
 
+  int end_col = pos.col + info->width;
+  if(info->width > screen->cols - pos.col)
+    end_col = screen->cols;
   VTermRect rect = {
     .start_row = pos.row,
     .end_row   = pos.row+1,
     .start_col = pos.col,
-    .end_col   = pos.col+info->width,
+    .end_col   = end_col,
   };
-
-  cell->pen.protected_cell = info->protected_cell;
-  cell->pen.dwl            = info->dwl;
-  cell->pen.dhl            = info->dhl;
 
   damagerect(screen, rect);
 
@@ -911,6 +954,14 @@ static size_t _get_chars(const VTermScreen *screen, const int utf8, void *buffer
 {
   size_t outpos = 0;
   int padding = 0;
+  VTermRect clipped = rect;
+
+  if(clipped.start_row < 0) clipped.start_row = 0;
+  if(clipped.start_col < 0) clipped.start_col = 0;
+  if(clipped.end_row > screen->rows) clipped.end_row = screen->rows;
+  if(clipped.end_col > screen->cols) clipped.end_col = screen->cols;
+  if(clipped.end_row < clipped.start_row) clipped.end_row = clipped.start_row;
+  if(clipped.end_col < clipped.start_col) clipped.end_col = clipped.start_col;
 
 #define PUT(c)                                             \
   if(utf8) {                                               \
@@ -927,8 +978,8 @@ static size_t _get_chars(const VTermScreen *screen, const int utf8, void *buffer
       outpos++;                                            \
   }
 
-  for(int row = rect.start_row; row < rect.end_row; row++) {
-    for(int col = rect.start_col; col < rect.end_col; col++) {
+  for(int row = clipped.start_row; row < clipped.end_row; row++) {
+    for(int col = clipped.start_col; col < clipped.end_col; col++) {
       ScreenCell *cell = getcell(screen, row, col);
 
       if(cell->chars[0] == 0)
@@ -948,7 +999,7 @@ static size_t _get_chars(const VTermScreen *screen, const int utf8, void *buffer
       }
     }
 
-    if(row < rect.end_row - 1) {
+    if(row < clipped.end_row - 1) {
       PUT(UNICODE_LINEFEED);
       padding = 0;
     }
@@ -1008,6 +1059,10 @@ int vterm_screen_get_cell(const VTermScreen *screen, VTermPos pos, VTermScreenCe
 
 int vterm_screen_is_eol(const VTermScreen *screen, VTermPos pos)
 {
+  if(pos.row < 0 || pos.row >= screen->rows ||
+     pos.col < 0 || pos.col >= screen->cols)
+    return 0;
+
   /* This cell is EOL if this and every cell to the right is black */
   for(; pos.col < screen->cols; pos.col++) {
     ScreenCell *cell = getcell(screen, pos.row, pos.col);
@@ -1127,15 +1182,22 @@ static int attrs_differ(VTermAttrMask attrs, ScreenCell *a, ScreenCell *b)
 int vterm_screen_get_attrs_extent(const VTermScreen *screen, VTermRect *extent, VTermPos pos, VTermAttrMask attrs)
 {
   ScreenCell *target = getcell(screen, pos.row, pos.col);
+  if(!target)
+    return 0;
 
-  // TODO: bounds check
+  int start_col = extent->start_col;
+  int end_col = extent->end_col;
+  if(start_col < 0) start_col = 0;
+  if(end_col < 0) end_col = screen->cols;
+  if(start_col > screen->cols) start_col = screen->cols;
+  if(end_col > screen->cols) end_col = screen->cols;
+  if(start_col > pos.col || end_col <= pos.col || start_col >= end_col)
+    return 0;
+
   extent->start_row = pos.row;
   extent->end_row   = pos.row + 1;
-
-  if(extent->start_col < 0)
-    extent->start_col = 0;
-  if(extent->end_col < 0)
-    extent->end_col = screen->cols;
+  extent->start_col = start_col;
+  extent->end_col = end_col;
 
   int col;
 
@@ -1147,7 +1209,7 @@ int vterm_screen_get_attrs_extent(const VTermScreen *screen, VTermRect *extent, 
   for(col = pos.col + 1; col < extent->end_col; col++)
     if(attrs_differ(attrs, target, getcell(screen, pos.row, col)))
       break;
-  extent->end_col = col - 1;
+  extent->end_col = col;
 
   return 1;
 }

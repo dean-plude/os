@@ -1,5 +1,6 @@
 #include "vterm_internal.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -180,7 +181,7 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
     }
     // else fallthrough
 
-    size_t string_len = bytes + pos - string_start;
+    size_t string_len = string_start ? bytes + pos - string_start : 0;
 
     if(vt->parser.in_esc) {
       // Hoist an ESC letter into a C1 if we're not in a string mode
@@ -220,24 +221,36 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
     case CSI_ARGS:
       /* Numerical value of argument */
       if(c >= '0' && c <= '9') {
-        if(vt->parser.v.csi.args[vt->parser.v.csi.argi] == CSI_ARG_MISSING)
-          vt->parser.v.csi.args[vt->parser.v.csi.argi] = 0;
-        vt->parser.v.csi.args[vt->parser.v.csi.argi] *= 10;
-        vt->parser.v.csi.args[vt->parser.v.csi.argi] += c - '0';
+        if(vt->parser.v.csi.argi < CSI_ARGS_MAX) {
+          long *arg = &vt->parser.v.csi.args[vt->parser.v.csi.argi];
+          const long maxarg = (long)CSI_ARG_MISSING - 1;
+          if(*arg == CSI_ARG_MISSING)
+            *arg = 0;
+          if(*arg <= (maxarg - (c - '0')) / 10)
+            *arg = *arg * 10 + c - '0';
+          else
+            *arg = maxarg;
+        }
         break;
       }
       if(c == ':') {
-        vt->parser.v.csi.args[vt->parser.v.csi.argi] |= CSI_ARG_FLAG_MORE;
+        if(vt->parser.v.csi.argi < CSI_ARGS_MAX)
+          vt->parser.v.csi.args[vt->parser.v.csi.argi] |= CSI_ARG_FLAG_MORE;
         c = ';';
       }
       if(c == ';') {
-        vt->parser.v.csi.argi++;
-        vt->parser.v.csi.args[vt->parser.v.csi.argi] = CSI_ARG_MISSING;
+        if(vt->parser.v.csi.argi < CSI_ARGS_MAX - 1) {
+          vt->parser.v.csi.argi++;
+          vt->parser.v.csi.args[vt->parser.v.csi.argi] = CSI_ARG_MISSING;
+        }
+        else
+          vt->parser.v.csi.argi = CSI_ARGS_MAX;
         break;
       }
 
       /* else fallthrough */
-      vt->parser.v.csi.argi++;
+      if(vt->parser.v.csi.argi < CSI_ARGS_MAX)
+        vt->parser.v.csi.argi++;
       vt->parser.intermedlen = 0;
       vt->parser.state = CSI_INTERMED;
     case CSI_INTERMED:
@@ -261,11 +274,13 @@ size_t vterm_input_write(VTerm *vt, const char *bytes, size_t len)
     case OSC_COMMAND:
       /* Numerical value of command */
       if(c >= '0' && c <= '9') {
+        int digit = c - '0';
         if(vt->parser.v.osc.command == -1)
-          vt->parser.v.osc.command = 0;
+          vt->parser.v.osc.command = digit;
+        else if(vt->parser.v.osc.command <= (INT_MAX - (c - '0')) / 10)
+          vt->parser.v.osc.command = vt->parser.v.osc.command * 10 + digit;
         else
-          vt->parser.v.osc.command *= 10;
-        vt->parser.v.osc.command += c - '0';
+          vt->parser.v.osc.command = INT_MAX;
         break;
       }
       if(c == ';') {

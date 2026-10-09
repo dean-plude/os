@@ -1,5 +1,6 @@
 libvterm 0.3.3 (MIT, see LICENSE), from the Debian/Ubuntu source package
-(apt-get source libvterm).  Only include/ and src/ are used, unmodified;
+(apt-get source libvterm).  Only include/ and src/ are used.  parser.c and
+screen.c contain local fixes for parser bounds and screen damage handling;
 the kernel builds it with kernel/apps/vterm_libc.h force-included, which
 maps the few C library calls it makes onto the kernel's.
 
