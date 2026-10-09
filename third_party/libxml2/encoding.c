@@ -304,7 +304,8 @@ UTF8ToUTF8(unsigned char* out, int *outlen,
      * to check for UTF-8 validity. Preferably, this converter shouldn't
      * be used at all.
      */
-    memcpy(out, inb, len);
+    if (out != inb)
+        memmove(out, inb, len);
 
     *outlen = len;
     *inlenb = len;
@@ -2336,8 +2337,6 @@ xmlCharEncInput(xmlParserInputBufferPtr input)
     inTotal = 0;
 
     do {
-        c_in = toconv > INT_MAX / 2 ? INT_MAX / 2 : toconv;
-
         avail = xmlBufAvail(out);
         if (avail > INT_MAX)
             avail = INT_MAX;
@@ -2349,7 +2348,7 @@ xmlCharEncInput(xmlParserInputBufferPtr input)
             avail = xmlBufAvail(out);
         }
 
-        c_in = toconv;
+        c_in = toconv > INT_MAX / 2 ? INT_MAX / 2 : toconv;
         c_out = avail;
         ret = xmlEncInputChunk(input->encoder, xmlBufEnd(out), &c_out,
                                inData, &c_in);
@@ -2359,12 +2358,14 @@ xmlCharEncInput(xmlParserInputBufferPtr input)
         xmlBufAddLen(out, c_out);
     } while (ret == XML_ENC_ERR_SPACE);
 
-    xmlBufShrink(in, inTotal);
+    if (inTotal > 0)
+        xmlBufShrink(in, inTotal);
 
-    if (input->rawconsumed > ULONG_MAX - (unsigned long)c_in)
+    if ((inTotal > ULONG_MAX) ||
+        (input->rawconsumed > ULONG_MAX - (unsigned long)inTotal))
         input->rawconsumed = ULONG_MAX;
     else
-        input->rawconsumed += c_in;
+        input->rawconsumed += (unsigned long)inTotal;
 
     if (((ret != 0) && (c_out == 0)) ||
         (ret == XML_ENC_ERR_MEMORY)) {
@@ -3823,4 +3824,3 @@ static int UTF8ToISO8859_16 (unsigned char* out, int *outlen,
 
 #endif
 #endif
-
