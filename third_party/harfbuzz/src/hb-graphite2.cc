@@ -250,14 +250,12 @@ _hb_graphite2_shape (hb_shape_plan_t    *shape_plan HB_UNUSED,
 
   hb_direction_t direction = buffer->props.direction;
   hb_direction_t horiz_dir = hb_script_get_horizontal_direction (buffer->props.script);
-  /* TODO vertical:
-   * The only BTT vertical script is Ogham, but it's not clear to me whether OpenType
-   * Ogham fonts are supposed to be implemented BTT or not.  Need to research that
-   * first. */
+  hb_direction_t vert_dir = buffer->props.script == HB_SCRIPT_OGHAM ?
+                            HB_DIRECTION_BTT : HB_DIRECTION_TTB;
   if ((HB_DIRECTION_IS_HORIZONTAL (direction) &&
        direction != horiz_dir && horiz_dir != HB_DIRECTION_INVALID) ||
       (HB_DIRECTION_IS_VERTICAL   (direction) &&
-       direction != HB_DIRECTION_TTB))
+       direction != vert_dir))
   {
     hb_buffer_reverse_clusters (buffer);
     direction = HB_DIRECTION_REVERSE (direction);

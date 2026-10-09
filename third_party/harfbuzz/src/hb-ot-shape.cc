@@ -592,6 +592,8 @@ hb_ensure_native_direction (hb_buffer_t *buffer)
 {
   hb_direction_t direction = buffer->props.direction;
   hb_direction_t horiz_dir = hb_script_get_horizontal_direction (buffer->props.script);
+  hb_direction_t vert_dir = buffer->props.script == HB_SCRIPT_OGHAM ?
+                             HB_DIRECTION_BTT : HB_DIRECTION_TTB;
 
   /* Numeric runs in natively-RTL scripts are actually native-LTR, so we reset
    * the horiz_dir if the run contains at least one decimal-number char, and no
@@ -632,14 +634,10 @@ hb_ensure_native_direction (hb_buffer_t *buffer)
       horiz_dir = HB_DIRECTION_LTR;
   }
 
-  /* TODO vertical:
-   * The only BTT vertical script is Ogham, but it's not clear to me whether OpenType
-   * Ogham fonts are supposed to be implemented BTT or not.  Need to research that
-   * first. */
   if ((HB_DIRECTION_IS_HORIZONTAL (direction) &&
        direction != horiz_dir && HB_DIRECTION_IS_VALID (horiz_dir)) ||
       (HB_DIRECTION_IS_VERTICAL   (direction) &&
-       direction != HB_DIRECTION_TTB))
+       direction != vert_dir))
   {
     _hb_ot_layout_reverse_graphemes (buffer);
     buffer->props.direction = HB_DIRECTION_REVERSE (buffer->props.direction);
