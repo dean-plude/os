@@ -674,7 +674,8 @@ version tag (`v0.1.0`) runs the same suites on the tagged commit and
 publishes a release with that ISO, its checksums, the update channel's
 files and notes from the history ([docs/releasing.md](docs/releasing.md)).  Run the same
 gates locally with `python3 tools/selftest.py` (and `--suite network`, `--suite graphics`)
-after a build.
+after a build.  The core suite compiles its ACPI test tables with `iasl`; install
+it with `sudo apt install acpica-tools` first.
 
 **Every night, real programs.**  `.github/workflows/nightly.yml` builds
 main and runs `tools/appcorpus.py`: the official Windows x64 releases of
