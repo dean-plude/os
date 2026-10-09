@@ -313,7 +313,10 @@ static uacpi_u32 call_frame_code_end(struct call_frame *frame)
             continue;
 
         item = item_array_at(&op_ctx->items, op_ctx->tracked_pkg_idx - 1);
+        /* A completed package may remain pending while its parent resumes. */
         if (item->type == ITEM_PACKAGE_LENGTH && item->pkg.valid &&
+            item->pkg.begin <= frame->code_offset &&
+            frame->code_offset < item->pkg.end &&
             item->pkg.end < end)
             end = item->pkg.end;
     }
