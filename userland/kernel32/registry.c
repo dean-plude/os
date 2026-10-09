@@ -104,7 +104,7 @@ static NTSTATUS handle_of(HKEY key, HANDLE *out)
     return 0;
 }
 
-static NTSTATUS open_sub(HKEY parent, LPCWSTR sub, BOOL create, DWORD options, HKEY *out, LPDWORD disp)
+static NTSTATUS open_sub(HKEY parent, LPCWSTR sub, BOOL create, DWORD options, REGSAM sam, HKEY *out, LPDWORD disp)
 {
     HANDLE root;
     NTSTATUS s = handle_of(parent, &root);
@@ -120,7 +120,7 @@ static NTSTATUS open_sub(HKEY parent, LPCWSTR sub, BOOL create, DWORD options, H
     oa.Attributes = OBJ_CASE_INSENSITIVE;
     HANDLE h;
     ULONG d = 0;
-    s = create ? NtCreateKey(&h, KEY_ALL_ACCESS, &oa, 0, 0, options, &d) : NtOpenKey(&h, KEY_ALL_ACCESS, &oa);
+    s = create ? NtCreateKey(&h, sam, &oa, 0, 0, options, &d) : NtOpenKey(&h, sam, &oa);
     if (s) return s;
     *out = h;
     if (disp) *disp = d;
@@ -141,11 +141,13 @@ static WCHAR *a2w(LPCSTR s)
 
 WINBASEAPI LSTATUS WINAPI RegOpenKeyExW(HKEY key, LPCWSTR sub, DWORD options, REGSAM sam, PHKEY out)
 {
-    (void)options; (void)sam;
+    (void)options;
     if (!out) return ERROR_INVALID_PARAMETER;
     *out = 0;
-    if ((!sub || !*sub) && is_predef(key)) { HANDLE h; NTSTATUS s = handle_of(key, &h); if (s) return err(s); *out = key; return 0; }
-    return err(open_sub(key, sub, FALSE, 0, out, 0));
+    if ((!sub || !*sub) && is_predef(key) && !(sam & (KEY_WOW64_32KEY | KEY_WOW64_64KEY))) {
+        HANDLE h; NTSTATUS s = handle_of(key, &h); if (s) return err(s); *out = key; return 0;
+    }
+    return err(open_sub(key, sub, FALSE, 0, sam, out, 0));
 }
 
 WINBASEAPI LSTATUS WINAPI RegOpenKeyExA(HKEY key, LPCSTR sub, DWORD options, REGSAM sam, PHKEY out)
@@ -162,10 +164,10 @@ WINBASEAPI LSTATUS WINAPI RegOpenKeyA(HKEY key, LPCSTR sub, PHKEY out) { return 
 WINBASEAPI LSTATUS WINAPI RegCreateKeyExW(HKEY key, LPCWSTR sub, DWORD reserved, LPWSTR cls, DWORD options, REGSAM sam,
                                           LPSECURITY_ATTRIBUTES sa, PHKEY out, LPDWORD disposition)
 {
-    (void)reserved; (void)cls; (void)sam; (void)sa;
+    (void)reserved; (void)cls; (void)sa;
     if (!out) return ERROR_INVALID_PARAMETER;
     *out = 0;
-    return err(open_sub(key, sub, TRUE, options, out, disposition));
+    return err(open_sub(key, sub, TRUE, options, sam, out, disposition));
 }
 
 WINBASEAPI LSTATUS WINAPI RegCreateKeyExA(HKEY key, LPCSTR sub, DWORD reserved, LPSTR cls, DWORD options, REGSAM sam,
@@ -207,7 +209,7 @@ static LSTATUS with_sub(HKEY key, LPCWSTR sub, HANDLE *h, BOOL *close)
     *close = FALSE;
     if (sub && *sub) {
         HKEY k;
-        LSTATUS r = err(open_sub(key, sub, FALSE, 0, &k, 0));
+        LSTATUS r = err(open_sub(key, sub, FALSE, 0, KEY_ALL_ACCESS, &k, 0));
         if (r) return r;
         *h = k;
         *close = TRUE;
@@ -578,10 +580,10 @@ WINBASEAPI LSTATUS WINAPI RegQueryInfoKeyA(HKEY key, LPSTR cls, LPDWORD ncls, LP
 
 WINBASEAPI LSTATUS WINAPI RegDeleteKeyExW(HKEY key, LPCWSTR sub, REGSAM sam, DWORD reserved)
 {
-    (void)sam; (void)reserved;
+    (void)reserved;
     if (!sub) return ERROR_INVALID_PARAMETER;
     HKEY k;
-    LSTATUS r = err(open_sub(key, sub, FALSE, 0, &k, 0));
+    LSTATUS r = err(open_sub(key, sub, FALSE, 0, sam, &k, 0));
     if (r) return r;
     r = err(NtDeleteKey(k));
     NtClose(k);

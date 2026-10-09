@@ -113,6 +113,7 @@ typedef struct UmObject {
                                        UO_SYMLINK: its target (UmLinkTarget) */
     UINT64          due;            /* UO_TIMER: the TSC it fires at (0: not set) */
     UINT64          period;         /* UO_TIMER: TSC cycles between firings (0: once) */
+    UINT32          reg_view;       /* UO_KEY: 32- or 64-bit registry view, or 0 */
     void          (*destroy)(struct UmObject *o);   /* extra cleanup (sockets, windows) */
     void           *sd;             /* its security descriptor (um_security.c), or NULL: open to all */
 } UmObject;

@@ -867,7 +867,7 @@ static void key_ob_destroy(UmObject *o)
 
 /* Lock order: a process's handle lock, then g_reg (closing a key handle
  * takes g_reg under it) — so handles are looked up and made without g_reg. */
-static UINT64 new_key_handle(UmProcess *p, RegKey *k)
+static UINT64 new_key_handle(UmProcess *p, RegKey *k, UINT32 reg_view)
 {
     UmObject *o = kzalloc(sizeof(*o));
     if (!o) { um_lock_shared(&g_reg); key_unref(k); um_unlock_shared(&g_reg); return 0; }
@@ -875,6 +875,7 @@ static UINT64 new_key_handle(UmProcess *p, RegKey *k)
     o->refs = 1;
     o->signaled = true;
     o->ptr = k;
+    o->reg_view = reg_view;
     o->destroy = key_ob_destroy;                            /* the caller referenced @k for us */
     o->free_unlocked = true;                                /* (g_reg) */
     UINT64 h = um_handle_new_object(p, o);
@@ -969,32 +970,51 @@ static UINT32 give(UINT64 out, UINT32 cap, const UINT8 *info, UINT32 need, UINT3
  * The services
  * ----------------------------------------------------------------------- */
 
-static UINT32 open_or_create(UINT64 handle_ptr, UINT64 oa_ptr, bool create, UINT32 options, UINT64 disp_ptr)
+static UINT32 view_path(RegKey *start, const UINT16 *path, UINT32 n, UINT32 reg_view, bool leave_wow,
+                        UINT16 **out, UINT32 *out_n);
+
+static UINT32 open_or_create(UINT64 handle_ptr, UINT64 oa_ptr, bool create, UINT32 options, UINT32 access, UINT64 disp_ptr)
 {
     UmProcess *p = UmCurrent();
     RegKey *start, *k = NULL;
-    UmObject *rob;
+    UmObject *rob = NULL;
     UINT32 n;
     UINT16 small[256], *path = small;                       /* (longer: from the heap) */
     if (oa_name_chars(oa_ptr) > 255 && !(path = kmalloc(2 * 4096))) return ST_NO_MEMORY;
     UINT32 st = get_oa(oa_ptr, &start, &rob, path, path == small ? 255 : 4095, &n);
     bool created = false;
+    if ((access & 0x0300) == 0x0300) st = ST_INVALID_PARAMETER;
+    UINT32 reg_view = (access & 0x0200) ? 32 : (access & 0x0100) ? 64 :
+                      rob && rob->reg_view ? rob->reg_view : p->wow ? 32 : 64;
+    bool leave_wow = (access & 0x0100) && rob && rob->reg_view == 32;
     /* A key that is there: found side by side with other readers */
     um_lock_shared(&g_reg);
     if (!st && start->deleted) st = ST_KEY_DELETED;
-    UINT32 found = st ? st : walk(start, path, n, false, false, &k, NULL);
+    UINT16 *resolved = NULL;
+    UINT32 rn = 0;
+    if (!st && (p->wow || (rob && rob->reg_view) || (access & 0x0300)))
+        st = view_path(start, path, n, reg_view, leave_wow, &resolved, &rn);
+    UINT32 found = st ? st : resolved ? walk(g_root, resolved, rn, false, false, &k, NULL)
+                                      : walk(start, path, n, false, false, &k, NULL);
     if (!found) __atomic_add_fetch(&k->refs, 1, __ATOMIC_RELAXED);   /* for the new handle */
+    kfree(resolved);
+    resolved = NULL;
     um_unlock_shared(&g_reg);
     if (!st && found && create) {                           /* to be made: alone */
         um_lock_excl(&g_reg);
-        st = start->deleted ? ST_KEY_DELETED : walk(start, path, n, true, (options & 1) != 0 /* REG_OPTION_VOLATILE */, &k, &created);
+        if (start->deleted) st = ST_KEY_DELETED;
+        if (!st && (p->wow || (rob && rob->reg_view) || (access & 0x0300)))
+            st = view_path(start, path, n, reg_view, leave_wow, &resolved, &rn);
+        if (!st) st = resolved ? walk(g_root, resolved, rn, true, (options & 1) != 0 /* REG_OPTION_VOLATILE */, &k, &created)
+                               : walk(start, path, n, true, (options & 1) != 0 /* REG_OPTION_VOLATILE */, &k, &created);
         if (!st) __atomic_add_fetch(&k->refs, 1, __ATOMIC_RELAXED);
+        kfree(resolved);
         um_unlock_excl(&g_reg);
     } else if (!st) st = found;
     if (path != small) kfree(path);
     if (rob) um_ob_unref(rob);
     UINT64 h = 0;
-    if (!st) { h = new_key_handle(p, k); if (!h) st = ST_TOO_MANY_HANDLES; }
+    if (!st) { h = new_key_handle(p, k, reg_view); if (!h) st = ST_TOO_MANY_HANDLES; }
     if (st) return st;
     UINT32 disp = created ? 1 : 2;                          /* REG_CREATED_NEW_KEY / REG_OPENED_EXISTING_KEY */
     if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)handle_ptr, &h, 8)) || !put_ret(disp_ptr, disp)) {
@@ -1007,12 +1027,12 @@ static UINT32 open_or_create(UINT64 handle_ptr, UINT64 oa_ptr, bool create, UINT
 /* NtCreateKey(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, ULONG TitleIndex, PUNICODE_STRING Class, ULONG Options, PULONG Disposition) */
 static UINT64 sys_create_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
-    (void)a2; (void)a4;
-    return open_or_create(a1, a3, true, (UINT32)um_stack_arg(6), um_stack_arg(7));
+    (void)a4;
+    return open_or_create(a1, a3, true, (UINT32)um_stack_arg(6), (UINT32)a2, um_stack_arg(7));
 }
 
 /* NtOpenKey(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES) and NtOpenKeyEx(+ ULONG OpenOptions) */
-static UINT64 sys_open_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a2; (void)a4; return open_or_create(a1, a3, false, 0, 0); }
+static UINT64 sys_open_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4) { (void)a4; return open_or_create(a1, a3, false, 0, (UINT32)a2, 0); }
 
 /* NtDeleteKey(HANDLE): only a key without subkeys */
 static UINT64 sys_delete_key(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
@@ -1183,6 +1203,98 @@ static UINT32 full_name(RegKey *k, UINT16 *w, UINT32 cap)
         o += chain[i]->nlen;
     }
     return o;
+}
+
+static bool path_prefix(const UINT16 *path, UINT32 n, const char *prefix, UINT32 pn)
+{
+    if (n < pn) return false;
+    for (UINT32 i = 0; i < pn; i++)
+        if (fold(path[i]) != fold((UINT8)prefix[i])) return false;
+    return n == pn || path[pn] == '\\';
+}
+
+static bool shared_software_key(const UINT16 *path, UINT32 n, UINT32 software_len)
+{
+    static const char *const shared[] = {
+        "Classes",
+        "Microsoft\\COM3",
+        "Microsoft\\Cryptography\\RNG",
+        "Microsoft\\Ole",
+        "Microsoft\\Windows NT\\CurrentVersion\\Font Drivers",
+        "Microsoft\\Windows NT\\CurrentVersion\\FontLink",
+        "Microsoft\\Windows NT\\CurrentVersion\\Fonts",
+        "Microsoft\\Windows NT\\CurrentVersion\\LanguagePack",
+        "Microsoft\\Windows NT\\CurrentVersion\\MCI",
+        "Microsoft\\Windows NT\\CurrentVersion\\MediaResources",
+        "Microsoft\\Windows NT\\CurrentVersion\\TrueType",
+    };
+    const UINT16 *sub = path + software_len;
+    UINT32 len = n - software_len;
+    if (len && *sub == '\\') { sub++; len--; }
+    for (unsigned i = 0; i < sizeof(shared) / sizeof(shared[0]); i++) {
+        UINT32 pn = (UINT32)strlen(shared[i]);
+        if (path_prefix(sub, len, shared[i], pn)) return true;
+    }
+    return false;
+}
+
+/* Resolve the caller's SOFTWARE view from the full physical key path. */
+static UINT32 view_path(RegKey *start, const UINT16 *path, UINT32 n, UINT32 reg_view, bool leave_wow,
+                        UINT16 **out, UINT32 *out_n)
+{
+    UINT32 start_len = 0;
+    for (RegKey *k = start; k; k = k->parent) start_len += k->nlen + 1;
+    UINT32 cap = start_len + n + 2;
+    UINT16 *full = kmalloc(2 * (size_t)cap);
+    if (!full) return ST_NO_MEMORY;
+    UINT32 fn = full_name(start, full, cap);
+    if (fn < 10) { kfree(full); return ST_OBJECT_PATH_NOT_FOUND; }
+    memmove(full, full + 10, 2 * (size_t)(fn - 10));
+    fn -= 10;                                               /* omit \REGISTRY */
+    if (n) {
+        if (fn) full[fn++] = '\\';
+        memcpy(full + fn, path, 2 * (size_t)n);
+        fn += n;
+    }
+    full[fn] = 0;
+
+    static const UINT32 software_len = 16;                 /* Machine\SOFTWARE */
+    if (!path_prefix(full, fn, "Machine\\SOFTWARE", software_len)) {
+        kfree(full);
+        return ST_SUCCESS;
+    }
+    bool start_wow = false;
+    UINT32 start_path_len = fn - n - (n && fn > n ? 1 : 0);
+    bool was_wow = fn > software_len + 1 &&
+                   path_prefix(full + software_len + 1, fn - software_len - 1, "WOW6432Node", 11);
+    if (start_path_len > software_len + 1)
+        start_wow = path_prefix(full + software_len + 1, start_path_len - software_len - 1, "WOW6432Node", 11);
+    bool view32 = reg_view == 32;
+
+    UINT32 wow_at = software_len + 1;
+    UINT32 wow_end = wow_at + 11;
+    if (view32) {
+        if (was_wow) {
+            if (shared_software_key(full, fn, wow_end)) {
+                memmove(full + wow_at, full + wow_end + (fn > wow_end && full[wow_end] == '\\'),
+                        2 * (size_t)(fn - wow_end - (fn > wow_end && full[wow_end] == '\\')));
+                fn -= wow_end - wow_at + (fn > wow_end && full[wow_end] == '\\');
+            }
+        } else if (fn > software_len + 1 && !shared_software_key(full, fn, software_len)) {
+            memmove(full + wow_end + 1, full + wow_at, 2 * (size_t)(fn - wow_at));
+            memcpy(full + wow_at, L"WOW6432Node", 22);
+            full[wow_end] = '\\';
+            fn += 12;
+        }
+    } else if (leave_wow && start_wow) {
+        memmove(full + wow_at, full + wow_end + (fn > wow_end && full[wow_end] == '\\'),
+                2 * (size_t)(fn - wow_end - (fn > wow_end && full[wow_end] == '\\')));
+        fn -= wow_end - wow_at + (fn > wow_end && full[wow_end] == '\\');
+    }
+    full[fn] = 0;
+    *out = full;
+    *out_n = fn;
+    return ST_SUCCESS;
 }
 
 /* KEY_{BASIC 0, NODE 1, FULL 2, NAME 3}_INFORMATION for @k */

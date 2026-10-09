@@ -4,7 +4,7 @@
 # handles duplicated, keys deleted while others hold them, one key's values
 # set, read and deleted by everyone, and a thread waiting synchronously
 # for changes meanwhile; the shared key must stay whole.
-DOC = '`regtest` (registry keys and values changed by several threads and processes at once; 64- and 32-bit)'
+DOC = '`regtest` (isolated 32- and 64-bit machine registry views, shared keys, and registry keys and values changed concurrently)'
 
 TESTS = [
     Test('registry keys x64', 'regtest', [r'regtest: \d+ passed, 0 failed'], timeout=300),
