@@ -149,14 +149,26 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
     steps:
     - uses: actions/checkout@v4
     - name: Collect app reports
       if: needs.gate.outputs.run == 'true'
       uses: actions/download-artifact@v4
+      continue-on-error: true
       with:
         pattern: appcorpus-*
         path: corpus-reports
+    - name: Collect SMP log
+      if: needs.gate.outputs.run == 'true'
+      uses: actions/download-artifact@v4
+      continue-on-error: true
+      with:
+        name: smp-out
+        path: corpus-reports/smp-out
     - name: Validate and combine corpus reports
       run: python3 tools/ci/corpus_report.py corpus-reports
       if: always() && needs.gate.outputs.run == 'true'
@@ -167,3 +179,16 @@ jobs:
       env:
         NEEDS_JSON: ${{ toJSON(needs) }}
       if: always()
+    - name: Post nightly results to issue
+      if: always() && github.event_name == 'schedule'
+      run: python3 tools/ci/corpus_comment.py corpus-reports
+      env:
+        GH_TOKEN: ${{ github.token }}
+        EVENT: ${{ github.event_name }}
+        CORPUS_ISSUE: '210'
+        CORPUS_MATRIX: ${{ needs.gate.outputs.matrix }}
+        NEEDS_JSON: ${{ toJSON(needs) }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
