@@ -1244,7 +1244,7 @@ static UINT32 view_path(RegKey *start, const UINT16 *path, UINT32 n, UINT32 reg_
 {
     UINT32 start_len = 0;
     for (RegKey *k = start; k; k = k->parent) start_len += k->nlen + 1;
-    UINT32 cap = start_len + n + 2;
+    UINT32 cap = start_len + n + 16;
     UINT16 *full = kmalloc(2 * (size_t)cap);
     if (!full) return ST_NO_MEMORY;
     UINT32 fn = full_name(start, full, cap);
