@@ -17,8 +17,9 @@
  * does it: the screen's DC as the EGL display, the first adapter that is not
  * Microsoft's, a device on it from the feature levels ANGLE asks for, the
  * DXGI 1.2 device, the adapter's description, factory and driver version,
- * the feature and format queries, a DXGI 1.2 swap chain on a window, and a
- * WARP device whose adapter comes from the device.
+ * the feature and format queries, a DXGI 1.2 swap chain on a window that
+ * draws a triangle and reads its pixels back, and a WARP device whose adapter
+ * comes from the device.
  *
  * d3dtest shared: a Direct3D 11 texture shared by NT handle, as Chromium
  * shares its frames with Qt WebEngine (Galaxy) or with its browser process:
@@ -36,6 +37,7 @@
 #include <d3d11_1.h>
 #include <d3d11_3.h>
 #include <d3d11_4.h>
+#include <d3dcompiler.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
 #include <stdio.h>
@@ -280,6 +282,72 @@ static void angle_formats(ID3D11Device *dev)
           SUCCEEDED(ID3D11Device_CheckFeatureSupport(dev, D3D11_FEATURE_FORMAT_SUPPORT2, &f2, sizeof(f2))));
 }
 
+static void angle_draw(ID3D11Device *dev, ID3D11DeviceContext *ctx, ID3D11Texture2D *back, ID3D11RenderTargetView *rtv)
+{
+    static const char shader[] =
+        "float4 vs_main(uint id : SV_VertexID) : SV_Position {"
+        "float2 p = id == 0 ? float2(-0.8, -0.8) : id == 1 ? float2(0, 0.8) : float2(0.8, -0.8);"
+        "return float4(p, 0, 1);}"
+        "float4 ps_main() : SV_Target { return float4(1, 0, 0, 1); }";
+    ID3DBlob *vsb = NULL, *psb = NULL, *errors = NULL;
+    HRESULT hr = D3DCompile(shader, sizeof(shader) - 1, "angle.hlsl", NULL, NULL, "vs_main", "vs_4_0", 0, 0, &vsb, &errors);
+    check("ANGLE vertex shader compiled", SUCCEEDED(hr) && vsb);
+    if (errors) { ID3D10Blob_Release(errors); errors = NULL; }
+    hr = D3DCompile(shader, sizeof(shader) - 1, "angle.hlsl", NULL, NULL, "ps_main", "ps_4_0", 0, 0, &psb, &errors);
+    check("ANGLE pixel shader compiled", SUCCEEDED(hr) && psb);
+    if (errors) ID3D10Blob_Release(errors);
+
+    ID3D11VertexShader *vs = NULL;
+    ID3D11PixelShader *ps = NULL;
+    if (vsb) {
+        hr = ID3D11Device_CreateVertexShader(dev, ID3D10Blob_GetBufferPointer(vsb), ID3D10Blob_GetBufferSize(vsb), NULL, &vs);
+        check("ANGLE vertex shader created", SUCCEEDED(hr) && vs);
+    }
+    if (psb) {
+        hr = ID3D11Device_CreatePixelShader(dev, ID3D10Blob_GetBufferPointer(psb), ID3D10Blob_GetBufferSize(psb), NULL, &ps);
+        check("ANGLE pixel shader created", SUCCEEDED(hr) && ps);
+    }
+
+    D3D11_TEXTURE2D_DESC td;
+    ID3D11Texture2D_GetDesc(back, &td);
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    td.MiscFlags = 0;
+    ID3D11Texture2D *staging = NULL;
+    hr = ID3D11Device_CreateTexture2D(dev, &td, NULL, &staging);
+    check("ANGLE staging texture", SUCCEEDED(hr) && staging);
+
+    if (vs && ps && staging) {
+        ID3D11DeviceContext_OMSetRenderTargets(ctx, 1, &rtv, NULL);
+        D3D11_TEXTURE2D_DESC bd;
+        ID3D11Texture2D_GetDesc(back, &bd);
+        D3D11_VIEWPORT vp = { 0, 0, (float)bd.Width, (float)bd.Height, 0, 1 };
+        ID3D11DeviceContext_RSSetViewports(ctx, 1, &vp);
+        ID3D11DeviceContext_IASetInputLayout(ctx, NULL);
+        ID3D11DeviceContext_IASetPrimitiveTopology(ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ID3D11DeviceContext_VSSetShader(ctx, vs, NULL, 0);
+        ID3D11DeviceContext_PSSetShader(ctx, ps, NULL, 0);
+        ID3D11DeviceContext_Draw(ctx, 3, 0);
+        ID3D11DeviceContext_CopyResource(ctx, (ID3D11Resource *)staging, (ID3D11Resource *)back);
+        D3D11_MAPPED_SUBRESOURCE m;
+        hr = ID3D11DeviceContext_Map(ctx, (ID3D11Resource *)staging, 0, D3D11_MAP_READ, 0, &m);
+        check("ANGLE swap-chain readback", SUCCEEDED(hr));
+        if (SUCCEEDED(hr)) {
+            const BYTE *p = (const BYTE *)m.pData + (bd.Height / 2) * m.RowPitch + (bd.Width / 2) * 4;
+            printf("ANGLE draw pixel  %02x%02x%02x\n", p[2], p[1], p[0]);
+            check("ANGLE triangle drawn through DXVK", p[2] > 240 && p[1] < 16 && p[0] < 16);
+            ID3D11DeviceContext_Unmap(ctx, (ID3D11Resource *)staging, 0);
+        }
+    }
+
+    if (staging) ID3D11Texture2D_Release(staging);
+    if (ps) ID3D11PixelShader_Release(ps);
+    if (vs) ID3D11VertexShader_Release(vs);
+    if (psb) ID3D10Blob_Release(psb);
+    if (vsb) ID3D10Blob_Release(vsb);
+}
+
 static void test_angle(void)
 {
     /* the EGL display: Chromium passes GetDC(NULL), which ANGLE takes only
@@ -368,7 +436,10 @@ static void test_angle(void)
             if (back) ID3D11Device_CreateRenderTargetView(dev, (ID3D11Resource *)back, NULL, &rtv);
             check("swap chain render target", rtv != NULL);
             const float col[4] = { 0.1f, 0.6f, 0.3f, 1.0f };
-            if (rtv) ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, col);
+            if (rtv && back) {
+                ID3D11DeviceContext_ClearRenderTargetView(ctx, rtv, col);
+                angle_draw(dev, ctx, back, rtv);
+            }
             check("swap chain Present", SUCCEEDED(IDXGISwapChain1_Present(sc, 0, 0)));
             pump();
             if (rtv) ID3D11RenderTargetView_Release(rtv);

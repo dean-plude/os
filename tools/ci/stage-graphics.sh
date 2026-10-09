@@ -49,7 +49,7 @@ for arch in x86_64 i686; do
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/gltest$sfx.exe" "$ROOT/tools/gltest/gltest.c" \
     -lopengl32 -lgdi32 -luser32 -lm
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/d3dtest$sfx.exe" "$ROOT/tools/d3dtest/d3dtest.c" \
-    -ld3d9 -ld3d11 -ldxgi -luser32 -lgdi32 -lole32
+    -ld3d9 -ld3d11 -ld3dcompiler_47 -ldxgi -luser32 -lgdi32 -lole32
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/hlsltest$sfx.exe" "$ROOT/tools/hlsltest/hlsltest.c" \
     -ld3dcompiler_47 -ld3d11 -ldxguid
   $arch-w64-mingw32-gcc -O2 -o "$OUT/tests/d2dtest$sfx.exe" "$ROOT/tools/d2dtest/d2dtest.c" \
