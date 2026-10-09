@@ -227,10 +227,12 @@ Basic Render Driver, `d3d11.dll` gives that WARP device, `dcomp.dll`
 draws a visual's swap chain into its window, and a child window parented
 by another process becomes a window of its own kept inside the new
 parent (`dcomptest`).
-64-bit programs that look for a machine-wide
-runtime under Windows' `WOW6432Node` registry view also need that view
-(the per-user install records itself under `HKEY_CURRENT_USER`, which
-has none).
+The machine-wide `WOW6432Node` registry view is implemented: 32-bit
+machine `SOFTWARE` keys are isolated from the 64-bit view, and both
+`KEY_WOW64_32KEY`/`KEY_WOW64_64KEY` and shared keys such as `Classes` are
+covered by `regtest`.  This supplies the registry view used by 64-bit
+programs to discover machine-wide WebView2 installs; per-user installs
+remain registered under `HKEY_CURRENT_USER`.
 
 ## Steam
 

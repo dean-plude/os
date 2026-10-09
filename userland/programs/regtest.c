@@ -31,6 +31,113 @@ static volatile LONG errors;
 static HKEY g_base;
 static int g_rounds = 300;
 
+static void registry_views(void)
+{
+    static const char *path = "SOFTWARE\\NovaRegtestView";
+    static const char *shared = "SOFTWARE\\Classes\\NovaRegtestView";
+    HKEY k32 = 0, k64 = 0;
+    DWORD v32 = 32, v64 = 64, got = 0, n, type;
+
+    RegDeleteTreeA(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\NovaRegtestView");
+    RegDeleteTreeA(HKEY_LOCAL_MACHINE, path);
+    RegDeleteTreeA(HKEY_LOCAL_MACHINE, shared);
+    CHECK("create the 32-bit machine view",
+          !RegCreateKeyExA(HKEY_LOCAL_MACHINE, path, 0, 0, 0, KEY_ALL_ACCESS | KEY_WOW64_32KEY, 0, &k32, 0));
+    CHECK("create the 64-bit machine view",
+          !RegCreateKeyExA(HKEY_LOCAL_MACHINE, path, 0, 0, 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY, 0, &k64, 0));
+    if (!k32 || !k64) goto cleanup;
+    HKEY invalid = 0;
+    CHECK("reject simultaneous 32-bit and 64-bit view flags",
+          RegOpenKeyExA(HKEY_LOCAL_MACHINE, path, 0, KEY_READ | KEY_WOW64_32KEY | KEY_WOW64_64KEY, &invalid) == ERROR_INVALID_PARAMETER &&
+          !invalid);
+    CHECK("set the 32-bit view value", !RegSetValueExA(k32, "view", 0, REG_DWORD, (const BYTE *)&v32, sizeof(v32)));
+    CHECK("set the 64-bit view value", !RegSetValueExA(k64, "view", 0, REG_DWORD, (const BYTE *)&v64, sizeof(v64)));
+
+    n = sizeof(got);
+    CHECK("the 32-bit view is isolated",
+          !RegQueryValueExA(k32, "view", 0, &type, (BYTE *)&got, &n) && type == REG_DWORD && got == v32);
+    n = sizeof(got);
+    CHECK("the 64-bit view is isolated",
+          !RegQueryValueExA(k64, "view", 0, &type, (BYTE *)&got, &n) && type == REG_DWORD && got == v64);
+
+    HKEY default_view = 0;
+    CHECK("open the default machine view",
+          !RegOpenKeyExA(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &default_view));
+    if (default_view) {
+        n = sizeof(got);
+#ifdef _WIN64
+        CHECK("64-bit programs default to the 64-bit view",
+              !RegQueryValueExA(default_view, "view", 0, 0, (BYTE *)&got, &n) && got == v64);
+#else
+        CHECK("32-bit programs default to the 32-bit view",
+              !RegQueryValueExA(default_view, "view", 0, 0, (BYTE *)&got, &n) && got == v32);
+#endif
+        RegCloseKey(default_view);
+    }
+
+    HKEY direct = 0;
+    CHECK("open the machine-wide WOW6432Node path",
+          !RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\NovaRegtestView", 0,
+                         KEY_READ | KEY_WOW64_64KEY, &direct));
+    if (direct) {
+        n = sizeof(got);
+        CHECK("WOW6432Node exposes the 32-bit view",
+              !RegQueryValueExA(direct, "view", 0, 0, (BYTE *)&got, &n) && got == v32);
+        RegCloseKey(direct);
+    }
+
+    HKEY software32 = 0, relative = 0;
+    CHECK("open SOFTWARE in the 32-bit view",
+          !RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE", 0, KEY_ALL_ACCESS | KEY_WOW64_32KEY, &software32));
+    CHECK("relative opens retain their selected view",
+          software32 && !RegCreateKeyExA(software32, "NovaRegtestRelative", 0, 0, 0, KEY_ALL_ACCESS, 0, &relative, 0));
+    if (relative) {
+        CHECK("set a value through a view-bound key", !RegSetValueExA(relative, "view", 0, REG_DWORD, (const BYTE *)&v32, sizeof(v32)));
+        RegCloseKey(relative);
+    }
+    HKEY direct_relative = 0;
+    CHECK("relative creation lands in WOW6432Node",
+          !RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\NovaRegtestRelative", 0,
+                         KEY_READ | KEY_WOW64_64KEY, &direct_relative));
+    if (direct_relative) {
+        n = sizeof(got);
+        CHECK("the relative view-bound value is visible machine-wide",
+              !RegQueryValueExA(direct_relative, "view", 0, 0, (BYTE *)&got, &n) && got == v32);
+        RegCloseKey(direct_relative);
+    }
+    if (software32) {
+        RegDeleteTreeA(software32, "NovaRegtestRelative");
+        RegCloseKey(software32);
+    }
+
+    HKEY c32 = 0, c64 = 0;
+    CHECK("open a shared Classes key in the 32-bit view",
+          !RegCreateKeyExA(HKEY_LOCAL_MACHINE, shared, 0, 0, 0, KEY_ALL_ACCESS | KEY_WOW64_32KEY, 0, &c32, 0));
+    CHECK("open a shared Classes key in the 64-bit view",
+          !RegOpenKeyExA(HKEY_LOCAL_MACHINE, shared, 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY, &c64));
+    if (c32 && c64) {
+        CHECK("set the shared Classes value", !RegSetValueExA(c32, "view", 0, REG_DWORD, (const BYTE *)&v32, sizeof(v32)));
+        n = sizeof(got);
+        CHECK("Classes is shared between views",
+              !RegQueryValueExA(c64, "view", 0, 0, (BYTE *)&got, &n) && got == v32);
+    }
+    if (c32) RegCloseKey(c32);
+    if (c64) RegCloseKey(c64);
+
+cleanup:
+    if (k32) {
+        RegDeleteTreeA(k32, 0);
+        RegCloseKey(k32);
+        RegDeleteKeyExA(HKEY_LOCAL_MACHINE, path, KEY_WOW64_32KEY, 0);
+    }
+    if (k64) {
+        RegDeleteTreeA(k64, 0);
+        RegCloseKey(k64);
+        RegDeleteKeyExA(HKEY_LOCAL_MACHINE, path, KEY_WOW64_64KEY, 0);
+    }
+    RegDeleteTreeA(HKEY_LOCAL_MACHINE, shared);
+}
+
 /* An unexpected result inside a worker: counted, the first few printed */
 static void bad(const char *what, LONG r, int line)
 {
@@ -248,6 +355,7 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "child")) return child(argc, argv);
     if (argc > 1) g_rounds = atoi(argv[1]);
 
+    registry_views();
     RegDeleteTreeA(HKEY_CURRENT_USER, BASE);
     CHECK("create the test key", !RegCreateKeyExA(HKEY_CURRENT_USER, BASE, 0, 0, REG_OPTION_VOLATILE, KEY_ALL_ACCESS, 0, &g_base, 0));
     HKEY shared;
