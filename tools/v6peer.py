@@ -29,7 +29,9 @@ PREFIX = bytes.fromhex('fd006e6f766100000000000000000000')[:8]
 MY_MAC = bytes.fromhex('020000000001')
 MY_LL = bytes.fromhex('fe800000000000000000000000000001')
 MY_GL = PREFIX + bytes.fromhex('0000000000000001')
+DHCP6_DNS = PREFIX + bytes.fromhex('0000000000000002')
 ALL_NODES = bytes.fromhex('ff020000000000000000000000000001')
+ALL_DHCP6 = bytes.fromhex('ff020000000000000000000100000002')
 NAME = 'nova6.test'
 PAGE = (b'<html><body><h1>Hello over IPv6</h1>'
         b'<p>Served by the NovaOS test peer (tools/v6peer.py).</p></body></html>\n')
@@ -76,7 +78,7 @@ class Peer:
         self.ip6(src, dst, 58, msg[:2] + struct.pack('!H', c) + msg[4:], 255, dst_mac)
 
     def router_advert(self, dst=ALL_NODES):
-        body = struct.pack('!BBHII', 64, 0, 1800, 0, 0)
+        body = struct.pack('!BBHII', 64, 0x40, 1800, 0, 0)
         body += struct.pack('!BB', 1, 1) + MY_MAC                            # source link-layer address
         body += struct.pack('!BBBBIII', 3, 4, 64, 0xC0, 86400, 14400, 0) + PREFIX + b'\0' * 8   # prefix: on-link, autonomous
         body += struct.pack('!BBHI', 25, 3, 0, 3600) + MY_GL                 # RDNSS
@@ -104,8 +106,8 @@ class Peer:
         src, dst, payload = ip[8:24], ip[24:40], ip[40:40 + plen]
         if nh == 58:
             self.on_icmp6(src, dst, payload)
-        elif nh == 17 and dst == MY_GL:
-            self.on_udp(src, payload)
+        elif nh == 17 and dst in (MY_GL, DHCP6_DNS, ALL_DHCP6):
+            self.on_udp(src, dst, payload)
         elif nh == 6 and dst in (MY_GL, MY_LL):
             self.on_tcp(src, dst, payload)
 
@@ -123,9 +125,19 @@ class Peer:
             self.log('echo request from %s' % socket.inet_ntop(socket.AF_INET6, src))
             self.icmp6(dst, src, 129, 0, m[4:])
 
-    def on_udp(self, src, seg):
+    def on_udp(self, src, dst, seg):
         sport, dport = struct.unpack('!HH', seg[:4])
-        if dport != 53:
+        if dport == 547 and len(seg) >= 12 and seg[8] == 11:
+            request = seg[8:]
+            server_id = b'\x00\x03\x00\x01' + MY_MAC
+            options = (struct.pack('!HH', 2, len(server_id)) + server_id +
+                       struct.pack('!HH', 23, len(DHCP6_DNS)) + DHCP6_DNS)
+            reply = b'\x07' + request[1:4] + options
+            self.log('DHCPv6 information request: replying with DNS %s' %
+                     socket.inet_ntop(socket.AF_INET6, DHCP6_DNS))
+            self.udp(MY_LL, src, 547, sport, reply)
+            return
+        if dport != 53 or dst not in (MY_GL, DHCP6_DNS):
             return
         q = seg[8:]
         tid, flags, qd = struct.unpack('!HHH', q[:6])
@@ -143,7 +155,7 @@ class Peer:
         resp = struct.pack('!HHHHHH', tid, 0x8180 | rcode, 1, 1 if answers else 0, 0, 0) + question + answers
         self.log('DNS %s %s: %s' % ({1: 'A', 28: 'AAAA'}.get(qtype, qtype), qname,
                                     'answered' if answers else 'no record' if known else 'NXDOMAIN'))
-        self.udp(MY_GL, src, 53, sport, resp)
+        self.udp(dst, src, 53, sport, resp)
 
     def on_tcp(self, src, dst, seg):
         sport, dport, seq, ack, off, flags = struct.unpack('!HHIIBB', seg[:14])
