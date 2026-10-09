@@ -30,3 +30,4 @@ void k32_io_done(HANDLE h, OVERLAPPED *o, NTSTATUS s, DWORD bytes);
 /* compat.c */
 BOOL k32_close_snapshot(HANDLE h);
 BOOL k32_find_close_stream(HANDLE h);
+HANDLE k32_pseudoconsole_handle(HPCON pc);

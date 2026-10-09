@@ -1735,18 +1735,160 @@ K32 BOOL WINAPI GetFirmwareType(DWORD *type)
 K32 BOOL WINAPI SetConsoleMode(HANDLE h, DWORD mode) { return con_call(h, 1, 0, mode, 0); }
 K32 BOOL WINAPI GetNumberOfConsoleMouseButtons(LPDWORD n) { *n = 2; return TRUE; }
 
-/* Pseudo consoles (ConPTY): not yet.  The functions exist because programs
- * probe for them to learn they run on a console that understands virtual
- * terminal sequences (Neovim's --embed server then talks to CONIN$/CONOUT$
- * and keeps its RPC on the pipes); creating one fails cleanly. */
-K32 LONG WINAPI CreatePseudoConsole(COORD size, HANDLE in, HANDLE out, DWORD flags, PVOID *pc)
+/* -----------------------------------------------------------------------
+ * Pseudo consoles: a virtual console attached to a child process, with
+ * separate threads carrying its byte streams to and from the host's pipes.
+ * ----------------------------------------------------------------------- */
+#define PSEUDO_MAGIC 0x4350594Eu
+enum { CON_PSEUDO_CREATE = 12, CON_PSEUDO_RESIZE, CON_PSEUDO_INPUT, CON_PSEUDO_OUTPUT, CON_PSEUDO_EOF };
+
+typedef struct {
+    DWORD magic;
+    volatile LONG refs, closing;
+    HANDLE console, in_console, out_console, input, output;
+} PseudoConsole;
+
+static void pseudo_release(PseudoConsole *p)
 {
-    (void)size; (void)in; (void)out; (void)flags;
-    if (pc) *pc = 0;
-    return (LONG)0x80004001;                                /* E_NOTIMPL */
+    if (__atomic_sub_fetch(&p->refs, 1, __ATOMIC_ACQ_REL) == 0) {
+        p->magic = 0;
+        zfree(p);
+    }
 }
-K32 LONG WINAPI ResizePseudoConsole(PVOID pc, COORD size) { (void)pc; (void)size; return (LONG)0x80004001; }
-K32 VOID WINAPI ClosePseudoConsole(PVOID pc) { (void)pc; }
+
+static BOOL pseudo_closing(PseudoConsole *p)
+{
+    return __atomic_load_n(&p->closing, __ATOMIC_ACQUIRE) != 0;
+}
+
+HANDLE k32_pseudoconsole_handle(HPCON h)
+{
+    PseudoConsole *p = (PseudoConsole *)h;
+    return p && p->magic == PSEUDO_MAGIC && !pseudo_closing(p) ? p->console : 0;
+}
+
+static DWORD WINAPI pseudo_input_thread(LPVOID arg)
+{
+    PseudoConsole *p = arg;
+    char buf[4096];
+    DWORD got;
+    while (!pseudo_closing(p) && ReadFile(p->input, buf, sizeof(buf), &got, 0) && got) {
+        if (pseudo_closing(p)) break;
+        NTSTATUS s = NtNovaConsole(p->in_console, CON_PSEUDO_INPUT, buf, got, 0);
+        if (!NT_SUCCESS(s)) break;
+    }
+    NtNovaConsole(p->in_console, CON_PSEUDO_EOF, 0, 0, 0);
+    CloseHandle(p->input);
+    CloseHandle(p->in_console);
+    pseudo_release(p);
+    return 0;
+}
+
+static DWORD WINAPI pseudo_output_thread(LPVOID arg)
+{
+    PseudoConsole *p = arg;
+    char buf[4096];
+    for (;;) {
+        ULONG got = 0;
+        NTSTATUS s = NtNovaConsole(p->out_console, CON_PSEUDO_OUTPUT, buf, sizeof(buf), &got);
+        if (!NT_SUCCESS(s)) break;
+        if (!got) {
+            if (pseudo_closing(p)) break;
+            Sleep(5);
+            continue;
+        }
+        DWORD put = 0;
+        if (!WriteFile(p->output, buf, got, &put, 0) || put != got) break;
+    }
+    CloseHandle(p->output);
+    CloseHandle(p->out_console);
+    pseudo_release(p);
+    return 0;
+}
+
+static void pseudo_close_handles(PseudoConsole *p)
+{
+    if (p->console) CloseHandle(p->console);
+    if (p->in_console) CloseHandle(p->in_console);
+    if (p->out_console) CloseHandle(p->out_console);
+    if (p->input) CloseHandle(p->input);
+    if (p->output) CloseHandle(p->output);
+}
+
+K32 HRESULT WINAPI CreatePseudoConsole(COORD size, HANDLE in, HANDLE out, DWORD flags, HPCON *pc)
+{
+    if (pc) *pc = 0;
+    if (!pc || size.X <= 0 || size.Y <= 0 || (flags & ~1u) ||
+        GetFileType(in) != FILE_TYPE_PIPE || GetFileType(out) != FILE_TYPE_PIPE)
+        return E_INVALIDARG;
+
+    ULONG packed = (USHORT)size.X | (ULONG)(USHORT)size.Y << 16;
+    HANDLE console = 0;
+    NTSTATUS s = NtNovaConsole(0, CON_PSEUDO_CREATE, &console, packed, 0);
+    if (!NT_SUCCESS(s)) return HRESULT_FROM_WIN32(RtlNtStatusToDosError(s));
+
+    PseudoConsole *p = zalloc(sizeof(*p));
+    if (!p) { CloseHandle(console); return E_OUTOFMEMORY; }
+    p->magic = PSEUDO_MAGIC;
+    p->refs = 1;
+    p->console = console;
+    if (!DuplicateHandle(GetCurrentProcess(), console, GetCurrentProcess(), &p->in_console, 0, FALSE, 2) ||
+        !DuplicateHandle(GetCurrentProcess(), console, GetCurrentProcess(), &p->out_console, 0, FALSE, 2) ||
+        !DuplicateHandle(GetCurrentProcess(), in, GetCurrentProcess(), &p->input, 0, FALSE, 2) ||
+        !DuplicateHandle(GetCurrentProcess(), out, GetCurrentProcess(), &p->output, 0, FALSE, 2)) {
+        DWORD error = GetLastError();
+        pseudo_close_handles(p);
+        zfree(p);
+        return HRESULT_FROM_WIN32(error);
+    }
+
+    __atomic_add_fetch(&p->refs, 1, __ATOMIC_ACQ_REL);
+    HANDLE t = CreateThread(0, 0, pseudo_output_thread, p, 0, 0);
+    if (!t) {
+        DWORD error = GetLastError();
+        pseudo_release(p);
+        pseudo_close_handles(p);
+        zfree(p);
+        return HRESULT_FROM_WIN32(error);
+    }
+    CloseHandle(t);
+
+    __atomic_add_fetch(&p->refs, 1, __ATOMIC_ACQ_REL);
+    t = CreateThread(0, 0, pseudo_input_thread, p, 0, 0);
+    if (!t) {
+        DWORD error = GetLastError();
+        pseudo_release(p);
+        __atomic_store_n(&p->closing, 1, __ATOMIC_RELEASE);
+        if (p->input) { CloseHandle(p->input); p->input = 0; }
+        if (p->in_console) { CloseHandle(p->in_console); p->in_console = 0; }
+        if (p->console) { CloseHandle(p->console); p->console = 0; }
+        pseudo_release(p);
+        return HRESULT_FROM_WIN32(error);
+    }
+    CloseHandle(t);
+    *pc = (HPCON)p;
+    return S_OK;
+}
+
+K32 HRESULT WINAPI ResizePseudoConsole(HPCON h, COORD size)
+{
+    HANDLE console = k32_pseudoconsole_handle(h);
+    if (!console || size.X <= 0 || size.Y <= 0) return E_INVALIDARG;
+    ULONG packed = (USHORT)size.X | (ULONG)(USHORT)size.Y << 16;
+    NTSTATUS s = NtNovaConsole(console, CON_PSEUDO_RESIZE, 0, packed, 0);
+    return NT_SUCCESS(s) ? S_OK : HRESULT_FROM_WIN32(RtlNtStatusToDosError(s));
+}
+
+K32 VOID WINAPI ClosePseudoConsole(HPCON h)
+{
+    PseudoConsole *p = (PseudoConsole *)h;
+    if (!p || p->magic != PSEUDO_MAGIC || __atomic_exchange_n(&p->closing, 1, __ATOMIC_ACQ_REL)) return;
+    HANDLE console = p->console;
+    p->console = 0;
+    if (console) NtNovaConsole(console, CON_PSEUDO_EOF, 0, 0, 0);
+    if (console) CloseHandle(console);
+    pseudo_release(p);
+}
 K32 DWORD WINAPI GetConsoleProcessList(LPDWORD list, DWORD n)
 {
     DWORD count = 0;

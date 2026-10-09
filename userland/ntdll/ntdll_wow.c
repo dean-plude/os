@@ -545,8 +545,8 @@ NTSTATUS NTAPI NtUnmapViewOfSection(HANDLE proc, PVOID base) { return SC(NtUnmap
  * ----------------------------------------------------------------------- */
 NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const char *dir, NOVA_CREATE_PROCESS *io)
 {
-    U64 x[14];         /* { StdHandle[3], Process, Thread, Pid, Tid, Flags, Environment, EnvironmentSize, RuntimeData, RuntimeDataSize,
-                          HandleList, HandleCount } */
+    U64 x[15];         /* { StdHandle[3], Process, Thread, Pid, Tid, Flags, Environment, EnvironmentSize, RuntimeData, RuntimeDataSize,
+                          HandleList, HandleCount, PseudoConsole } */
     U64 list[256];     /* (the handle list widened to 64-bit handles) */
     if ((io->Flags & 16) && io->HandleCount > 256) return 0xC000000D;   /* STATUS_INVALID_PARAMETER */
     for (ULONG64 i = 0; (io->Flags & 16) && i < io->HandleCount; i++) list[i] = H(io->HandleList[i]);
@@ -556,6 +556,7 @@ NTSTATUS NTAPI NtNovaCreateProcess(const char *image, const char *cmdline, const
     x[5] = io->ProcessId; x[6] = io->ThreadId;
     x[7] = io->Flags; x[8] = P(io->Environment); x[9] = io->EnvironmentSize;
     x[10] = P(io->RuntimeData); x[11] = io->RuntimeDataSize;
+    x[14] = H(io->PseudoConsole);
     NTSTATUS s = SC(NtNovaCreateProcess, P(image), P(cmdline), P(dir), P(x));
     for (int i = 0; i < 3; i++) io->StdHandle[i] = (HANDLE)(ULONG_PTR)x[i];
     io->Process = (HANDLE)(ULONG_PTR)x[3]; io->Thread = (HANDLE)(ULONG_PTR)x[4];
