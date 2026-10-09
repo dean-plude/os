@@ -737,6 +737,7 @@ enum js_OpCode
 
 	OP_GETLOCAL,	/* -K- <value> */
 	OP_SETLOCAL,	/* <value> -K- <value> */
+	OP_INITLOCAL,	/* <value> -K- <value> */
 	OP_DELLOCAL,	/* -K- false */
 
 	OP_HASVAR,	/* -S- ( <value> | undefined ) */

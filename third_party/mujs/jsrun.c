@@ -1060,6 +1060,15 @@ static void js_initvar(js_State *J, const char *name, int idx)
 	jsR_defproperty(J, J->E->variables, name, JS_DONTENUM | JS_DONTCONF, stackidx(J, idx), NULL, NULL, 0);
 }
 
+static void js_initvarreadonly(js_State *J, const char *name, int idx)
+{
+	js_Property *ref = jsV_setproperty(J, J->E->variables, name);
+	if (ref) {
+		ref->value = *stackidx(J, idx);
+		ref->atts |= JS_READONLY | JS_DONTENUM | JS_DONTCONF;
+	}
+}
+
 static int js_hasvar(js_State *J, const char *name)
 {
 	js_Environment *E = J->E;
@@ -1646,6 +1655,10 @@ static void jsR_run(js_State *J, js_Function *F)
 			} else {
 				js_setvar(J, VT[*pc++]);
 			}
+			break;
+
+		case OP_INITLOCAL:
+			js_initvarreadonly(J, VT[*pc++], -1);
 			break;
 
 		case OP_DELLOCAL:
