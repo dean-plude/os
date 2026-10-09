@@ -32,6 +32,7 @@ enum item_type {
 struct package_length {
     uacpi_u32 begin;
     uacpi_u32 end;
+    uacpi_bool valid;
 };
 
 struct item {
@@ -293,9 +294,41 @@ static void *call_frame_cursor(struct call_frame *frame)
     return frame->method->code + frame->code_offset;
 }
 
+static uacpi_u32 call_frame_code_end(struct call_frame *frame)
+{
+    uacpi_u32 end = frame->method->size;
+    struct code_block *block;
+    uacpi_size i;
+
+    block = code_block_array_last(&frame->code_blocks);
+    if (block && block->end < end)
+        end = block->end;
+
+    for (i = 0; i < op_context_array_size(&frame->pending_ops); ++i) {
+        struct op_context *op_ctx = op_context_array_at(&frame->pending_ops, i);
+        struct item *item;
+
+        if (op_ctx->tracked_pkg_idx == 0 ||
+            op_ctx->tracked_pkg_idx > item_array_size(&op_ctx->items))
+            continue;
+
+        item = item_array_at(&op_ctx->items, op_ctx->tracked_pkg_idx - 1);
+        if (item->type == ITEM_PACKAGE_LENGTH && item->pkg.valid &&
+            item->pkg.end < end)
+            end = item->pkg.end;
+    }
+
+    return end;
+}
+
 static uacpi_size call_frame_code_bytes_left(struct call_frame *frame)
 {
-    return frame->method->size - frame->code_offset;
+    uacpi_u32 end = call_frame_code_end(frame);
+
+    if (frame->code_offset >= end)
+        return 0;
+
+    return end - frame->code_offset;
 }
 
 static uacpi_bool call_frame_has_code(struct call_frame *frame)
@@ -373,7 +406,8 @@ static uacpi_status name_string_to_path(
     uacpi_char *base_cursor, *cursor;
     uacpi_char prev_char;
 
-    bytes_left = frame->method->size - offset;
+    bytes_left = offset < call_frame_code_end(frame) ?
+                 call_frame_code_end(frame) - offset : 0;
     cursor = (uacpi_char*)frame->method->code + offset;
     base_cursor = cursor;
     namesegs = 0;
@@ -661,10 +695,8 @@ static uacpi_u8 peek_next_op(struct call_frame *frame, uacpi_aml_op *out_op)
     uacpi_size bytes_left;
     uacpi_u8 length = 0;
     uacpi_u8 *cursor;
-    struct code_block *block;
 
-    block = code_block_array_last(&frame->code_blocks);
-    bytes_left = block->end - frame->code_offset;
+    bytes_left = call_frame_code_bytes_left(frame);
     if (bytes_left == 0)
         return 0;
 
@@ -727,15 +759,14 @@ static uacpi_status handle_buffer(struct execution_context *ctx)
     struct op_context *op_ctx = ctx->cur_op_ctx;
 
     aml_offset = item_array_at(&op_ctx->items, 2)->immediate;
-    src = ctx->cur_frame->method->code;
-    src += aml_offset;
-
     pkg = &item_array_at(&op_ctx->items, 0)->pkg;
-    init_size = pkg->end - aml_offset;
-
-    // TODO: do package bounds checking at parse time
-    if (uacpi_unlikely(pkg->end > ctx->cur_frame->method->size))
+    if (uacpi_unlikely(!pkg->valid ||
+                       pkg->end > ctx->cur_frame->method->size ||
+                       aml_offset > pkg->end))
         return UACPI_STATUS_AML_BAD_ENCODING;
+
+    init_size = pkg->end - aml_offset;
+    src = ctx->cur_frame->method->code + aml_offset;
 
     declared_size = item_array_at(&op_ctx->items, 1)->obj;
 
@@ -771,6 +802,54 @@ static uacpi_status handle_buffer(struct execution_context *ctx)
     return UACPI_STATUS_OK;
 }
 
+static uacpi_bool is_valid_utf8(const uacpi_u8 *string, uacpi_size length)
+{
+    uacpi_size i = 0;
+
+    while (i < length) {
+        uacpi_u8 first = string[i++];
+        uacpi_u32 codepoint;
+        uacpi_u8 continuation_count;
+
+        if (first <= 0x7F)
+            continue;
+
+        if (first >= 0xC2 && first <= 0xDF) {
+            codepoint = first & 0x1F;
+            continuation_count = 1;
+        } else if (first >= 0xE0 && first <= 0xEF) {
+            codepoint = first & 0x0F;
+            continuation_count = 2;
+        } else if (first >= 0xF0 && first <= 0xF4) {
+            codepoint = first & 0x07;
+            continuation_count = 3;
+        } else {
+            return UACPI_FALSE;
+        }
+
+        if (length - i < continuation_count)
+            return UACPI_FALSE;
+
+        while (continuation_count--) {
+            uacpi_u8 next = string[i++];
+
+            if ((next & 0xC0) != 0x80)
+                return UACPI_FALSE;
+
+            codepoint = (codepoint << 6) | (next & 0x3F);
+        }
+
+        if (codepoint > 0x10FFFF ||
+            (codepoint >= 0xD800 && codepoint <= 0xDFFF) ||
+            (codepoint < 0x80 && first >= 0xC0) ||
+            (codepoint < 0x800 && first >= 0xE0) ||
+            (codepoint < 0x10000 && first >= 0xF0))
+            return UACPI_FALSE;
+    }
+
+    return UACPI_TRUE;
+}
+
 static uacpi_status handle_string(struct execution_context *ctx)
 {
     struct call_frame *frame = ctx->cur_frame;
@@ -782,11 +861,13 @@ static uacpi_status handle_string(struct execution_context *ctx)
     obj = item_array_last(&ctx->cur_op_ctx->items)->obj;
     string = call_frame_cursor(frame);
 
-    // TODO: sanitize string for valid UTF-8
     max_bytes = call_frame_code_bytes_left(frame);
     length = uacpi_strnlen(string, max_bytes);
 
     if (uacpi_unlikely((length == max_bytes) || (string[length++] != 0x00)))
+        return UACPI_STATUS_AML_BAD_ENCODING;
+
+    if (uacpi_unlikely(!is_valid_utf8((uacpi_u8*)string, length - 1)))
         return UACPI_STATUS_AML_BAD_ENCODING;
 
     obj->buffer->text = uacpi_kernel_alloc(length);
@@ -1629,6 +1710,42 @@ static uacpi_u32 get_field_length(struct item *item)
     return pkg->end - pkg->begin;
 }
 
+static uacpi_bool field_offsets_can_advance(
+    uacpi_size bit_offset, uacpi_u32 pin_offset, uacpi_u32 length
+)
+{
+    uacpi_size max_size = ~(uacpi_size)0;
+    uacpi_u32 max_u32 = ~(uacpi_u32)0;
+
+    return bit_offset / 8 <= max_u32 &&
+           length <= max_size - bit_offset &&
+           length <= max_u32 - pin_offset;
+}
+
+static uacpi_u8 choose_any_access_width(
+    uacpi_size bit_offset, uacpi_u32 bit_length
+)
+{
+    static const uacpi_u8 widths[] = { 1, 2, 4, 8 };
+    uacpi_u64 best_access_count = ~(uacpi_u64)0;
+    uacpi_u8 best_width = 1;
+    uacpi_size i;
+
+    for (i = 0; i < UACPI_ARRAY_SIZE(widths); ++i) {
+        uacpi_u64 access_bits = (uacpi_u64)widths[i] * 8;
+        uacpi_u64 covered_bits = bit_offset % access_bits + bit_length;
+        uacpi_u64 access_count =
+            (covered_bits + access_bits - 1) / access_bits;
+
+        if (access_count < best_access_count) {
+            best_access_count = access_count;
+            best_width = widths[i];
+        }
+    }
+
+    return best_width;
+}
+
 struct field_specific_data {
     uacpi_namespace_node *region;
     struct uacpi_field_unit *field0;
@@ -1757,6 +1874,13 @@ static uacpi_status handle_create_field(struct execution_context *ctx)
             uacpi_field_unit *field;
 
             length = get_field_length(item_array_at(&op_ctx->items, i++));
+            if (uacpi_unlikely(!field_offsets_can_advance(
+                                   bit_offset, pin_offset, length))) {
+                uacpi_error("field '%.4s' offset or length overflows",
+                            item->node->name.text);
+                return UACPI_STATUS_AML_BAD_ENCODING;
+            }
+
             node = item->node;
 
             obj = item_array_at(&op_ctx->items, i++)->obj;
@@ -1779,8 +1903,9 @@ static uacpi_status handle_create_field(struct execution_context *ctx)
              */
             switch (access_type) {
             case 0:
-                 // TODO: optimize to calculate best access strategy
-                 UACPI_FALLTHROUGH;
+                field->access_width_bytes =
+                    choose_any_access_width(bit_offset, length);
+                break;
             case 1:
             case 5:
                 field->access_width_bytes = 1;
@@ -1873,6 +1998,12 @@ static uacpi_status handle_create_field(struct execution_context *ctx)
         // ReservedField := 0x00 PkgLength
         case 0x00:
             length = get_field_length(item_array_at(&op_ctx->items, i++));
+            if (uacpi_unlikely(!field_offsets_can_advance(
+                                   bit_offset, pin_offset, length))) {
+                uacpi_error("reserved field offset or length overflows");
+                return UACPI_STATUS_AML_BAD_ENCODING;
+            }
+
             bit_offset += length;
             pin_offset += length;
             break;
@@ -3353,16 +3484,6 @@ static uacpi_status handle_binary_logic(struct execution_context *ctx)
     case UACPI_AML_OP_LEqualOp:
     case UACPI_AML_OP_LLessOp:
     case UACPI_AML_OP_LGreaterOp:
-        // TODO: typecheck at parse time
-        if (lhs->type != rhs->type) {
-            uacpi_error(
-                "don't know how to do a logical comparison of '%s' and '%s'",
-                uacpi_object_type_to_string(lhs->type),
-                uacpi_object_type_to_string(rhs->type)
-            );
-            return UACPI_STATUS_AML_INCOMPATIBLE_OBJECT_TYPE;
-        }
-
         if (op == UACPI_AML_OP_LEqualOp)
             res = handle_logical_equality(lhs, rhs);
         else
@@ -3464,9 +3585,10 @@ static uacpi_status handle_match(struct execution_context *ctx)
 static uacpi_status parse_package_length(struct call_frame *frame,
                                          struct package_length *out_pkg)
 {
-    uacpi_u32 left, size;
+    uacpi_u32 left, size, end;
     uacpi_u8 *data, marker_length;
 
+    out_pkg->valid = UACPI_FALSE;
     out_pkg->begin = frame->code_offset;
     marker_length = 1;
 
@@ -3500,14 +3622,19 @@ static uacpi_status parse_package_length(struct call_frame *frame,
 
     frame->code_offset += marker_length;
 
-    out_pkg->end = out_pkg->begin + size;
-    if (uacpi_unlikely(out_pkg->end < out_pkg->begin)) {
+    end = out_pkg->begin + size;
+    if (uacpi_unlikely(end < out_pkg->begin ||
+                       end < frame->code_offset ||
+                       end > call_frame_code_end(frame))) {
         uacpi_error(
-            "PkgLength overflow: start=%u, size=%u", out_pkg->begin, size
+            "invalid PkgLength bounds: start=%u, size=%u, end=%u",
+            out_pkg->begin, size, end
         );
         return UACPI_STATUS_AML_BAD_ENCODING;
     }
 
+    out_pkg->end = end;
+    out_pkg->valid = UACPI_TRUE;
     return UACPI_STATUS_OK;
 }
 
@@ -5392,6 +5519,8 @@ static uacpi_status exec_op(struct execution_context *ctx)
                 item->obj = uacpi_create_object(type);
                 if (uacpi_unlikely(item->obj == UACPI_NULL))
                     return UACPI_STATUS_OUT_OF_MEMORY;
+            } else if (item->type == ITEM_PACKAGE_LENGTH) {
+                item->pkg.valid = UACPI_FALSE;
             } else {
                 uacpi_memzero(&item->immediate, sizeof(item->immediate));
             }
@@ -5735,6 +5864,24 @@ static uacpi_status exec_op(struct execution_context *ctx)
         case UACPI_PARSE_OP_INVOKE_HANDLER: {
             uacpi_aml_op code = op_ctx->op->code;
             uacpi_u8 idx;
+
+            if (code == UACPI_AML_OP_LEqualOp ||
+                code == UACPI_AML_OP_LLessOp ||
+                code == UACPI_AML_OP_LGreaterOp) {
+                uacpi_object *lhs = item_array_at(&op_ctx->items, 0)->obj;
+                uacpi_object *rhs = item_array_at(&op_ctx->items, 1)->obj;
+
+                if (uacpi_unlikely(lhs->type != rhs->type)) {
+                    uacpi_error(
+                        "don't know how to do a logical comparison of "
+                        "'%s' and '%s'",
+                        uacpi_object_type_to_string(lhs->type),
+                        uacpi_object_type_to_string(rhs->type)
+                    );
+                    ret = UACPI_STATUS_AML_INCOMPATIBLE_OBJECT_TYPE;
+                    break;
+                }
+            }
 
             if (code <= 0xFF)
                 idx = handler_idx_of_op[code];
