@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# build.sh — One-shot build script for NovaOS Phase 1
+# build.sh — One-shot build script for NovaOS
 #
-# This script detects the available tools, configures CMake, and builds
-# the bootloader and kernel.
+# This script configures the root CMake project and builds its default targets.
 #
 # Usage: ./scripts/build.sh [options]
 #   --clean       Clean the build directory before building
-#   --debug       Enable debug symbols and verbose output (default: on)
+#   --debug       Build with debug settings (default)
 #   --release     Optimize for speed (disables debug symbols)
 #   --jobs N      Parallel build jobs (default: nproc)
 #   --no-disk     Skip disk image creation
@@ -23,7 +22,7 @@ CLEAN=0
 BUILD_TYPE="Debug"
 JOBS=$(nproc 2>/dev/null || echo 4)
 NO_DISK=0
-VERBOSE=""
+BUILD_ARGS=()
 
 # ---- Parse arguments ----
 while [[ $# -gt 0 ]]; do
@@ -33,7 +32,7 @@ while [[ $# -gt 0 ]]; do
         --release)  BUILD_TYPE="Release" ;;
         --jobs)     JOBS="$2"; shift ;;
         --no-disk)  NO_DISK=1 ;;
-        --verbose)  VERBOSE="--verbose" ;;
+        --verbose)  BUILD_ARGS+=(--verbose) ;;
         -h|--help)
             echo "Usage: $0 [--clean] [--debug|--release] [--jobs N] [--no-disk]"
             exit 0
@@ -48,7 +47,7 @@ done
 
 # ---- Banner ----
 echo "================================================================"
-echo "  NovaOS Phase 1 Build"
+echo "  NovaOS Build"
 echo "  Build type: $BUILD_TYPE"
 echo "  Build dir:  $BUILD_DIR"
 echo "================================================================"
@@ -103,14 +102,6 @@ if [ $MISSING -ne 0 ]; then
 fi
 echo ""
 
-# ---- Optional tools ----
-echo "Optional tools:"
-command -v qemu-system-x86_64 &>/dev/null && echo "  OK: qemu-system-x86_64" \
-    || echo "  SKIP: qemu-system-x86_64 (install for running: sudo apt install qemu-system-x86)"
-command -v mtools &>/dev/null && echo "  OK: mtools" \
-    || echo "  SKIP: mtools (install for disk image: sudo apt install mtools dosfstools)"
-echo ""
-
 # ---- Clean ----
 if [ $CLEAN -eq 1 ]; then
     echo "Cleaning build directory..."
@@ -121,23 +112,26 @@ mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 # ---- Configure ----
+GENERATOR="Unix Makefiles"
+if command -v ninja &>/dev/null; then
+    GENERATOR="Ninja"
+fi
+
 echo "Configuring with CMake..."
-cmake "$ROOT_DIR" \
+cmake -S "$ROOT_DIR" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DNOVA_BUILD_TYPE="$BUILD_TYPE" \
-    -G "Unix Makefiles" \
-    2>&1 | grep -v "^--" || true
+    -G "$GENERATOR"
 
 echo ""
 
 # ---- Build ----
-BUILD_TARGETS="kernel_build bootloader_build"
-if [ $NO_DISK -eq 0 ] && command -v mtools &>/dev/null && command -v mkdosfs &>/dev/null; then
-    BUILD_TARGETS="$BUILD_TARGETS disk_image"
+if [ "$NO_DISK" -eq 1 ]; then
+    BUILD_ARGS+=(--target copy_kernel copy_bootloader)
 fi
 
-echo "Building: $BUILD_TARGETS"
-make -j"$JOBS" $VERBOSE $BUILD_TARGETS
+echo "Building with $GENERATOR..."
+cmake --build "$BUILD_DIR" --parallel "$JOBS" "${BUILD_ARGS[@]}"
 
 # ---- Results ----
 echo ""
