@@ -346,18 +346,18 @@ static void handle_census(UmProcess *p, bool full)
     static const char *const kinds[] = { "free", "files", "console in", "console out", "folders", "objects", "null" };
     static const char *const types[] = { "?", "events", "mutants", "semaphores", "threads", "sockets", "windows",
                                          "processes", "keys", "sections", "pipes", "directories", "symlinks",
-                                         "timers", "audio", "consoles", "tokens", "gpu", "afd", "keyed events" };
+                                         "timers", "audio", "consoles", "tokens", "gpu", "afd", "keyed events", "pseudo consoles" };
     if (full ? p->handles_full_told : p->handles_many_told) return;
     if (full) p->handles_full_told = true;
     else p->handles_many_told = true;
-    int kind[7] = { 0 }, type[20] = { 0 }, ended_threads = 0, ended_procs = 0, named = 0;
+    int kind[7] = { 0 }, type[21] = { 0 }, ended_threads = 0, ended_procs = 0, named = 0;
     for (int i = 0; i < UM_MAX_HANDLES; i++) {
         UmHandle *h = &p->handles[i];
         unsigned k = h->kind;
         if (k < 7) kind[k]++;
         if (k != H_OBJECT || !h->obj) continue;
         UmObject *o = h->obj;
-        type[o->type < 20 ? o->type : 0]++;
+        type[o->type < 21 ? o->type : 0]++;
         if (o->named) named++;
         if (o->type == UO_THREAD && o->signaled) ended_threads++;
         if (o->type == UO_PROCESS && o->signaled) ended_procs++;
@@ -368,7 +368,7 @@ static void handle_census(UmProcess *p, bool full)
     for (int k = 1; k < 7; k++)
         if (kind[k] && k != H_OBJECT && n < (int)sizeof(line))
             n += ksnprintf(line + n, sizeof(line) - n, " %d %s,", kind[k], kinds[k]);
-    for (int t = 0; t < 20; t++)
+    for (int t = 0; t < 21; t++)
         if (type[t] && n < (int)sizeof(line))
             n += ksnprintf(line + n, sizeof(line) - n, " %d %s,", type[t], types[t]);
     if (n < (int)sizeof(line))
@@ -2238,7 +2238,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
 {
     UmProcess *p = UmCurrent();
     char image[RAMFS_PATH_MAX], dir[RAMFS_PATH_MAX], *cmd = NULL;
-    UINT64 io[14];
+    UINT64 io[15];
     if (!get_str(a1, image, sizeof(image)) || (a3 && !get_str(a3, dir, sizeof(dir))) ||
         !NT_SUCCESS(CopyFromUser(io, (const void *)(uintptr_t)a4, sizeof(io))))
         return UM_STATUS_ACCESS_VIOLATION;
@@ -2284,6 +2284,11 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     if (!listed_ok) { kfree(cmd); kfree(list); kfree(rt); kfree(env); return ST_INVALID_PARAMETER; }
     UmHandle *inh = (flags & NCP_INHERIT) ? kzalloc(sizeof(UmHandle) * UM_MAX_HANDLES) : NULL;
     if ((flags & NCP_INHERIT) && !inh) { kfree(cmd); kfree(list); kfree(rt); kfree(env); return ST_NO_MEMORY; }
+    UmObject *pseudo = io[14] ? um_handle_object(p, io[14], UO_PSEUDO_CONSOLE) : NULL;
+    if (io[14] && !pseudo) {
+        kfree(inh); kfree(cmd); kfree(list); kfree(rt); kfree(env);
+        return ST_INVALID_HANDLE;
+    }
 
     const char *ip = image, *dp = dir;
     if ((ip[0] | 0x20) == 'c' && ip[1] == ':') ip += 2;
@@ -2301,9 +2306,9 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     /* Map the images first, letting go of the desktop lock meanwhile (the
      * program stays pinned, the folder referenced) */
     bool pinned = false;
-    UmConsole *con = (flags & NCP_NO_CONSOLE) ? NULL : p->con;
+    UmConsole *con = pseudo ? (UmConsole *)pseudo->ptr : (flags & NCP_NO_CONSOLE) ? NULL : p->con;
     int con_wnd = 0;                                /* CREATE_NEW_CONSOLE: console programs get a window */
-    if (!st && (flags & NCP_NEW_CONSOLE) && !(flags & NCP_NO_CONSOLE) && um_pe_subsystem(exe) == 3) {
+    if (!st && !pseudo && (flags & NCP_NEW_CONSOLE) && !(flags & NCP_NO_CONSOLE) && um_pe_subsystem(exe) == 3) {
         bkl_acquire();                              /* (the Terminal's state: under the big lock) */
         con_wnd = TerminalConsoleNew(image, cwd, &con);
         bkl_release();
@@ -2356,6 +2361,7 @@ static UINT64 sys_nova_create_process(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4
     if (pinned) { RamfsUnpin(exe); RamfsUnref(cwd); }
     if (con_wnd && st) { bkl_acquire(); TerminalConsoleAdopt(con_wnd, NULL); bkl_release(); }   /* not started: close the window */
     DesktopUnlock();
+    if (pseudo) um_ob_unref(pseudo);
     kfree(cmd);
     kfree(env);
     kfree(list);
@@ -2929,11 +2935,82 @@ static bool clip_name(UINT64 ptr, char *name)
  * many there are. */
 enum { CON_GET_MODE, CON_SET_MODE, CON_READ_INPUT, CON_PEEK_INPUT, CON_WRITE_INPUT,
        CON_COUNT_INPUT, CON_FLUSH_INPUT, CON_GET_SIZE, CON_PROCESS_LIST,
-       CON_SET_CURSOR, CON_GET_CURSOR_INFO, CON_SET_CURSOR_INFO };
+       CON_SET_CURSOR, CON_GET_CURSOR_INFO, CON_SET_CURSOR_INFO,
+       CON_PSEUDO_CREATE, CON_PSEUDO_RESIZE, CON_PSEUDO_INPUT, CON_PSEUDO_OUTPUT, CON_PSEUDO_EOF };
+
+static void pseudo_console_destroy(UmObject *o)
+{
+    UmConsoleRelease((UmConsole *)o->ptr);
+}
+
 static UINT64 sys_nova_console(UINT64 a1, UINT64 a2, UINT64 a3, UINT64 a4)
 {
     UmProcess *p = UmCurrent();
     UINT64 res_ptr = um_stack_arg(5);
+    if ((UINT32)a2 == CON_PSEUDO_CREATE) {
+        INT16 cols = (INT16)(UINT16)a4, rows = (INT16)(UINT16)(a4 >> 16);
+        if (a1 || !a3 || cols <= 0 || rows <= 0) return ST_INVALID_PARAMETER;
+        UmConsole *c = UmConsoleNew();
+        UmObject *o = c ? kzalloc(sizeof(*o)) : NULL;
+        if (!c || !o) {
+            if (c) UmConsoleRelease(c);
+            return ST_NO_MEMORY;
+        }
+        o->type = UO_PSEUDO_CONSOLE;
+        o->refs = 1;
+        o->ptr = c;
+        o->destroy = pseudo_console_destroy;
+        UmConsoleSetSize(c, cols, rows);
+        UINT64 hv = um_handle_new_object(p, o);
+        um_ob_unref(o);
+        if (!hv) return ST_TOO_MANY_HANDLES;
+        ULONG handle32 = (ULONG)hv;
+        if (!NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, &handle32, sizeof(handle32)))) {
+            um_close_handle(hv);
+            return UM_STATUS_ACCESS_VIOLATION;
+        }
+        return ST_SUCCESS;
+    }
+    if ((UINT32)a2 == CON_PSEUDO_RESIZE || (UINT32)a2 == CON_PSEUDO_INPUT ||
+        (UINT32)a2 == CON_PSEUDO_OUTPUT || (UINT32)a2 == CON_PSEUDO_EOF) {
+        UmObject *o = um_handle_object(p, a1, UO_PSEUDO_CONSOLE);
+        if (!o) return ST_INVALID_HANDLE;
+        UmConsole *c = (UmConsole *)o->ptr;
+        UINT32 result = 0;
+        if ((UINT32)a2 == CON_PSEUDO_RESIZE) {
+            INT16 cols = (INT16)(UINT16)a4, rows = (INT16)(UINT16)(a4 >> 16);
+            if (cols <= 0 || rows <= 0) { um_ob_unref(o); return ST_INVALID_PARAMETER; }
+            UmConsoleSetSize(c, cols, rows);
+        } else if ((UINT32)a2 == CON_PSEUDO_EOF) {
+            UmConsoleEof(c);
+        } else if ((UINT32)a2 == CON_PSEUDO_INPUT) {
+            char buf[512];
+            UINT32 left = (UINT32)a4;
+            UINT64 src = a3;
+            while (left) {
+                UINT32 n = left < sizeof(buf) ? left : sizeof(buf);
+                if (!NT_SUCCESS(CopyFromUser(buf, (const void *)(uintptr_t)src, n))) {
+                    um_ob_unref(o);
+                    return UM_STATUS_ACCESS_VIOLATION;
+                }
+                UmConsoleWrite(c, buf, (int)n);
+                src += n;
+                left -= n;
+            }
+            result = (UINT32)a4;
+        } else {
+            char buf[4096];
+            UINT32 cap = (UINT32)a4 < sizeof(buf) ? (UINT32)a4 : sizeof(buf);
+            result = (UINT32)UmConsoleRead(c, buf, (int)cap);
+            if (result && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)a3, buf, result))) {
+                um_ob_unref(o);
+                return UM_STATUS_ACCESS_VIOLATION;
+            }
+        }
+        um_ob_unref(o);
+        return res_ptr && !NT_SUCCESS(CopyToUser((void *)(uintptr_t)res_ptr, &result, 4)) ?
+               UM_STATUS_ACCESS_VIOLATION : ST_SUCCESS;
+    }
     if ((UINT32)a2 == CON_PROCESS_LIST) {
         UINT32 ids[UM_MAX_PROCS];
         int n = um_console_pids(p->con, ids, UM_MAX_PROCS);

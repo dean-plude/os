@@ -316,6 +316,103 @@ static void attributes(void)
     CloseHandle(s);
 }
 
+static int pseudo_child(void)
+{
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE), out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode, got, written;
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    char line[32];
+    if (!GetConsoleMode(in, &mode) || !GetConsoleMode(out, &mode) ||
+        !GetConsoleScreenBufferInfo(out, &info) || info.dwSize.X != 100 || info.dwSize.Y != 40)
+        return 1;
+    if (!ReadFile(in, line, sizeof(line), &got, 0) || got != 9 || memcmp(line, "payload\r\n", 9))
+        return 2;
+    if (!ReadFile(in, line, sizeof(line), &got, 0) || got != 0) return 3;
+    return WriteConsoleA(out, "pseudo-console-ok\n", 18, &written, 0) && written == 18 ? 0 : 4;
+}
+
+static void pseudo_console(void)
+{
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), 0, TRUE };
+    HANDLE in_read = 0, in_write = 0, out_read = 0, out_write = 0;
+    BOOL pipes = CreatePipe(&in_read, &in_write, &sa, 0) && CreatePipe(&out_read, &out_write, &sa, 0);
+    check(pipes, "CreatePipe for pseudo-console");
+    if (!pipes) {
+        if (in_read) CloseHandle(in_read);
+        if (in_write) CloseHandle(in_write);
+        if (out_read) CloseHandle(out_read);
+        if (out_write) CloseHandle(out_write);
+        return;
+    }
+
+    COORD size = { 80, 25 };
+    HPCON pc = 0;
+    HRESULT hr = CreatePseudoConsole(size, in_read, out_write, 0, &pc);
+    check(hr == S_OK && pc != 0, "CreatePseudoConsole");
+    CloseHandle(in_read);
+    CloseHandle(out_write);
+    if (hr != S_OK || !pc) {
+        CloseHandle(in_write);
+        CloseHandle(out_read);
+        return;
+    }
+    size.X = 100; size.Y = 40;
+    check(ResizePseudoConsole(pc, size) == S_OK, "ResizePseudoConsole");
+    size.X = 0;
+    check(ResizePseudoConsole(pc, size) == E_INVALIDARG, "ResizePseudoConsole rejects an empty size");
+
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(0, 1, 0, &attr_size);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs = HeapAlloc(GetProcessHeap(), 0, attr_size);
+    BOOL initialized = attrs && InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size);
+    check(initialized, "InitializeProcThreadAttributeList");
+    if (!initialized) {
+        if (attrs) HeapFree(GetProcessHeap(), 0, attrs);
+        ClosePseudoConsole(pc);
+        CloseHandle(in_write); CloseHandle(out_read);
+        return;
+    }
+    BOOL updated = UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, pc, sizeof(pc), 0, 0);
+    check(updated, "set PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE");
+    if (!updated) {
+        ClosePseudoConsole(pc);
+        CloseHandle(in_write); CloseHandle(out_read);
+        DeleteProcThreadAttributeList(attrs);
+        HeapFree(GetProcessHeap(), 0, attrs);
+        return;
+    }
+
+    STARTUPINFOEXA si;
+    memset(&si, 0, sizeof(si));
+    si.StartupInfo.cb = sizeof(si);
+    si.lpAttributeList = attrs;
+    PROCESS_INFORMATION pi;
+    char cl[MAX_PATH + 32];
+    snprintf(cl, sizeof(cl), "\"%s\" pseudo-child", g_self);
+    BOOL started = CreateProcessA(0, cl, 0, 0, FALSE, EXTENDED_STARTUPINFO_PRESENT, 0, 0,
+                                  (LPSTARTUPINFOA)&si, &pi);
+    check(started, "CreateProcess with a pseudo-console attribute");
+    if (started) {
+        DWORD n, code = 99;
+        check(WriteFile(in_write, "payload\n", 8, &n, 0) && n == 8, "write pseudo-console input");
+        CloseHandle(in_write);
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        GetExitCodeProcess(pi.hProcess, &code);
+        check(code == 0, "child receives console input and size");
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    } else {
+        CloseHandle(in_write);
+    }
+    ClosePseudoConsole(pc);
+    char buf[128];
+    read_all(out_read, buf, sizeof(buf));
+    CloseHandle(out_read);
+    check(started && !strcmp(buf, "pseudo-console-ok\n"), "pseudo-console output reaches its host pipe");
+    DeleteProcThreadAttributeList(attrs);
+    HeapFree(GetProcessHeap(), 0, attrs);
+}
+
 static VOID WINAPI done_routine(DWORD err, DWORD bytes, LPOVERLAPPED ov) { ov->hEvent = (HANDLE)(ULONG_PTR)(0x1000 + bytes + err); }
 
 static void overlapped(void)
@@ -383,6 +480,7 @@ int main(int argc, char **argv)
         while ((ch = getchar()) != EOF) putchar(toupper(ch));
         return 0;
     }
+    if (argc > 1 && !strcmp(argv[1], "pseudo-child")) return pseudo_child();
     if (argc > 2 && !strcmp(argv[1], "attrs")) return attrs_child((DWORD)strtoul(argv[2], 0, 10));
     if (argc > 2 && !strcmp(argv[1], "write")) {
         HANDLE h = (HANDLE)(ULONG_PTR)_strtoui64(argv[2], 0, 10);
@@ -395,6 +493,7 @@ int main(int argc, char **argv)
     crt();
     named();
     attributes();
+    pseudo_console();
     overlapped();
     printf("pipetest: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail != 0;
