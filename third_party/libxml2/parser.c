@@ -4453,14 +4453,24 @@ xmlParseAttValueInternal(xmlParserCtxtPtr ctxt, int *attlen, int *alloc,
             if (name == NULL) {
                 /*
                  * Probably a literal '&' which wasn't escaped.
-                 * TODO: Handle gracefully in recovery mode.
                  */
+                if (ctxt->recovery) {
+                    xmlSBufAddCString(&buf, "&", 1);
+                    inSpace = 0;
+                }
                 continue;
             }
 
             ent = xmlLookupGeneralEntity(ctxt, name, /* isAttr */ 1);
-            if (ent == NULL)
+            if (ent == NULL) {
+                if (ctxt->recovery) {
+                    xmlSBufAddCString(&buf, "&", 1);
+                    xmlSBufAddString(&buf, name, xmlStrlen(name));
+                    xmlSBufAddCString(&buf, ";", 1);
+                    inSpace = 0;
+                }
                 continue;
+            }
 
             if (ent->etype == XML_INTERNAL_PREDEFINED_ENTITY) {
                 if ((ent->content[0] == '&') && (!replaceEntities))
@@ -14109,7 +14119,7 @@ xmlCtxtReadMemory(xmlParserCtxtPtr ctxt, const char *buffer, int size,
 {
     xmlParserInputPtr input;
 
-    if ((ctxt == NULL) || (size < 0))
+    if ((ctxt == NULL) || (buffer == NULL) || (size < 0))
         return(NULL);
 
     xmlCtxtReset(ctxt);
@@ -14200,4 +14210,3 @@ xmlCtxtReadIO(xmlParserCtxtPtr ctxt, xmlInputReadCallback ioread,
 
     return(xmlCtxtParseDocument(ctxt, input));
 }
-
