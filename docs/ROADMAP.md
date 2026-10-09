@@ -15,26 +15,24 @@ loader semantics, and the drivers they expect.
 
 ---
 
-## Where we are (Phases 1–14, done)
+## Where we are (Phase 22: preparing the first release)
 
-| Phase | What it delivered | Proof |
-|-------|-------------------|-------|
-| 1–6 | UEFI boot, memory, interrupts, scheduler; the NT executive (Ob, Ps, Se, Cm, Io), syscall dispatch, per-process page tables, PEB/TEB | Boots under OVMF |
-| 7–8 | Software GDI, window manager, Windows 11-style desktop; PS/2 input; built-in apps; e1000 networking, lwIP, HTTP/1.1, HTTPS (Mbed TLS) | Interactive desktop; `curl https://...` |
-| 9 | Real PE32+ programs in ring 3 on NovaOS's own `ntdll`, `kernel32`, `msvcrt`, `ws2_32`, `user32`, `gdi32`: threads, TLS, SEH, `DllMain`, sockets, windows | Self-tests; Win32 sample programs |
-| 9.5 | The NetSurf browser built from source as a Windows program | Browses HTTP and HTTPS sites with JavaScript |
-| 10 | UCRT and C++ exceptions, advapi32, shell32, COM, the registry, AHCI and FAT with drive C: saved to disk | Unmodified ripgrep, fd, jq, fzf |
-| 11 | SMP: every core runs threads, per-core run queues, fine-grained locks | `cpus.exe` ~3.7× on 4 cores |
-| 12 | A real Win32 window system in user32, comctl32, dialogs, menus, drag and drop, kernel sections; the App Store; Windows Installer; installing NovaOS on a disk | Unmodified 7-Zip installs and runs |
-| 13 | WoW64: 32-bit programs in compatibility mode with a SysWOW64 userland; `.lnk` shortcuts | NSIS installers, 7-Zip self-extractors |
-| 14 | Pipes and overlapped I/O, handle inheritance, `cmd.exe`, the shared clipboard, the MSYS2 runtime, JIT support in the loader and unwinder | MinGit (clone/fetch/push), Java 21, .NET 10, Node.js 24, Python 3.14 |
+| Area | Current state | Evidence |
+|------|---------------|----------|
+| System | UEFI boot, x64 and x86 Windows programs, SMP, an interactive desktop, disk installation and live USB boot | QEMU/OVMF CI and self-tests |
+| Applications | Unmodified command-line tools, runtimes, installers, browsers, media apps, Qt/GTK programs and games run to tested milestones | Nightly app corpus and per-app compatibility notes |
+| Graphics and media | Mesa OpenGL/Vulkan with DXVK Direct3D; software rendering and QEMU virtio-GPU acceleration; sound, recording and media playback | `gltest`, `d3dtest`, and the app corpus |
+| Updates and release | Signed update channel and tag-based release workflow are in place | Release checks run on tagged commits |
+| Hardware | ThinkPad T14 Gen 4 is the reference machine; driver status and remaining checks are tracked separately | [Hardware checklist](hardware.md) |
 
-The details of each phase are in [HISTORY.md](HISTORY.md).
+The roadmap below tracks the remaining application, API, graphics and hardware
+work. The details of completed work are in [HISTORY.md](HISTORY.md).
 
-**Honest gaps:** the real Microsoft DLLs are not loaded (everything is
-NovaOS's own clean-room code); there is no GPU (3D runs on the CPU); file
-ACLs are kept only when drive C: is on NTFS (the installer's default); and most of the App Store's catalog (multimedia programs, Qt ones beyond
-KeePassXC, and GTK ones beyond an older Inkscape) does not run yet.
+**Current limits:** NovaOS uses its own clean-room Windows-compatible DLLs,
+not Microsoft's. GPU acceleration is through QEMU's virtio-GPU; physical GPU
+drivers are not implemented. Broad Windows application compatibility and
+real-hardware validation remain incomplete. Before 0.1, the release still
+needs its `v0.1.0` tag and a boot of that ISO on the reference PC.
 
 ---
 
@@ -234,8 +232,10 @@ named program or test demonstrates it.
   full screen with the window's frame taken off, and back)~~ Done; ~~a
   DirectDraw game (Cave Story on cnc-ddraw: 640x480 full screen, its title
   screen and a new game)~~ Done; ~~a game played with a game pad (SuperTux:
-  SDL 1.2 through winmm's joystick functions, into its first level)~~ Done
-  (all eight in the nightly corpus).  Still to do:
+  SDL 1.2 through winmm's joystick functions, into its first level)~~ Done;
+  ~~a DirectInput game pad game (Cave Story with an Xbox 360 pad through
+  DirectInput 7: the opening talk and Quote walking in the Start Point
+  cave)~~ Done (all nine in the nightly corpus).  Still to do:
   joining a Teeworlds game on its own server (it times out under TCG
   while Mesa compiles its shaders; its menus follow the mouse with its
   default settings, SDL recentring the pointer with `SetCursorPos`), GOG
@@ -328,8 +328,9 @@ named program or test demonstrates it.
   ...; files on them are written, created, renamed and deleted (volumes
   Windows left hibernated or unclean stay read-only).  ~~NTFS as drive C:~~
   Done: the installer formats C: as NTFS (or FAT32), and files there keep
-  security descriptors that opening, deleting and renaming obey.  Hard
-  links are still to do.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
+  security descriptors that opening, deleting and renaming obey.  ~~Hard
+  links and persistence~~ Done (Phase 17.5; `linktest` and `linktest
+  restarted`).  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
 - ~~IPv6, HTTP/2~~ Done (Phase 18.8): lwIP's IPv6 (SLAAC, RDNSS, MLD),
   dual-stack Winsock with `getaddrinfo`, `ping -6` and `curl -6`; a
   virtio-net driver; `winhttp` on Schannel with HTTP/2 by ALPN (nghttp2).
