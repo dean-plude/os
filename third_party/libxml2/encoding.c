@@ -304,7 +304,8 @@ UTF8ToUTF8(unsigned char* out, int *outlen,
      * to check for UTF-8 validity. Preferably, this converter shouldn't
      * be used at all.
      */
-    memcpy(out, inb, len);
+    if (out != inb)
+        memmove(out, inb, len);
 
     *outlen = len;
     *inlenb = len;
