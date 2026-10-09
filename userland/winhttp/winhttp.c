@@ -228,6 +228,7 @@ enum { BODY_NONE, BODY_LENGTH, BODY_CHUNKED, BODY_CLOSE };
 typedef struct Conn {
     SOCKET s;
     int tls;
+    DWORD security;
     SecHandle cred, ctx;
     int have_cred, have_ctx;
     StreamSizes sizes;
@@ -529,6 +530,7 @@ static DWORD conn_open(Conn **out, const char *host, WORD port, int secure, DWOR
     Conn *c = xcalloc(sizeof(Conn));
     if (!c) { closesocket(s); return ERROR_NOT_ENOUGH_MEMORY; }
     c->s = s;
+    c->security = security;
     c->receive_ms = receive_ms;
     if (secure) {
         DWORD e = tls_handshake(c, host, security, h2);
@@ -660,6 +662,8 @@ static DWORD h1_send(Request *r)
     buf_str(&b, r->version ? r->version : "HTTP/1.1");
     buf_str(&b, "\r\n");
     if (!hdr_find(&r->req, "Host", 0)) { buf_str(&b, "Host: "); put_authority(&b, r); buf_str(&b, "\r\n"); }
+    if ((r->h.disable & WINHTTP_DISABLE_KEEP_ALIVE) && !hdr_find(&r->req, "Connection", 0))
+        buf_str(&b, "Connection: close\r\n");
     if (r->agent && *r->agent && !hdr_find(&r->req, "User-Agent", 0)) {
         buf_str(&b, "User-Agent: "); buf_str(&b, r->agent); buf_str(&b, "\r\n");
     }
@@ -998,7 +1002,7 @@ static DWORD do_connect(Request *r)
     reset_response(r);
     int h2 = r->secure && (r->h.protocols & WINHTTP_PROTOCOL_FLAG_HTTP2);
     Connect *parent = (Connect *)r->h.parent;
-    if (!h2 && parent && parent->h.magic == HMAGIC && parent->h.type == WINHTTP_HANDLE_TYPE_CONNECT &&
+    if (parent && parent->h.magic == HMAGIC && parent->h.type == WINHTTP_HANDLE_TYPE_CONNECT &&
         parent->port == r->port && ieq(parent->host, r->host)) {
         Conn *idle = (Conn *)InterlockedExchangePointer((PVOID volatile *)&parent->idle, 0);
         if (idle) {
@@ -1006,7 +1010,8 @@ static DWORD do_connect(Request *r)
             FD_ZERO(&rd);
             FD_SET(idle->s, &rd);
             struct timeval tv = { 0, 0 };
-            if (GetTickCount64() - idle->idle_since < 30000 && select(0, &rd, 0, 0, &tv) == 0) {
+            if (idle->security == r->h.security && idle->tls == r->secure &&
+                GetTickCount64() - idle->idle_since < 30000 && select(0, &rd, 0, 0, &tv) == 0) {
                 idle->receive_ms = r->h.timeouts[3];
                 r->conn = idle;
                 return 0;
@@ -1022,25 +1027,27 @@ static DWORD do_connect(Request *r)
 
 static int header_has_token(Headers *hs, const char *name, const char *token)
 {
-    Header *h = hdr_find(hs, name, 0);
-    if (!h) return 0;
-    const char *p = h->value;
     size_t tn = strlen(token);
-    while (*p) {
-        while (*p == ' ' || *p == '\t' || *p == ',') p++;
-        const char *end = p;
-        while (*end && *end != ',') end++;
-        const char *trim = end;
-        while (trim > p && (trim[-1] == ' ' || trim[-1] == '\t')) trim--;
-        if ((size_t)(trim - p) == tn && ieq_n(p, token, tn)) return 1;
-        p = end;
+    for (int i = 0; i < hs->n; i++) {
+        if (!ieq(hs->h[i].name, name)) continue;
+        const char *p = hs->h[i].value;
+        while (*p) {
+            while (*p == ' ' || *p == '\t' || *p == ',') p++;
+            const char *end = p;
+            while (*end && *end != ',') end++;
+            const char *trim = end;
+            while (trim > p && (trim[-1] == ' ' || trim[-1] == '\t')) trim--;
+            if ((size_t)(trim - p) == tn && ieq_n(p, token, tn)) return 1;
+            p = end;
+        }
     }
     return 0;
 }
 
 static void cache_connection(Request *r)
 {
-    if (!r->conn || r->http2 || r->websocket_upgrade || r->framing == BODY_CLOSE ||
+    if (!r->conn || r->http2 || r->websocket_upgrade ||
+        (r->h.disable & WINHTTP_DISABLE_KEEP_ALIVE) || r->framing == BODY_CLOSE ||
         buf_avail(&r->in) || header_has_token(&r->req, "Connection", "close") ||
         header_has_token(&r->resp, "Connection", "close") ||
         (!r->resp_version || strcmp(r->resp_version, "HTTP/1.1"))) return;
@@ -1412,6 +1419,11 @@ WINHTTPAPI HINTERNET WINAPI WinHttpWebSocketCompleteUpgrade(HINTERNET request, D
     WebSocket *ws = xcalloc(sizeof(WebSocket));
     if (!ws) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return 0; }
     inherit(&ws->h, r->h.parent, WINHTTP_HANDLE_TYPE_WEBSOCKET_);
+    if (buf_avail(&r->in) && !buf_add(&ws->in, r->in.p + r->in.off, buf_avail(&r->in))) {
+        release(&ws->h);
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
     ws->h.ctx = context;
     ws->conn = r->conn;
     r->conn = 0;
