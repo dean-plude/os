@@ -170,6 +170,45 @@ void      um_ob_wake_boost(UmObject *o, int boost);
 
 typedef enum { H_FREE = 0, H_FILE, H_CON_IN, H_CON_OUT, H_DIR, H_OBJECT, H_NULL } UmHandleKind;
 
+typedef struct {
+    UINT16 ch, attr;
+} UmConsoleCell;
+
+typedef struct {
+    INT16 cols, rows, cursor_x, cursor_y;
+    UINT16 attributes;
+    INT16 window_left, window_top, window_right, window_bottom;
+    INT16 max_cols, max_rows;
+} UmConsoleScreenInfo;
+
+typedef struct {
+    INT16 x, y, width, height;
+    INT16 left, top, right, bottom;
+    INT16 dest_x, dest_y;
+    UINT32 count;
+    UINT16 value, attributes;
+    INT16 clip_left, clip_top, clip_right, clip_bottom;
+    UINT32 flags;
+} UmConsoleScreenRequest;
+_Static_assert(sizeof(UmConsoleScreenRequest) == 40 && sizeof(UmConsoleScreenInfo) == 22,
+               "console syscall wire layout");
+
+enum {
+    CON_SCREEN_INFO = 12,
+    CON_SCREEN_SET_ATTR,
+    CON_SCREEN_SET_CURSOR,
+    CON_SCREEN_FILL_CHAR,
+    CON_SCREEN_FILL_ATTR,
+    CON_SCREEN_READ_TEXT,
+    CON_SCREEN_READ_ATTR,
+    CON_SCREEN_WRITE_CELLS,
+    CON_SCREEN_READ_CELLS,
+    CON_SCREEN_SCROLL,
+    CON_SCREEN_SET_SIZE,
+    CON_SCREEN_CREATE,
+    CON_SCREEN_ACTIVATE
+};
+
 /* An open file's byte offset.  Like a Windows file object's
  * CurrentByteOffset it belongs to the open, not the handle: duplicates and
  * inherited copies of a handle share it (refs), so a child process writing
@@ -188,6 +227,8 @@ typedef struct {
     UmHandleKind kind;
     RamNode     *node;          /* H_FILE, H_DIR */
     UmObject    *obj;           /* H_OBJECT */
+    UmConsole   *console;       /* H_CON_OUT screen buffer, when non-default */
+    UINT32       con_screen;    /* H_CON_OUT: screen buffer in the console */
     UINT64       pos;           /* H_DIR: next entry (H_FILE without fp: its byte offset) */
     const RamNode *last;        /* H_DIR: the entry listed last (compared, never followed) */
     UmFilePos   *fp;            /* H_FILE: the shared byte offset (referenced) */
@@ -356,6 +397,11 @@ int        um_console_count(UmConsole *c);
 void       um_console_flush(UmConsole *c);
 void       um_console_set_mode(UmConsole *c, bool input, UINT32 mode);
 UINT32     um_console_cursor(UmConsole *c, UINT32 op, UINT32 value, UINT32 *result);
+int        um_console_write_screen(UmConsole *c, UINT32 screen, const char *data, int len);
+UINT32     um_console_screen_create(UmConsole *c, UINT32 *screen);
+void       um_console_screen_ref(UmConsole *c, UINT32 screen);
+void       um_console_screen_unref(UmConsole *c, UINT32 screen);
+UINT32     um_console_screen_call(UmConsole *c, UINT32 screen, UINT32 op, void *data, UINT32 len, UINT32 *result);
 void       um_console_size(UmConsole *c, int *cols, int *rows);
 int        um_console_pids(UmConsole *c, UINT32 *out, int max);   /* running processes on @c (count; up to @max ids) */
 

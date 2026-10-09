@@ -258,12 +258,10 @@ named program or test demonstrates it.
   `linktest` and a restart in the core suite).
 - ~~Interactive MSYS2 `sh` sessions~~ Done, with Neovim: console input
   is waitable and the Terminal runs full-screen programs (Phase 17.2).
-- Win32 console screen buffers: cursor positioning, size and visibility
-  controls now reach the Terminal (`consolecursortest`, x64 and x86).
-  Still to do: current cursor position in `GetConsoleScreenBufferInfo`,
-  cell reads and writes, fills, scrolling, text attributes and independent
-  screen buffers. Verify a real console-screen API application before
-  claiming full coverage; Git still uses NovaOS's own `less`.
+- Win32 console screen-buffer APIs maintain per-console cells, cursor
+  position and text attributes; reads, writes, fills, scrolling, resizing
+  and independent buffers are covered by `consolecursortest` (x64 and x86).
+  Git still uses NovaOS's own `less`.
 - Pseudo consoles (`CreatePseudoConsole`, for Neovim's `:terminal` and
   Windows Terminal-style hosts) exist only as functions that fail.
 - ~~Move files, the registry, process creation and the console off the

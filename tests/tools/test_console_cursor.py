@@ -19,7 +19,7 @@ class ConsoleCursorTests(unittest.TestCase):
                             str(ROOT / 'tests/host/console_cursor.c'), '-Wl,--gc-sections',
                             '-o', executable], check=True, capture_output=True)
             result = subprocess.run([executable], check=True, capture_output=True, text=True)
-            self.assertIn('cancellation and backpressure passed', result.stdout)
+            self.assertIn('screen-buffer APIs', result.stdout)
 
 if __name__ == '__main__':
     unittest.main()

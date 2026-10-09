@@ -1770,45 +1770,89 @@ K32 BOOL WINAPI GetCurrentConsoleFontEx(HANDLE h, BOOL max, PVOID info)
     return TRUE;
 }
 K32 BOOL WINAPI SetConsoleWindowInfo(HANDLE h, BOOL abs, const SMALL_RECT *r) { (void)h; (void)abs; (void)r; return TRUE; }
-K32 BOOL WINAPI SetConsoleScreenBufferSize(HANDLE h, COORD size) { (void)h; (void)size; return TRUE; }
+K32 BOOL WINAPI SetConsoleScreenBufferSize(HANDLE h, COORD size)
+{
+    NOVA_CONSOLE_SCREEN_REQUEST req = { .width = size.X, .height = size.Y };
+    return con_call(h, CON_SCREEN_SET_SIZE, &req, sizeof(req), 0);
+}
 K32 HANDLE WINAPI CreateConsoleScreenBuffer(DWORD access, DWORD share, const SECURITY_ATTRIBUTES *sa, DWORD flags, LPVOID data)
 {
-    (void)access; (void)share; (void)sa; (void)flags; (void)data;
-    HANDLE h = 0;                                                        /* the one screen: another handle to it */
-    DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_OUTPUT_HANDLE), GetCurrentProcess(), &h, 0, FALSE, DUPLICATE_SAME_ACCESS);
-    return h ? h : INVALID_HANDLE_VALUE;
+    (void)access; (void)share; (void)data;
+    if (flags != 1) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
+    DWORD h = 0;
+    if (!con_call(GetStdHandle(STD_OUTPUT_HANDLE), CON_SCREEN_CREATE, 0,
+                  sa && sa->bInheritHandle, &h)) return INVALID_HANDLE_VALUE;
+    return (HANDLE)(ULONG_PTR)h;
 }
-K32 BOOL WINAPI SetConsoleActiveScreenBuffer(HANDLE h) { (void)h; return TRUE; }
-/* Cells: written as text at the cursor's row (a stream has no cells to read back) */
-typedef struct { WCHAR Char; WORD Attributes; } NOVA_CHAR_INFO;
+K32 BOOL WINAPI SetConsoleActiveScreenBuffer(HANDLE h) { return con_call(h, CON_SCREEN_ACTIVATE, 0, 0, 0); }
+typedef NOVA_CONSOLE_CELL NOVA_CHAR_INFO;
+static BOOL console_output_cells(HANDLE h, NOVA_CHAR_INFO *cells, COORD size, COORD at,
+                                SMALL_RECT *region, BOOL write, BOOL ansi)
+{
+    if (!cells || !region || size.X <= 0 || size.Y <= 0 || region->Left > region->Right ||
+        region->Top > region->Bottom || at.X < 0 || at.Y < 0 ||
+        (LONG)size.X * size.Y > 1024 * 1024) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    DWORD n = (DWORD)size.X * size.Y;
+    DWORD bytes = sizeof(NOVA_CONSOLE_SCREEN_REQUEST) + n * sizeof(NOVA_CHAR_INFO);
+    BYTE *payload = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, bytes);
+    if (!payload) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return FALSE; }
+    NOVA_CONSOLE_SCREEN_REQUEST *req = (NOVA_CONSOLE_SCREEN_REQUEST *)payload;
+    req->x = at.X; req->y = at.Y; req->width = size.X; req->height = size.Y;
+    req->left = region->Left; req->top = region->Top; req->right = region->Right; req->bottom = region->Bottom;
+    NOVA_CHAR_INFO *buffer = (NOVA_CHAR_INFO *)(payload + sizeof(*req));
+    for (DWORD i = 0; i < n; i++) {
+        buffer[i].Char.UnicodeChar = ansi ? (BYTE)cells[i].Char.AsciiChar : cells[i].Char.UnicodeChar;
+        buffer[i].Attributes = cells[i].Attributes;
+    }
+    BOOL ok = con_call(h, write ? CON_SCREEN_WRITE_CELLS : CON_SCREEN_READ_CELLS, payload, bytes, 0);
+    if (ok) {
+        *region = (SMALL_RECT){ req->left, req->top, req->right, req->bottom };
+        if (!write) for (DWORD i = 0; i < n; i++) {
+            if (ansi) cells[i].Char.AsciiChar = (CHAR)buffer[i].Char.AsciiChar;
+            else cells[i].Char.UnicodeChar = buffer[i].Char.UnicodeChar;
+            cells[i].Attributes = buffer[i].Attributes;
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, payload);
+    return ok;
+}
 K32 BOOL WINAPI WriteConsoleOutputW(HANDLE h, const NOVA_CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region)
 {
-    (void)at;
-    for (SHORT y = region->Top; y <= region->Bottom && y - region->Top < size.Y; y++) {
-        WCHAR line[512];
-        int n = 0;
-        for (SHORT x = region->Left; x <= region->Right && x - region->Left < size.X && n < 511; x++)
-            line[n++] = cells[(y - region->Top) * size.X + (x - region->Left)].Char;
-        DWORD w;
-        WriteConsoleW(h, line, (DWORD)n, &w, 0);
-    }
-    return TRUE;
+    return console_output_cells(h, (NOVA_CHAR_INFO *)cells, size, at, region, TRUE, FALSE);
+}
+K32 BOOL WINAPI WriteConsoleOutputA(HANDLE h, const NOVA_CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region)
+{
+    return console_output_cells(h, (NOVA_CHAR_INFO *)cells, size, at, region, TRUE, TRUE);
 }
 K32 BOOL WINAPI ReadConsoleOutputW(HANDLE h, NOVA_CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region)
 {
-    (void)h; (void)at;
-    for (int i = 0; i < size.X * size.Y; i++) { cells[i].Char = ' '; cells[i].Attributes = 7; }
-    (void)region;
-    return TRUE;
+    return console_output_cells(h, cells, size, at, region, FALSE, FALSE);
+}
+K32 BOOL WINAPI ReadConsoleOutputA(HANDLE h, NOVA_CHAR_INFO *cells, COORD size, COORD at, SMALL_RECT *region)
+{
+    return console_output_cells(h, cells, size, at, region, FALSE, TRUE);
+}
+static BOOL console_scroll(HANDLE h, const SMALL_RECT *r, const SMALL_RECT *clip, COORD dest,
+                           const NOVA_CHAR_INFO *fill, BOOL ansi)
+{
+    if (!r || !fill) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    NOVA_CONSOLE_SCREEN_REQUEST req = { .left = r->Left, .top = r->Top, .right = r->Right,
+        .bottom = r->Bottom, .dest_x = dest.X, .dest_y = dest.Y,
+        .value = ansi ? (BYTE)fill->Char.AsciiChar : fill->Char.UnicodeChar,
+        .attributes = fill->Attributes, .flags = clip != 0 };
+    if (clip) { req.clip_left = clip->Left; req.clip_top = clip->Top; req.clip_right = clip->Right; req.clip_bottom = clip->Bottom; }
+    return con_call(h, CON_SCREEN_SCROLL, &req, sizeof(req), 0);
 }
 K32 BOOL WINAPI ScrollConsoleScreenBufferW(HANDLE h, const SMALL_RECT *r, const SMALL_RECT *clip, COORD dest, const NOVA_CHAR_INFO *fill)
 {
-    (void)h; (void)r; (void)clip; (void)dest; (void)fill;
-    return TRUE;
+    return console_scroll(h, r, clip, dest, fill, FALSE);
 }
 K32 BOOL WINAPI ScrollConsoleScreenBufferA(HANDLE h, const SMALL_RECT *r, const SMALL_RECT *clip, COORD dest, const NOVA_CHAR_INFO *fill)
 {
-    return ScrollConsoleScreenBufferW(h, r, clip, dest, fill);
+    return console_scroll(h, r, clip, dest, fill, TRUE);
 }
 
 /* Allocation within an address range (MEM_EXTENDED_PARAMETER address requirements) */
