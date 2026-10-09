@@ -1414,9 +1414,9 @@ static void cfunbody(JF, js_Ast *name, js_Ast *params, js_Ast *body, int is_fun_
 		checkfutureword(J, F, name);
 		if (is_fun_exp) {
 			if (findlocal(J, F, name->string) < 0) {
-				/* TODO: make this binding immutable! */
+				F->lightweight = 0;
 				emit(J, F, OP_CURRENT);
-				emit(J, F, OP_SETLOCAL);
+				emit(J, F, OP_INITLOCAL);
 				emitarg(J, F, addlocal(J, F, name, 1));
 				emit(J, F, OP_POP);
 			}

@@ -19,6 +19,7 @@
 "current",
 "getlocal",
 "setlocal",
+"initlocal",
 "dellocal",
 "hasvar",
 "getvar",

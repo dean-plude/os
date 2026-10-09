@@ -117,41 +117,100 @@ static void O_getPrototypeOf(js_State *J)
 		js_pushnull(J);
 }
 
+static void push_data_descriptor(js_State *J, int atts)
+{
+	js_newobject(J);
+	js_copy(J, -2);
+	js_defproperty(J, -2, "value", 0);
+	js_pushboolean(J, !(atts & JS_READONLY));
+	js_defproperty(J, -2, "writable", 0);
+	js_pushboolean(J, !(atts & JS_DONTENUM));
+	js_defproperty(J, -2, "enumerable", 0);
+	js_pushboolean(J, !(atts & JS_DONTCONF));
+	js_defproperty(J, -2, "configurable", 0);
+	js_rot2pop1(J);
+}
+
 static void O_getOwnPropertyDescriptor(js_State *J)
 {
 	js_Object *obj;
 	js_Property *ref;
+	const char *name;
+	int k;
 	if (!js_isobject(J, 1))
 		js_typeerror(J, "not an object");
 	obj = js_toobject(J, 1);
-	ref = jsV_getproperty(J, obj, js_tostring(J, 2));
+	name = js_tostring(J, 2);
+	ref = jsV_getownproperty(J, obj, name);
 	if (!ref) {
-		/* TODO: builtin properties (string and array index and length, regexp flags, etc) */
-		js_pushundefined(J);
-	} else {
-		js_newobject(J);
-		if (!ref->getter && !ref->setter) {
-			js_pushvalue(J, ref->value);
-			js_defproperty(J, -2, "value", 0);
-			js_pushboolean(J, !(ref->atts & JS_READONLY));
-			js_defproperty(J, -2, "writable", 0);
-		} else {
-			if (ref->getter)
-				js_pushobject(J, ref->getter);
-			else
-				js_pushundefined(J);
-			js_defproperty(J, -2, "get", 0);
-			if (ref->setter)
-				js_pushobject(J, ref->setter);
-			else
-				js_pushundefined(J);
-			js_defproperty(J, -2, "set", 0);
+		if (obj->type == JS_CARRAY && !strcmp(name, "length")) {
+			js_pushnumber(J, obj->u.a.length);
+			push_data_descriptor(J, JS_DONTENUM | JS_DONTCONF);
+			return;
 		}
-		js_pushboolean(J, !(ref->atts & JS_DONTENUM));
-		js_defproperty(J, -2, "enumerable", 0);
-		js_pushboolean(J, !(ref->atts & JS_DONTCONF));
-		js_defproperty(J, -2, "configurable", 0);
+		if (obj->type == JS_CARRAY && obj->u.a.simple &&
+			js_isarrayindex(J, name, &k) && k >= 0 && k < obj->u.a.flat_length) {
+			js_pushvalue(J, obj->u.a.array[k]);
+			push_data_descriptor(J, 0);
+			return;
+		}
+		if (obj->type == JS_CSTRING) {
+			if (!strcmp(name, "length")) {
+				js_pushnumber(J, obj->u.s.length);
+				push_data_descriptor(J, JS_READONLY | JS_DONTENUM | JS_DONTCONF);
+				return;
+			}
+			if (js_isarrayindex(J, name, &k) && k >= 0 && k < obj->u.s.length) {
+				js_getindex(J, 1, k);
+				push_data_descriptor(J, JS_READONLY | JS_DONTCONF);
+				return;
+			}
+		}
+		if (obj->type == JS_CREGEXP) {
+			if (!strcmp(name, "source"))
+				js_pushstring(J, obj->u.r.source);
+			else if (!strcmp(name, "global"))
+				js_pushboolean(J, obj->u.r.flags & JS_REGEXP_G);
+			else if (!strcmp(name, "ignoreCase"))
+				js_pushboolean(J, obj->u.r.flags & JS_REGEXP_I);
+			else if (!strcmp(name, "multiline"))
+				js_pushboolean(J, obj->u.r.flags & JS_REGEXP_M);
+			else if (!strcmp(name, "lastIndex"))
+				js_pushnumber(J, obj->u.r.last);
+			else {
+				js_pushundefined(J);
+				return;
+			}
+			push_data_descriptor(J, JS_DONTENUM | JS_DONTCONF |
+				(strcmp(name, "lastIndex") ? JS_READONLY : 0));
+			return;
+		}
+		js_pushundefined(J);
+		return;
 	}
+
+	js_newobject(J);
+	if (!ref->getter && !ref->setter) {
+		js_pushvalue(J, ref->value);
+		js_defproperty(J, -2, "value", 0);
+		js_pushboolean(J, !(ref->atts & JS_READONLY));
+		js_defproperty(J, -2, "writable", 0);
+	} else {
+		if (ref->getter)
+			js_pushobject(J, ref->getter);
+		else
+			js_pushundefined(J);
+		js_defproperty(J, -2, "get", 0);
+		if (ref->setter)
+			js_pushobject(J, ref->setter);
+		else
+			js_pushundefined(J);
+		js_defproperty(J, -2, "set", 0);
+	}
+	js_pushboolean(J, !(ref->atts & JS_DONTENUM));
+	js_defproperty(J, -2, "enumerable", 0);
+	js_pushboolean(J, !(ref->atts & JS_DONTCONF));
+	js_defproperty(J, -2, "configurable", 0);
 }
 
 static int O_getOwnPropertyNames_walk(js_State *J, js_Property *ref, int i)

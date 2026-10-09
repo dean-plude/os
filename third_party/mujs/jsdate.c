@@ -27,22 +27,18 @@ static double Now(void)
 
 static double LocalTZA(void)
 {
-	static int once = 1;
-	static double tza = 0;
-	if (once) {
-		time_t now = time(NULL);
-		time_t utc = mktime(gmtime(&now));
-		time_t loc = mktime(localtime(&now));
-		tza = (loc - utc) * 1000;
-		once = 0;
-	}
-	return tza;
+	time_t now = time(NULL);
+	struct tm *utc = gmtime(&now);
+	struct tm tm;
+	if (!utc)
+		return 0;
+	tm = *utc;
+	tm.tm_isdst = 0;
+	return difftime(now, mktime(&tm)) * 1000;
 }
 
-static double DaylightSavingTA(double t)
-{
-	return 0; /* TODO */
-}
+static double DaylightSavingTA(double t);
+static double MakeDate(double day, double time);
 
 /* Helpers from the ECMA 262 specification */
 
@@ -220,6 +216,28 @@ static double MakeDay(double y, double m, double date)
 	return yd + md + date - 1;
 }
 
+static double DaylightSavingTA(double t)
+{
+	double seconds;
+	time_t when;
+	struct tm *local;
+	double localms;
+
+	if (!isfinite(t))
+		return 0;
+	seconds = floor(t / msPerSecond);
+	if (sizeof(time_t) <= 4 && (seconds < -2147483648.0 || seconds > 2147483647.0))
+		return 0;
+	when = (time_t)seconds;
+	local = localtime(&when);
+	if (!local)
+		return 0;
+
+	localms = MakeDate(MakeDay(local->tm_year + 1900, local->tm_mon, local->tm_mday),
+		MakeTime(local->tm_hour, local->tm_min, local->tm_sec, msFromTime(t)));
+	return localms - t - LocalTZA();
+}
+
 static double MakeDate(double day, double time)
 {
 	return day * msPerDay + time;
@@ -251,6 +269,7 @@ static double parseDateTime(const char *s)
 {
 	int y = 1970, m = 1, d = 1, H = 0, M = 0, S = 0, ms = 0;
 	int tza = 0;
+	int localtime = 0;
 	double t;
 
 	/* Parse ISO 8601 formatted date and time: */
@@ -296,6 +315,7 @@ static double parseDateTime(const char *s)
 			tza = tzs * (tzh * msPerHour + tzm * msPerMinute);
 		} else {
 			tza = LocalTZA();
+			localtime = 1;
 		}
 	}
 
@@ -309,8 +329,9 @@ static double parseDateTime(const char *s)
 	if (ms < 0 || ms > 999) return NAN;
 	if (H == 24 && (M != 0 || S != 0 || ms != 0)) return NAN;
 
-	/* TODO: DaylightSavingTA on local times */
 	t = MakeDate(MakeDay(y, m-1, d), MakeTime(H, M, S, ms));
+	if (localtime)
+		tza += DaylightSavingTA(t - LocalTZA());
 	return t - tza;
 }
 
@@ -325,6 +346,11 @@ static char *fmtdate(char *buf, double t)
 		return "Invalid Date";
 	sprintf(buf, "%04d-%02d-%02d", y, m+1, d);
 	return buf;
+}
+
+static double LocalTimeZoneOffset(double t)
+{
+	return LocalTZA() + DaylightSavingTA(t);
 }
 
 static char *fmttime(char *buf, double t, double tza)
@@ -406,7 +432,8 @@ static void D_now(js_State *J)
 static void jsB_Date(js_State *J)
 {
 	char buf[64];
-	js_pushstring(J, fmtdatetime(buf, LocalTime(Now()), LocalTZA()));
+	double now = Now();
+	js_pushstring(J, fmtdatetime(buf, LocalTime(now), LocalTimeZoneOffset(now)));
 }
 
 static void jsB_new_Date(js_State *J)
@@ -453,7 +480,7 @@ static void Dp_toString(js_State *J)
 {
 	char buf[64];
 	double t = js_todate(J, 0);
-	js_pushstring(J, fmtdatetime(buf, LocalTime(t), LocalTZA()));
+	js_pushstring(J, fmtdatetime(buf, LocalTime(t), LocalTimeZoneOffset(t)));
 }
 
 static void Dp_toDateString(js_State *J)
@@ -467,7 +494,7 @@ static void Dp_toTimeString(js_State *J)
 {
 	char buf[64];
 	double t = js_todate(J, 0);
-	js_pushstring(J, fmttime(buf, LocalTime(t), LocalTZA()));
+	js_pushstring(J, fmttime(buf, LocalTime(t), LocalTimeZoneOffset(t)));
 }
 
 static void Dp_toUTCString(js_State *J)
@@ -745,7 +772,7 @@ static void Dp_setUTCHours(js_State *J)
 {
 	double t = js_todate(J, 0);
 	double h = js_tonumber(J, 1);
-	double m = js_optnumber(J, 2, HourFromTime(t));
+	double m = js_optnumber(J, 2, MinFromTime(t));
 	double s = js_optnumber(J, 3, SecFromTime(t));
 	double ms = js_optnumber(J, 4, msFromTime(t));
 	js_setdate(J, 0, MakeDate(Day(t), MakeTime(h, m, s, ms)));
