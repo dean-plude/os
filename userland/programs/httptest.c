@@ -137,6 +137,60 @@ static WCHAR *join(const char *base, const char *path)
     return w;
 }
 
+static int reuse_test(const char *http)
+{
+    WCHAR host[] = L"10.0.2.2";
+    HINTERNET s = WinHttpOpen(L"NovaOS-httptest/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY, 0, 0, 0);
+    HINTERNET c = s ? WinHttpConnect(s, host, 18080, 0) : 0;
+    char ids[2][16] = { { 0 }, { 0 } };
+    int ok = c != 0;
+    (void)http;
+    for (int i = 0; ok && i < 2; i++) {
+        HINTERNET r = WinHttpOpenRequest(c, L"GET", L"/conn", 0, 0, 0, 0);
+        DWORD got = 0;
+        ok = r && WinHttpSendRequest(r, 0, 0, 0, 0, 0, 0) &&
+             WinHttpReceiveResponse(r, 0) &&
+             WinHttpReadData(r, ids[i], sizeof(ids[i]) - 1, &got) && got != 0;
+        if (r) WinHttpCloseHandle(r);
+    }
+    ok = ok && !strcmp(ids[0], ids[1]);
+    if (c) WinHttpCloseHandle(c);
+    if (s) WinHttpCloseHandle(s);
+    return ok;
+}
+
+static int websocket_test(void)
+{
+    HINTERNET s = WinHttpOpen(L"NovaOS-httptest/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY, 0, 0, 0);
+    HINTERNET c = s ? WinHttpConnect(s, L"10.0.2.2", 18080, 0) : 0;
+    HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", L"/websocket", 0, 0, 0, 0) : 0;
+    static const WCHAR headers[] =
+        L"Connection: Upgrade\r\n"
+        L"Upgrade: websocket\r\n"
+        L"Sec-WebSocket-Version: 13\r\n"
+        L"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
+    DWORD status = 0, n = sizeof(status);
+    HINTERNET ws = 0;
+    char reply[64] = { 0 };
+    DWORD got = 0;
+    WINHTTP_WEB_SOCKET_BUFFER_TYPE type = WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE;
+    int ok = r && WinHttpSendRequest(r, headers, (DWORD)-1, 0, 0, 0, 0) &&
+             WinHttpReceiveResponse(r, 0) &&
+             WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, 0, &status, &n, 0) &&
+             status == 101 && (ws = WinHttpWebSocketCompleteUpgrade(r, 0)) != 0;
+    if (r) WinHttpCloseHandle(r);
+    static const char message[] = "websocket echo";
+    if (ok) ok = WinHttpWebSocketSend(ws, WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
+                                      (void *)message, sizeof(message) - 1) == 0 &&
+                 WinHttpWebSocketReceive(ws, reply, sizeof(reply), &got, &type) == 0 &&
+                 type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE &&
+                 got == sizeof(message) - 1 && !memcmp(reply, message, got);
+    if (ws) WinHttpWebSocketClose(ws, 1000, 0, 0);
+    if (c) WinHttpCloseHandle(c);
+    if (s) WinHttpCloseHandle(s);
+    return ok;
+}
+
 static int suite(const char *https, const char *http)
 {
     Result r;
@@ -178,6 +232,9 @@ static int suite(const char *https, const char *http)
     check(!r.err && r.status == 200 && r.protocol && r.bytes == 300000 && r.sum == big_sum(300000),
           "asynchronous API (status callbacks) over HTTP/2");
     printf("  %lu bytes, error %lu\n", r.bytes, r.err);
+
+    check(reuse_test(http), "sequential HTTP/1.1 requests reuse a connection");
+    check(websocket_test(), "WinHTTP WebSocket upgrade, send and receive");
 
     printf("httptest: %d passed, %d failed\n", g_passed, g_failed);
     return g_failed != 0;
