@@ -695,8 +695,15 @@ static uacpi_u8 peek_next_op(struct call_frame *frame, uacpi_aml_op *out_op)
     uacpi_size bytes_left;
     uacpi_u8 length = 0;
     uacpi_u8 *cursor;
+    struct code_block *block;
 
-    bytes_left = call_frame_code_bytes_left(frame);
+    /*
+     * Bounded by the enclosing code block only: an If that just finished
+     * its package must still see the Else that follows it.
+     */
+    block = code_block_array_last(&frame->code_blocks);
+    bytes_left = block->end > frame->code_offset ?
+                 block->end - frame->code_offset : 0;
     if (bytes_left == 0)
         return 0;
 
