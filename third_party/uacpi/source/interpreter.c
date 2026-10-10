@@ -3582,8 +3582,14 @@ static uacpi_status handle_match(struct execution_context *ctx)
  *   <bit 5-4: only used if pkglength < 63>
  *   <bit 3-0: least significant package length nybble>
  */
+/*
+ * A tracked PkgLength is a real byte span and must fit its enclosing code.
+ * An untracked one is also the bit length of a ReservedField or NamedField,
+ * which routinely runs past the end of the Field op's own bytes.
+ */
 static uacpi_status parse_package_length(struct call_frame *frame,
-                                         struct package_length *out_pkg)
+                                         struct package_length *out_pkg,
+                                         uacpi_bool bounded)
 {
     uacpi_u32 left, size, end;
     uacpi_u8 *data, marker_length;
@@ -3625,7 +3631,7 @@ static uacpi_status parse_package_length(struct call_frame *frame,
     end = out_pkg->begin + size;
     if (uacpi_unlikely(end < out_pkg->begin ||
                        end < frame->code_offset ||
-                       end > call_frame_code_end(frame))) {
+                       (bounded && end > call_frame_code_end(frame)))) {
         uacpi_error(
             "invalid PkgLength bounds: start=%u, size=%u, end=%u",
             out_pkg->begin, size, end
@@ -5579,9 +5585,10 @@ static uacpi_status exec_op(struct execution_context *ctx)
 
         case UACPI_PARSE_OP_TRACKED_PKGLEN:
             op_ctx->tracked_pkg_idx = item_array_size(&op_ctx->items);
-            UACPI_FALLTHROUGH;
+            ret = parse_package_length(frame, &item->pkg, UACPI_TRUE);
+            break;
         case UACPI_PARSE_OP_PKGLEN:
-            ret = parse_package_length(frame, &item->pkg);
+            ret = parse_package_length(frame, &item->pkg, UACPI_FALSE);
             break;
 
         case UACPI_PARSE_OP_LOAD_INLINE_IMM:
