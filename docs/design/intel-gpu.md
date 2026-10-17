@@ -2,8 +2,10 @@
 
 Status: design, decided 2026-10-13 (roadmap step 25.3).  Step 1 of the
 steps at the end, the display-only WDDM host (`\Device\DxgKrnl`, tested
-with NovaOS's `wddmdod.sys` on QEMU's standard VGA), is merged.  Steps 2
-to 5 are not built.  Intel's driver has not been tried: it needs step 2
+with NovaOS's `wddmdod.sys` on QEMU's standard VGA), is merged.  Step 3's
+first part (the `D3DKMT*` calls, the Basic Render adapter's allocations
+and CPU fences) is in; the rest of step 3, and steps 2, 4 and 5, are not
+built.  Intel's driver has not been tried: it needs step 2
 and the T14, and nothing has run on the T14 yet.
 
 **The decision.**  NovaOS drives the ThinkPad T14 Gen 4's Intel Iris Xe
@@ -176,9 +178,16 @@ confirm from the driver's caps):
 
 ### User mode: `D3DKMT*` and the ICDs
 
-- `gdi32`'s `D3DKMT*` functions (today `STATUS_NOT_SUPPORTED` stubs in
-  `userland/gdi32/d3dkmt.c`) become thunks to new system calls; the
-  adapter list (`D3DKMTEnumAdapters2`) shows the Intel adapter with its
+- `gdi32`'s `D3DKMT*` functions (`userland/gdi32/d3dkmt.c`) are thunks to
+  one NovaOS system call, `NtNovaDxgkCtl`, that takes each call's
+  `D3DKMT_*` structure as Windows lays it out on x64
+  (`kernel/um/um_d3dkmt.c`; 32-bit programs still get
+  `STATUS_NOT_SUPPORTED`).  The kernel always lists a **Basic Render
+  adapter**, the software render-only adapter Windows has on every machine
+  (Microsoft Basic Render Driver): one shared system-memory segment with a
+  budget of half the RAM, its allocations' size in its own private driver
+  data (`NOVA_KMT_ALLOCATION`, `userland/include/d3dkmthk.h`), as each
+  adapter's user- and kernel-mode drivers agree on theirs.  The adapter list (`D3DKMTEnumAdapters2`) shows the Intel adapter with its
   LUID, the one Vulkan reports for the device, so VKD3D-Proton can share
   resources and fences across APIs on it.
 - Vulkan: NovaOS's own `vulkan-1.dll` finds the ICD the way the Khronos
@@ -227,6 +236,8 @@ test miniports, and Intel's driver only on the T14 (Dean's hand checks in
   disabled, and starts again at boot.  It has one output and no
   interrupts, so flips, vertical blanks and more monitors are not tested
   by it.
+- **`kmttest`** (built, step 3's first part; `userland/programs/kmttest.c`,
+  the core suite): the `D3DKMT*` calls on the Basic Render adapter.
 - **`wddmtest.sys`** (planned, step 3), a render miniport whose "GPU" is a kernel thread
   executing a tiny command format in software: exercises allocations,
   GPU virtual addresses, paging buffers, submission, fences, preemption
@@ -260,7 +271,36 @@ Each is one pull request off main.
    is this design merged and modes changing on the T14's panel.
 3. **Render on QEMU.**  VidMm's GPU virtual addressing and residency, the
    scheduler, monitored fences, TDR, and the `D3DKMT*` system calls,
-   checked with `wddmtest.sys`.
+   checked with `wddmtest.sys`.  In parts, one pull request each:
+   1. **The `D3DKMT*` calls** (done): `NtNovaDxgkCtl` and gdi32's thunks;
+      the Basic Render adapter (`D3DKMTEnumAdapters2`,
+      `OpenAdapterFromLuid`, `QueryAdapterInfo`: type, WDDM version,
+      segment sizes); devices; allocations in shared system memory,
+      counted by `D3DKMTQueryVideoMemoryInfo` and mapped by
+      `D3DKMTLock2`; fences and monitored fences (the value on a read-only
+      page in the process) signalled from the CPU, waited on in place or
+      through an event, `WaitAny`.  Checked by `kmttest` in the core suite.
+   2. **Render miniports**: `DxgkInitialize`'s
+      `DRIVER_INITIALIZATION_DATA` and `wddmtest.sys` registering with it;
+      its adapter in the list beside Basic Render; allocations through
+      `DxgkDdiCreateAllocation`/`DestroyAllocation` and its segments
+      (`DXGKQAITYPE_QUERYSEGMENT4`).
+   3. **GPU virtual addresses**: `DxgkDdiCreateProcess`, per-process
+      address spaces, `D3DKMTMapGpuVirtualAddress`, page tables written
+      through `DxgkDdiBuildPagingBuffer`, residency (`MakeResident`,
+      `Evict`) against the budget.
+   4. **Contexts and submission**: `D3DKMTCreateContextVirtual`,
+      `D3DKMTSubmitCommand`, the scheduler calling
+      `DxgkDdiSubmitCommandVirtual` in order, the miniport's interrupt and
+      DPC (`DxgkCbNotifyInterrupt`), fences the GPU signals
+      (`D3DKMTSignalSynchronizationObjectFromGpu2`, waits from the GPU).
+   5. **Preemption and TDR**: `DxgkDdiPreemptCommand`, the timeout,
+      `DxgkDdiResetFromTimeout`/`RestartFromTimeout`, the offending
+      context lost and the rest going on.
+   6. **Sharing and 32-bit programs**: shared allocations and fences by NT
+      handle (`D3DKMTShareObjects`, `OpenResourceFromNtHandle`,
+      `OpenSyncObjectFromNtHandle`, which VKD3D-Proton uses), and the x86
+      structures translated for 32-bit programs.
 4. **Intel's Vulkan and OpenGL drivers** (roadmap step 25.4).  The ICDs
    load through NovaOS's loaders from the adapter's registry key;
    `vulkaninfo`, then `gltest` and `d3dtest` (DXVK, VKD3D-Proton) pass on

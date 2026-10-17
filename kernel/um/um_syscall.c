@@ -150,6 +150,7 @@ static void um_lock_free_init(void)
         SYSCALL_NtNovaSockAccept, SYSCALL_NtNovaSockCtl, SYSCALL_NtNovaSockSendTo,
         SYSCALL_NtNovaSockRecvFrom,
         SYSCALL_NtNovaAudioOpen, SYSCALL_NtNovaAudioWrite, SYSCALL_NtNovaAudioCtl, SYSCALL_NtNovaGpuCtl,
+        SYSCALL_NtNovaDxgkCtl,
         SYSCALL_NtNovaGuiCreate, SYSCALL_NtNovaGuiGetMessage, SYSCALL_NtNovaGuiInvalidate,
         SYSCALL_NtNovaGuiSetText, SYSCALL_NtNovaGuiShow, SYSCALL_NtNovaGuiDestroy,
         SYSCALL_NtNovaGuiSetTimer, SYSCALL_NtNovaGuiKillTimer, SYSCALL_NtNovaGuiMessageBox,
@@ -3542,6 +3543,7 @@ void um_syscall_init(void)
     um_socket_syscalls_init();
     um_audio_syscalls_init();
     um_gpu_syscalls_init();
+    um_d3dkmt_syscalls_init();
     um_gui_syscalls_init();
     um_driver_syscalls_init();
 }

@@ -1539,6 +1539,51 @@ UINT64 um_section_frames(UmProcess *p, const PADDR *frames, UINT64 n, UINT64 siz
     return h;
 }
 
+/* A view of the pages @f (@n of them; copied) mapped straight into
+ * process @p, with no handle: the WDDM kernel's CPU mappings (um_d3dkmt.c:
+ * Lock2, a monitored fence's value).  release(ctx) when the view goes
+ * (um_unmap_view_at, or the process's end).  The view's address, or 0. */
+UINT64 um_map_frames_view(UmProcess *p, const PADDR *frames, UINT64 n, UINT32 prot, void (*release)(void *), void *ctx)
+{
+    UmSection *sec = kzalloc(sizeof(*sec));
+    PADDR *f = sec ? kmalloc(sizeof(PADDR) * n) : NULL;
+    UmObject *o = f ? ob_new(UO_SECTION) : NULL;
+    if (!o) { kfree(f); kfree(sec); return 0; }
+    memcpy(f, frames, sizeof(PADDR) * n);
+    sec->size = n * PAGE_SIZE;
+    sec->npages = n;
+    sec->frames = f;
+    sec->writable = (prot & 0xFF) != 0x02;
+    sec->release = release;
+    sec->release_ctx = ctx;
+    o->ptr = sec;
+    o->destroy = section_destroy;
+    o->free_unlocked = true;
+    UINT64 bytes = n * PAGE_SIZE;
+    um_lock_excl(&p->lock);
+    UINT64 base = um_find_free(p, bytes, p->lay.alloc_min, p->lay.alloc_max);
+    UmRegion *reg = base ? um_region_add(p, base, bytes, prot, false) : NULL;
+    if (reg && !um_map_frames(p, base, f, n, prot)) { um_region_remove(p, reg); reg = NULL; }
+    if (reg) reg->section = o;                              /* the view keeps the reference */
+    um_unlock_excl(&p->lock);
+    if (!reg) { um_ob_unref(o); return 0; }                 /* (release(ctx) runs: the caller's reference went) */
+    return base;
+}
+
+/* Unmap the view at @va that um_map_frames_view made for @ctx; false if there is none */
+bool um_unmap_view_at(UmProcess *p, UINT64 va, void *ctx)
+{
+    um_lock_excl(&p->lock);
+    UmRegion *r = um_region_find(p, va);
+    if (!r || !r->section || r->base != va || ((UmSection *)r->section->ptr)->release_ctx != ctx) { um_unlock_excl(&p->lock); return false; }
+    UmObject *o = r->section;
+    um_unmap_frames(p, r->base, r->size / PAGE_SIZE);
+    um_region_remove(p, r);
+    um_unlock_excl(&p->lock);
+    um_ob_unref(o);
+    return true;
+}
+
 /* The same over @size bytes of device memory at @pa */
 UINT64 um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx)
 {

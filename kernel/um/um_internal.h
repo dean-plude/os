@@ -547,7 +547,13 @@ void       um_thread_syscalls_init(void);
 void       um_socket_syscalls_init(void);
 void       um_audio_syscalls_init(void);
 void       um_gpu_syscalls_init(void);
+/* um_d3dkmt.c: the WDDM graphics kernel's D3DKMT* calls; a process's adapters, devices, allocations and fences go */
+void       um_d3dkmt_syscalls_init(void);
+void       um_d3dkmt_process_gone(UmProcess *p);
 UINT64     um_section_foreign(UmProcess *p, UINT64 pa, UINT64 size, void (*release)(void *), void *ctx);
+/* um_thread.c: pages mapped into a process with no handle (the WDDM kernel's CPU views); the address, or 0 */
+UINT64     um_map_frames_view(UmProcess *p, const PADDR *frames, UINT64 n, UINT32 prot, void (*release)(void *), void *ctx);
+bool       um_unmap_view_at(UmProcess *p, UINT64 va, void *ctx);
 /* um_thread.c: NtDeviceIoControlFile on a section (a shared GPU resource's description) */
 UINT32     um_section_ioctl(UmObject *o, UINT32 code, UINT64 in, UINT32 in_len, UINT64 out, UINT32 out_len, UINT32 *info);
 UINT64     um_section_frames(UmProcess *p, const PADDR *frames, UINT64 n, UINT64 size,

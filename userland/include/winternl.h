@@ -376,6 +376,8 @@ NTSYSAPI INT_PTR  NTAPI NtNovaAudioOpen(ULONG frames);
 NTSYSAPI LONG_PTR NTAPI NtNovaAudioWrite(INT_PTR h, const void *frames, ULONG n);
 NTSYSAPI LONG_PTR NTAPI NtNovaAudioCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *out);
 NTSYSAPI LONG_PTR NTAPI NtNovaGpuCtl(INT_PTR h, ULONG op, ULONG_PTR arg, void *ptr);
+/* The WDDM graphics kernel's D3DKMT* calls (gdi32's d3dkmt.c; kernel/um/um_d3dkmt.c): op, its D3DKMT_* structure */
+NTSYSAPI LONG NTAPI NtNovaDxgkCtl(ULONG op, void *args);
 NTSYSAPI LONG_PTR NTAPI NtNovaGuiCreate(void *info);
 /* @msg: a MSG and a ULONG after it, which gets a mouse message's pen packet
  * number (0: the mouse); a 64-bit MSG's padding after message has it too */

@@ -95,6 +95,7 @@ XSTUB(NtNovaAudioOpen,      SYS_NtNovaAudioOpen)
 XSTUB(NtNovaAudioWrite,     SYS_NtNovaAudioWrite)
 XSTUB(NtNovaAudioCtl,       SYS_NtNovaAudioCtl)
 XSTUB(NtNovaGpuCtl,         SYS_NtNovaGpuCtl)
+XSTUB(NtNovaDxgkCtl,        SYS_NtNovaDxgkCtl)
 XSTUB(NtNovaFirmwareTable,  SYS_NtNovaFirmwareTable)
 #endif
 

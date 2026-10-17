@@ -205,6 +205,8 @@
 #define SYSCALL_NtNovaAudioCtl                    0x0262
 /* NovaOS 3D (the Venus Vulkan driver's kernel half, um_gpu.c) */
 #define SYSCALL_NtNovaGpuCtl                      0x0263
+/* NovaOS: the WDDM graphics kernel's D3DKMT* calls (um_d3dkmt.c) */
+#define SYSCALL_NtNovaDxgkCtl                     0x0264
 /* NovaOS: SystemFirmwareTableInformation's kernel half (hal/firmware.h) */
 #define SYSCALL_NtNovaFirmwareTable               0x0270
 /* Registry services Windows 10 numbers elsewhere */

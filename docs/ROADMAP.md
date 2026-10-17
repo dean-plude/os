@@ -723,7 +723,11 @@ measured frame-time gain over the CPU path.
   display-only WDDM host, with the test driver `wddmdod.sys` driving
   QEMU's standard VGA in the devices suite's `wddm` boot
   ([history](HISTORY.md#a-windows-display-driver-on-the-boot-display)).
-  Modes changing on the panel is its step 2, on the T14.
+  Modes changing on the panel is its step 2, on the T14.  Step 3 (the
+  render path, on QEMU) has begun: the `D3DKMT*` calls reach the kernel,
+  which lists a Basic Render adapter with video memory allocations mapped
+  by `D3DKMTLock2` and fences signalled and waited on from the CPU
+  (`kmttest`; [history](HISTORY.md#d3dkmt-calls-reach-the-kernel)).
 - [ ] **25.4 Intel GPU 3D.** Pass `gltest` and `d3dtest` on the T14 GPU and
   outperform llvmpipe and lavapipe.
 - [ ] **25.5 Second monitor.** Drive an external display through HDMI or

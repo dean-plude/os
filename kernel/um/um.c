@@ -2752,6 +2752,7 @@ static void destroy(UmProcess *p)
     um_console_flush_log(p);
     release_images(p);
     imgc_release(p);
+    um_d3dkmt_process_gone(p);
     um_close_all_handles(p);
     if (p->pml4) free_address_space(p->pml4);
     um_release_views(p);
@@ -3432,6 +3433,7 @@ void UmPoll(void)
             imgc_release(p);
             um_pipe_process_gone(p);            /* before its memory goes */
             um_driver_process_gone(p);
+            um_d3dkmt_process_gone(p);
             um_close_all_handles(p);
             free_address_space(p->pml4);
             um_release_views(p);
