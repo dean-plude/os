@@ -817,8 +817,13 @@ online over Wi-Fi, takes a video call and runs a day on battery with sleep.
   firmware; join WPA2 and WPA3 networks and fetch HTTPS content. Intel's
   own Windows driver (`Netwtw14.sys`) already downloads by hardware ID,
   installs and registers with NovaOS's NDIS host on a stand-in device in
-  QEMU (step 30.9); scanning and joining a network on the real card is
-  this step.
+  QEMU (step 30.9). The first part of NovaOS's WDI command layer
+  (`kernel/nt/wdi.c`: adapter capabilities, the station port and scans,
+  with `netsh wlan show interfaces` and `netsh wlan show networks`) is
+  done, tested with NovaOS's own WDI miniport on QEMU's `edu` device (the
+  devices suite's `wifi` boot). Still needed: the data path (TAL TX/RX),
+  connecting with WPA2 and WPA3, `wlanapi.dll` and Settings' Wi-Fi page,
+  then scanning and joining a network on the T14's card.
 - [ ] **28.2 Bluetooth.** Pair and use a Bluetooth mouse and headset, including
   after sleep.
 - [ ] **28.3 Camera.** Add USB Video Class capture through Media Foundation;

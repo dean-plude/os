@@ -448,8 +448,11 @@ downloaded by the test as NovaOS's other tests download apps.
    where roadmap step 28.1 chooses between it and a native driver.
    **Done.** Test: `netkvm`.  Beyond it, Intel's `Netwtw14.sys` (a WDI
    miniport) installs, registers and has its adapter opened on a PCI
-   stand-in for the AX211 (test: `ax211`); the WDI command layer that
-   scans and connects is 28.1's and needs the T14.
+   stand-in for the AX211 (test: `ax211`).  The WDI command layer is
+   28.1's: its first part (capabilities, the station port, scanning) is
+   in `kernel/nt/wdi.c`, tested with NovaOS's own WDI miniport (test:
+   `wifi`); connecting and the data path follow, and the real card needs
+   the T14.
 10. **30.10 UMDF 2.** `WUDFHost.exe` and the reflector from the same WDF
     source.  Done when: a NovaOS UMDF test driver on a QEMU device starts
     in its host process and serves a test program's I/O.  **Done.** Test:

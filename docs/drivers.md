@@ -523,10 +523,36 @@ What works: the NDIS host calls `MiniportWdiAllocateAdapter` and
 `ZwReadFile`), checks its signature (ECDSA P-384 and SHA-384 through
 NovaOS's `cng.sys` exports over Mbed TLS) and probes its hardware.
 
-What is missing: the WDI command layer (the `WDI_TASK_*` and `WDI_SET_*`
-messages through `MiniportWdiStartOperation`, and the transmit and receive
-path), scanning, connecting, WPA2/WPA3, and the adapter as the network
-stack's. That is roadmap step 28.1, which needs the real card.
+After the open, NovaOS's WDI command layer (`kernel/nt/wdi.c`, the part
+of Windows' `wdiwifi.sys` that drives the driver) takes over. A WDI
+command is an NDIS method request (`OID_WDI_*`, `NdisRequestMethod`) to
+the driver's `MiniportOidRequest` whose buffer is a `WDI_MESSAGE_HEADER`
+and TLVs (`kernel/nt/wdi.h`); a task is accepted by its request and
+finished by an `NDIS_STATUS_WDI_INDICATION_*_COMPLETE` status indication
+carrying its transaction ID. NovaOS asks the adapter's capabilities
+(`OID_WDI_GET_ADAPTER_CAPABILITIES`: MAC address, firmware, radio state,
+bands), creates its station port (`OID_WDI_TASK_CREATE_PORT`) and scans
+on it (`OID_WDI_TASK_SCAN`): the BSS entries the driver indicates, each
+with the access point's beacon or probe response, become the list
+`netsh wlan show networks [mode=bssid]` prints (SSID, WPA2 or WPA3 from
+the RSN element, cipher, signal, radio type, band, channel). `netsh wlan
+show interfaces` lists the adapters. Disabling the device deletes the
+port before the adapter closes.
+
+What is missing: the data path (`MiniportWdiTalTxRxInitialize` and the
+TAL transmit and receive handlers), `OID_WDI_SET_ADAPTER_CONFIGURATION`,
+connecting (`OID_WDI_TASK_CONNECT`, the WPA2/WPA3 handshake and keys),
+the adapter as the network stack's, `wlanapi.dll` for programs and
+Settings' Wi-Fi page. That is the rest of roadmap step 28.1; scanning and
+joining on the real card needs the T14.
+
+QEMU has no Wi-Fi card of any kind, so the `wifi` self-test brings its
+own: `wditest.sys` (`tools/drivertest/wditest.c`) is a WDI miniport on
+QEMU's `edu` card whose radio hears three access points (WPA2-Personal on
+2.4 GHz, WPA3-Personal on 5 GHz, an open network). The test installs it
+with `pnputil`, checks the capabilities, port and scan messages from both
+sides (the driver reports what it was sent), the two `netsh wlan`
+listings, and the port deleted and the adapter closed on disable.
 
 QEMU has no Intel Wi-Fi card, so the `ax211` self-test uses a PCI
 stand-in: the QEMU firmware config file `opt/novaos/pci-standin`
@@ -700,6 +726,7 @@ kept in the repository or the image.
 | `driversearch` | a NovaOS test package (`novaser.inf`) behind recorded Catalog pages | virtio-serial, with problem code 28 | `pnputil /scan-devices /search-online`: ranking, a bad SHA-256 refused, staging, no second download |
 | `usbserial` | FTDI's `ftdibus.sys` and `ftser2k.sys` | QEMU's `usb-serial` (FTDI FT232) | download by hardware ID, the USB bus interface, COM3 |
 | `ax211` | Intel's `Netwtw14.sys` (WDI) | `edu` standing in for the AX211 | download, signing, registration, firmware read, adapter open |
+| `wifi` | `wditest.sys` (NovaOS's WDI miniport) | `edu` | the WDI command layer: capabilities, the station port, a scan and its BSS entries, `netsh wlan` |
 | `wddm` | `wddmdod.sys` (NovaOS's WDDM display-only driver) | QEMU's standard VGA | the dxgkrnl host, mode changes, the screen handed back on disable |
 | `hid` | NovaOS's HID class driver and `HidUsb` minidriver | a vendor-defined USB HID device (`tools/padpeer.py --kind vendor`) | `hid.dll` and setupapi on a class-driver collection: strings, preparsed data, feature, input and output reports, two handles, Raw Input, unplugging |
 | `composite` | the HID class driver with `HidUsb` on each function, `kbdhid` on the keyboard's collection | a composite USB device: a keyboard and two vendor-defined HID functions (`tools/compositepeer.py`) | a node and a PDO per interface (`MI_nn` IDs), each function's own reports and feature report, Device Manager, unplugging |

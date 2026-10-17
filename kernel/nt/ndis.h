@@ -247,7 +247,7 @@ typedef struct {
     NT_DEVICE_OBJECT  *PdoOverride;
 } NDIS_SG_DMA_DESCRIPTION;
 
-/* NDIS_OID_REQUEST: a query or a set of one OID */
+/* NDIS_OID_REQUEST: a query, a set or a method request of one OID */
 #define NdisRequestQueryInformation 0
 #define NdisRequestSetInformation   1
 #define OID_GEN_CURRENT_PACKET_FILTER 0x0001010E
@@ -272,6 +272,11 @@ typedef struct {
             void          *InformationBuffer;
             unsigned int   InformationBufferLength, BytesRead, BytesNeeded;
         } SET_INFORMATION;
+        struct {                        /* (NdisRequestMethod: WDI's commands) */
+            unsigned int   Oid;
+            void          *InformationBuffer;
+            unsigned int   InputBufferLength, OutputBufferLength, MethodId, BytesWritten, BytesRead, BytesNeeded;
+        } METHOD_INFORMATION;
         unsigned char  Space[40];
     } DATA;
     unsigned char      NdisReserved[16 * sizeof(void *)];
@@ -374,6 +379,8 @@ _Static_assert(sizeof(NDIS_SG_DMA_DESCRIPTION) == 48 && NDIS_OFFSET(NDIS_SG_DMA_
 _Static_assert(sizeof(NDIS_OID_REQUEST) == 248 && NDIS_OFFSET(NDIS_OID_REQUEST, DATA) == 32 &&
                NDIS_OFFSET(NDIS_OID_REQUEST, NdisReserved) == 72 && NDIS_OFFSET(NDIS_OID_REQUEST, Flags) == 244,
                "OID_REQUEST");
+_Static_assert(NDIS_OFFSET(NDIS_OID_REQUEST, DATA.METHOD_INFORMATION.InputBufferLength) == 48 &&
+               NDIS_OFFSET(NDIS_OID_REQUEST, DATA.METHOD_INFORMATION.BytesWritten) == 60, "OID_REQUEST method");
 _Static_assert(sizeof(NDIS_STATUS_INDICATION) == 112 && NDIS_OFFSET(NDIS_STATUS_INDICATION, StatusBuffer) == 48 &&
                NDIS_OFFSET(NDIS_STATUS_INDICATION, Guid) == 60, "STATUS_INDICATION");
 _Static_assert(sizeof(NDIS_CONFIGURATION_OBJECT) == 24 && sizeof(NDIS_CONFIGURATION_PARAMETER) == 24 &&

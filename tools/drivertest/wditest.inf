@@ -1,0 +1,57 @@
+; wditest.inf - the package of wditest.sys, a WDI Wi-Fi miniport for QEMU's edu device
+; (tools/drivertest/wditest.c; the wifi self-test installs it with pnputil /add-driver /install)
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Net
+ClassGuid   = {4d36e972-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderName%
+DriverVer   = 10/17/2026,1.0.0.0
+CatalogFile = wditest.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+wditest.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = Wifi,NTamd64
+
+[Wifi.NTamd64]
+%DeviceDesc% = WdiTest_Install, PCI\VEN_1234&DEV_11E8
+
+[WdiTest_Install.NT]
+Characteristics = 0x84          ; NCF_PHYSICAL | NCF_HAS_UI
+BusType         = 5             ; PCIBus
+AddReg          = WdiTest_Ndi
+CopyFiles       = WdiTest_Files
+*IfType         = 71            ; IF_TYPE_IEEE80211
+*MediaType      = 16            ; NdisMediumNative802_11
+*PhysicalMediaType = 9          ; NdisPhysicalMediumNative802_11
+
+[WdiTest_Ndi]
+HKR, Ndi,            Service,    0, "WdiTest"
+HKR, Ndi\Interfaces, UpperRange, 0, "ndis5"
+HKR, Ndi\Interfaces, LowerRange, 0, "wlan,ethernet"
+
+[WdiTest_Files]
+wditest.sys
+
+[WdiTest_Install.NT.Services]
+AddService = WdiTest, 0x00000002, WdiTest_Service
+
+[WdiTest_Service]
+ServiceType   = 1               ; SERVICE_KERNEL_DRIVER
+StartType     = 3               ; SERVICE_DEMAND_START
+ErrorControl  = 1
+ServiceBinary = %13%\wditest.sys
+
+[Strings]
+ProviderName     = "NovaOS Test"
+ManufacturerName = "NovaOS Test"
+DiskName         = "NovaOS Wi-Fi driver test"
+DeviceDesc       = "NovaOS WDI test Wi-Fi adapter"

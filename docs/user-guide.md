@@ -404,7 +404,15 @@ netsh interface ipv4 show config
 
 Changes take effect at once and are kept across restarts, in the registry
 under `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters`.
-**Wi-Fi is not supported yet.**
+
+**Wi-Fi** cannot connect yet.  With a Wi-Fi card whose Windows driver
+NovaOS can open, the Terminal lists the card and the networks in range,
+as on Windows:
+
+```text
+netsh wlan show interfaces
+netsh wlan show networks mode=bssid
+```
 
 **Sound** plays through the newest output device.  Settings > Sound picks
 another device and sets each device's volume; the choices are kept across

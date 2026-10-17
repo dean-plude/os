@@ -40,6 +40,8 @@
  */
 #include "ntapi.h"
 #include "ndis.h"
+#include "wdi.h"
+#include "wlan.h"
 #include "../net/net.h"
 #include "../hal/pci.h"
 #include "../ke/irql.h"
@@ -160,6 +162,7 @@ typedef struct NdisAdapter {
     bool                 wdi_allocated, wdi_open;
     NT_KEVENT            wdi_done;
     NDIS_STATUS          wdi_status;
+    WdiHost             *wdi_host;      /* its command layer (wdi.c), once open */
 } NdisAdapter;
 
 /* A control device (NdisRegisterDeviceEx): the miniport's own dispatch
@@ -420,10 +423,9 @@ static bool tx_setup(NdisAdapter *a)
  * lower edge: MiniportWdiAllocateAdapter, then MiniportWdiOpenAdapter,
  * the IHV's "open task" (its hardware start: registers, firmware), which
  * completes through NdisWdiOpenAdapterComplete; then WDI commands (TLV
- * messages through MiniportDirectOidRequest: adapter capabilities, scans,
- * connections).  NovaOS is that upper edge as far as the open; the WDI
- * command layer, and with it scanning and joining a network, is roadmap
- * step 28.1's (docs/drivers.md).
+ * messages in NdisRequestMethod OID requests to its MiniportOidRequest:
+ * adapter capabilities, ports, scans, connections), which are wdi.c's,
+ * the command layer (roadmap step 28.1, docs/drivers.md).
  * ----------------------------------------------------------------------- */
 typedef NDIS_STATUS (NT_API *WDI_ALLOCATE)(void *adapter_handle, void *driver_ctx, NDIS_MINIPORT_INIT_PARAMETERS *,
                                           NDIS_WDI_INIT_PARAMETERS *, NDIS_MINIPORT_ADAPTER_REGISTRATION_ATTRIBUTES *);
@@ -453,6 +455,44 @@ static NDIS_STATUS wdi_wait(NdisAdapter *a, NDIS_STATUS st, const char *what)
         return NDIS_STATUS_FAILURE;
     }
     return a->wdi_status;
+}
+
+#define WDI_REQUEST_WAIT_S 60
+
+/* wdi.c's command: an OID_WDI_* method request, waited for (also when the
+ * miniport pends it and completes it with NdisMOidRequestComplete) */
+static INT32 wdi_request(void *h, UINT32 oid, UINT16 port, void *buf, UINT32 in_len, UINT32 out_len, UINT32 *written)
+{
+    NdisAdapter *a = adapter_of(h);
+    *written = 0;
+    if (!a || !a->wdi_open) return NDIS_STATUS_FAILURE;
+    NDIS_OID_REQUEST *r = pool_alloc(sizeof(*r));
+    if (!r) return NDIS_STATUS_RESOURCES;
+    r->Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST;
+    r->Header.Revision = 1;
+    r->Header.Size = sizeof(*r);
+    r->RequestType = NdisRequestMethod;
+    r->PortNumber = port == WDI_PORT_ID_ADAPTER ? 0 : port;
+    r->DATA.METHOD_INFORMATION.Oid = oid;
+    r->DATA.METHOD_INFORMATION.InformationBuffer = buf;
+    r->DATA.METHOD_INFORMATION.InputBufferLength = in_len;
+    r->DATA.METHOD_INFORMATION.OutputBufferLength = out_len;
+    nt_KeClearEvent(&a->oid_done);
+    a->oid_waiting = r;
+    NDIS_STATUS st = ((OID_REQUEST)a->drv->ch.OidRequestHandler)(a->ctx, r);
+    if (st == NDIS_STATUS_PENDING) {
+        INT64 t = -(INT64)WDI_REQUEST_WAIT_S * 10000000;
+        if (nt_KeWaitForSingleObject(&a->oid_done, 0, 0, 0, &t) != NT_STATUS_SUCCESS) {
+            kprintf("[NDIS] %s: WDI: OID 0x%08x not completed in %d s\n", a->drv->service, oid, WDI_REQUEST_WAIT_S);
+            a->oid_waiting = NULL;      /* (the request is left to the miniport) */
+            return NDIS_STATUS_FAILURE;
+        }
+        st = a->oid_status;
+    }
+    a->oid_waiting = NULL;
+    *written = r->DATA.METHOD_INFORMATION.BytesWritten;
+    pool_free(r);
+    return st;
 }
 
 static NT_STATUS wdi_start(NdisAdapter *a)
@@ -492,14 +532,23 @@ static NT_STATUS wdi_start(NdisAdapter *a)
     }
     a->wdi_open = true;
     a->initialized = true;
-    kprintf("[NDIS] %s: WDI: adapter open; NovaOS has no WDI command layer yet, so it scans and joins nothing "
-            "(roadmap step 28.1)\n", d->service);
+    /* (the device's description, for netsh wlan show interfaces: "@inf,%key%;text" or plain) */
+    char ek[200], desc[160] = "";
+    const char *inst = NtPnpInstanceOf(a->pdo);
+    ksnprintf(ek, sizeof(ek), ENUM_KEY "%s", inst ? inst : "");
+    if (inst) um_registry_get_sz(ek, "DeviceDesc", desc, sizeof(desc));
+    const char *semi = strrchr(desc, ';');
+    a->wdi_host = WdiAttach(a, d->service, semi ? semi + 1 : desc, wdi_request);
     return NT_STATUS_SUCCESS;
 }
 
 static void wdi_stop(NdisAdapter *a)
 {
     NdisDriver *d = a->drv;
+    if (a->wdi_host) {
+        WdiDetach(a->wdi_host);
+        a->wdi_host = NULL;
+    }
     if (a->wdi_open && d->wdi_ch.CloseAdapterHandler) {
         nt_KeClearEvent(&a->wdi_done);
         NDIS_STATUS ns = wdi_wait(a, ((WDI_CLOSE)d->wdi_ch.CloseAdapterHandler)(a->ctx), "MiniportWdiCloseAdapter");
@@ -1323,6 +1372,10 @@ NT_API void nt_NdisMIndicateStatusEx(void *h, NDIS_STATUS_INDICATION *ind)
 {
     NdisAdapter *a = adapter_of(h);
     if (!a || !ind) return;
+    if (a->drv->wdi && WDI_IS_INDICATION(ind->StatusCode) && ind->StatusBuffer) {
+        WdiIndicate(a, (UINT32)ind->StatusCode, ind->StatusBuffer, ind->StatusBufferSize);
+        return;
+    }
     if (ind->StatusCode == NDIS_STATUS_LINK_STATE && ind->StatusBuffer && ind->StatusBufferSize >= sizeof(NDIS_LINK_STATE)) {
         NDIS_LINK_STATE *ls = ind->StatusBuffer;
         bool up = ls->MediaConnectState == MediaConnectStateConnected;

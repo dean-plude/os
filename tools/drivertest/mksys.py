@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """mksys.py — builds a Windows kernel-mode test driver: wdmtest.sys,
-edutest.sys (step 30.3's Plug and Play driver for QEMU's edu device), or
+edutest.sys (step 30.3's Plug and Play driver for QEMU's edu device),
 wddmdod.sys (Phase 25.3's WDDM display-only driver for QEMU's standard VGA)
+or wditest.sys (step 28.1's WDI Wi-Fi miniport for QEMU's edu device)
 
     mksys.py OUTDIR [NAME]
 
 tools/build_userland.py runs it and puts what it writes in C:\\Tests\\Wdm,
-C:\\Tests\\Edu and C:\\Tests\\Wddm.  The driver (tools/drivertest/NAME.c) is built as a Windows driver is:
+C:\\Tests\\Edu, C:\\Tests\\Wddm and C:\\Tests\\Wifi.  The driver (tools/drivertest/NAME.c) is built as a Windows driver is:
 clang for x86_64-pc-windows-msvc, linked by lld-link /driver against an
 import library for ntoskrnl.exe and hal.dll.  The import libraries are made
 here from the functions NovaOS's kernel exports to drivers
@@ -25,7 +26,7 @@ policy's other cases are made from it:
     wdmbad\\            the same package with wdmbad.sys changed after the catalog
                         was made: pnputil refuses to stage it
 
-edutest.sys's and wddmdod.sys's packages (NAME.inf, from tools/drivertest)
+edutest.sys's, wddmdod.sys's and wditest.sys's packages (NAME.inf, from tools/drivertest)
 are signed as wdmcat's is: a test-signed catalog, NAME.cat, lists the INF
 and the .sys.
 """

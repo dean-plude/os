@@ -384,6 +384,7 @@ WDM = load_suite('devices/wdm')
 EDU = load_suite('devices/edu')
 USBSERIAL = load_suite('devices/usbserial')
 AX211 = load_suite('devices/ax211')
+WIFI = load_suite('devices/wifi')
 VIOSER = load_suite('devices/vioser')
 VIOSTOR = load_suite('devices/viostor')
 UMDF = load_suite('devices/umdf')
@@ -602,6 +603,14 @@ def edu_boot(work):
     _PRT of its own: its INTA reaches the driver through the bridge
     swizzle onto the root port's pin in the root bridge's _PRT"""
     return ['-device', 'pcie-root-port,id=rp1,chassis=1,slot=1', '-device', 'edu,bus=rp1'], []
+
+
+def wifi_boot(work):
+    """QEMU's edu device (PCI 1234:11e8) as a Wi-Fi card: wditest.sys, a WDI
+    miniport whose radio hears three access points, is installed on it with
+    pnputil, and netsh wlan scans through NovaOS's WDI command layer
+    (tests/selftest/devices/wifi)"""
+    return ['-device', 'edu'], []
 
 
 def umdf_boot(work):
@@ -932,6 +941,7 @@ BOOTS = {
                 ('pnp', PNP, pnp_boot), ('ntfs', NTFS, ntfs_boot),
                 ('wdm', WDM, wdm_boot), ('edu', EDU, edu_boot), ('vioser', VIOSER, vioser_boot),
                 ('usbserial', USBSERIAL, usbserial_boot), ('ax211', AX211, ax211_boot),
+                ('wifi', WIFI, wifi_boot),
                 ('viostor', VIOSTOR, viostor_boot), ('umdf', UMDF, umdf_boot),
                 ('kmdfedu', KMDFEDU, kmdfedu_boot), ('netkvm', NETKVM, netkvm_boot),
                 ('wddm', WDDM, wddm_boot), ('devmgr', DEVMGR, devmgr_boot),

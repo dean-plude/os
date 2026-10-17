@@ -691,6 +691,12 @@ edudir = os.path.join(out, 'edutest')
 run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'drivertest', 'mksys.py'), edudir, 'edutest'])
 for n in sorted(os.listdir(edudir)):
     built.append((f'\\Tests\\Edu\\{n}', os.path.join(edudir, n)))
+# 3a2d. wditest.sys and its package, a WDI Wi-Fi miniport for QEMU's edu
+# device the wifi self-test installs with pnputil (step 28.1)
+wifidir = os.path.join(out, 'wditest')
+run([sys.executable, os.path.join(os.path.dirname(HERE), 'tools', 'drivertest', 'mksys.py'), wifidir, 'wditest'])
+for n in sorted(os.listdir(wifidir)):
+    built.append((f'\\Tests\\Wifi\\{n}', os.path.join(wifidir, n)))
 # 3a2d. wddmdod.sys and its package, the WDDM display-only driver for QEMU's
 # standard VGA the wddm self-test installs with pnputil (Phase 25.3, step 1)
 wddmdir = os.path.join(out, 'wddmdod')

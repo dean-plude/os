@@ -342,6 +342,7 @@ boot does not have (`tests/selftest/devices/NAME/`):
 | `vioser` | virtio-win's signed `vioser.sys` (KMDF) on virtio-serial: bytes to the host and back |
 | `usbserial` | QEMU's FTDI FT232 USB serial adapter: FTDI's own driver found by hardware ID, the port becomes COM3 and `serialtest` loops data through it |
 | `ax211` | Intel's AX211 Wi-Fi driver (`Netwtw14.sys`) downloaded by hardware ID and loaded on a stand-in PCI device; it loads its firmware and registers with NDIS, and its hardware probe fails as expected, since the device is not a real AX211 |
+| `wifi` | a WDI Wi-Fi miniport (`wditest.sys`) on the edu device, hearing three access points: NovaOS's WDI command layer reads its capabilities, creates its station port and scans; `netsh wlan show interfaces` and `netsh wlan show networks mode=bssid` list the adapter and the networks; disabling it deletes the port |
 | `viostor` | virtio-win's signed `viostor.sys` on virtio-blk, on NovaOS's Storport host: its NTFS volume mounts as D: |
 | `umdf` | a UMDF 2 driver (`umdftest.dll`) on the edu device, running in `WUDFHost.exe` |
 | `kmdfedu` | a KMDF driver (`kmdfedu.sys`) on the edu device, with its memory, interrupt (line, then MSI) and DMA |
