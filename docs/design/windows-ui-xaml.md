@@ -224,9 +224,31 @@ vendors.
      the metadata's two calls into the layers above (custom types'
      providers, class constructors) are Microsoft's own stubs from its
      isolated unit tests until those layers build.
-   - *Next.*  The collections (`Collection`, which needs the composition
-     tree's `CompHelper/CompositionHelper.h`), then the rest of the core,
-     the parser and `dxaml/lib` compiled as `Windows.UI.Xaml.dll`, until
+   - *The collections (done so far).*  `Collection` builds and links
+     with `CDependencyObject` and the value types under it: `CValue`
+     (whose `CValueStores.cpp` NovaOS wraps with explicit member
+     instantiations, `userland/windows_ui_xaml/src`, because clang does
+     not instantiate members defined after a `template struct`), the
+     flyweight values, the primitive dependency objects, `math` (with
+     `pal/common`'s geometry helpers) and `theming`.  The composition
+     tree's `CompHelper/CompositionHelper.h` and
+     `CompositionVisualSurfaceHelper.h` are declare-only stand-ins until
+     the composition tree builds; `CoreWindowSiteBridge` joined NovaOS's
+     lifted IDL.  Microsoft's release build leaves `DBG` undefined, and
+     so does NovaOS's now.  The layers above (the core's `CCoreServices`,
+     `CUIElement`, the resources, the visual tree) are Microsoft's own
+     isolated unit-test stubs and metadata mocks, built with
+     `__XAML_UNITTESTS__` as `xaml_teststubs.lib` for `xamlbasetest`
+     only, plus a few NovaOS stand-ins (`src/core_stubs.cpp`) for what
+     those stubs leave out.  `xamlbasetest` fills, searches and empties
+     a `DependencyObjectCollection`, as Microsoft's own collection tests
+     do, and walks a `CollectionMoveView`.  NovaOS gained what the
+     sources needed below them: `thread_local` destructors (`__tlregdtor`
+     in `userland/lib/tlregdtr.c`, linked only into C++ programs that have one), the UCRT's `_MAX_*TOSTR_*_COUNT` sizes,
+     and `windowsnumerics.h`'s `invert` (MinGW-w64 declares it only).
+   - *Next.*  The resources (`resources`, whose `ResourceResolver` needs
+     the parser) and the parser, then the rest of the core and
+     `dxaml/lib` compiled as `Windows.UI.Xaml.dll`, until
      `Application.Start` runs and `XamlReader.Load` parses a page, one
      component seam per pull request.
 4. **32.4 A XAML page draws.** Layout and rendering through composition:

@@ -1,4 +1,4 @@
 {"selftest": true, "xaml": true,
- "include": ["third_party/microsoft-ui-xaml/dxaml/xcp/components/qualifiers/inc"],
- "sources": ["third_party/microsoft-ui-xaml/dxaml/xcp/components/unittests/stubs/ClassInfo_Stub.cpp",
-             "third_party/microsoft-ui-xaml/dxaml/xcp/components/unittests/stubs/MetadataAPI_Stub.cpp"]}
+ "include": ["third_party/microsoft-ui-xaml/dxaml/xcp/components/qualifiers/inc",
+             "third_party/microsoft-ui-xaml/dxaml/xcp/components/Collection/Inc"],
+ "cflags": ["-D__XAML_UNITTESTS__"]}

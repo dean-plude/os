@@ -39,6 +39,16 @@ namespace Microsoft.UI.Content
         void Hide();
     }
 
+    // the site bridge an island has in a CoreWindow (a UWP app's window):
+    // XAML makes one on its Compositor for the thread's CoreWindow and
+    // connects its root island to it; it is also the window's
+    // IContentSiteBridge
+    runtimeclass CoreWindowSiteBridge
+    {
+        static Microsoft.UI.Content.CoreWindowSiteBridge Create(Microsoft.UI.Composition.Compositor compositor, Windows.UI.Core.CoreWindow coreWindow);
+        void Connect(Microsoft.UI.Content.ContentIsland content);
+    }
+
     // DesktopSiteBridge's newer members: a popup's own bridge
     interface IDesktopSiteBridge2
     {

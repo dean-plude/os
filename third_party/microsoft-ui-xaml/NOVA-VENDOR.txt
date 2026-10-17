@@ -11,10 +11,15 @@ sources roadmap step 32.3 builds so far with the headers they include: the
 XAML core's lowest component libraries (dxaml/xcp/components: base,
 xstring, criticalsection, dependencyLocator, runtimeEnabledFeatures, com,
 threading, staticpal, qualifiers; the type metadata, metadata and
-metadata/DynamicMetadataStorage; CDependencyObject's property system,
-DependencyObject; with their MSBuild projects), two of the isolated unit
-tests' stubs (components/unittests/stubs ClassInfo_Stub.cpp and
-MetadataAPI_Stub.cpp, linked by xamlbasetest), the components'
+metadata/DynamicMetadataStorage;
+CDependencyObject's property system, DependencyObject and its minimal
+DependencyObject/minlib; the value types CValue, flyweight,
+primitiveDependencyObjects, math and theming; the collections, Collection;
+with their MSBuild projects), pal/common's ctypes.cpp and matrix.cpp (the
+math library's geometry helpers), the isolated unit tests' stubs and
+metadata mocks (components/unittests/stubs, less four stubs NovaOS does
+not link, and components/metadata/mocks; xaml_teststubs.lib, linked by
+xamlbasetest), the components'
 precompiled header (components/pch), headers from dxaml/xcp/inc, core/inc,
 pal and the components' inc directories those include, external/inc's gsl
 and ankerl, and XAML's ETW manifest

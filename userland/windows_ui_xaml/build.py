@@ -60,7 +60,25 @@ staticpal/lib/Microsoft.UI.Xaml.StaticPal.vcxproj
 qualifiers/lib/Microsoft.UI.Xaml.Qualifiers.vcxproj
 metadata/lib/Microsoft.UI.Xaml.Metadata.vcxproj
 metadata/DynamicMetadataStorage/Microsoft.UI.Xaml.DynamicMetadataStorage.vcxproj
-DependencyObject/lib/Microsoft.UI.Xaml.DependencyObject.vcxproj'''.split()
+DependencyObject/lib/Microsoft.UI.Xaml.DependencyObject.vcxproj
+DependencyObject/minlib/Microsoft.UI.Xaml.DependencyObjectMin.vcxproj
+CValue/lib/Microsoft.UI.Xaml.CValue.vcxproj
+flyweight/lib/Microsoft.UI.Xaml.Flyweight.vcxproj
+primitiveDependencyObjects/lib/Microsoft.UI.Xaml.PrimitiveDependencyObjects.vcxproj
+math/lib/Microsoft.UI.Xaml.Math.vcxproj
+theming/lib/Microsoft.UI.Xaml.Theming.vcxproj
+Collection/Lib/Microsoft.UI.Xaml.Collection.vcxproj'''.split()
+
+# Sources compiled in place of Microsoft's, where clang has to be told what
+# MSVC does on its own (src/, each says what)
+REPLACED = {'CValue/CValueStores.cpp': os.path.join(HERE, 'src', 'CValueStores.cpp')}
+# Sources compiled with a project's that it does not list: two of the
+# platform layer's the components call (pal/common: character classes, the
+# 2D matrix), and NovaOS's definitions of what MSVC defines from a
+# declaration (src/definitions.cpp)
+ADDED = {'math/lib/Microsoft.UI.Xaml.Math.vcxproj': [os.path.join(XCP, 'pal', 'common', 'ctypes.cpp'),
+                                                     os.path.join(XCP, 'pal', 'common', 'matrix.cpp')],
+         'DependencyObject/lib/Microsoft.UI.Xaml.DependencyObject.vcxproj': [os.path.join(HERE, 'src', 'definitions.cpp')]}
 
 # The include directories every component sees (components/base.props,
 # in its order) and the definitions components/common.props and
@@ -76,9 +94,22 @@ components/collection/inc components/scaling/inc components/Switcher/inc compone
 components/resources/inc inc core/compositor core/hw core/inc core/text/RichTextServices/inc
 core/imaging/ImagingProvider pal/inc win/inc'''.split()
 DEFINES = '''UNICODE _UNICODE WIL_SUPPRESS_PRIVATE_API_USE MIDL_NS_PREFIX ENABLE_WINRT_EXPERIMENTAL_TYPES=1
-__WRL_STRICT__ __WRL_FORCE_INSPECTABLE_CLASS_MACRO__ _HAS_EXCEPTIONS=0 WIL_SUPPRESS_EXCEPTIONS=1 DBG=0
+__WRL_STRICT__ __WRL_FORCE_INSPECTABLE_CLASS_MACRO__ _HAS_EXCEPTIONS=0 WIL_SUPPRESS_EXCEPTIONS=1
 _WIN32_WINNT=0x0A00 WINVER=0x0A00 NTDDI_VERSION=0x0A00000F STRSAFE_NO_DEPRECATE _ENFORCE_MATCHING_ALLOCATORS=0
 _HAS_FUNCTION_ALLOCATOR_SUPPORT=1'''.split()
+# What the libraries call in the XAML core above them, for programs that
+# test the components on their own (xamlbasetest): Microsoft's isolated unit
+# tests' stubs and metadata mocks (built as Microsoft builds them, with
+# __XAML_UNITTESTS__; MSVC lets the mocks reach a base class's protected
+# members through another object), less the stubs of the element tree,
+# and NovaOS's stand-ins for the few element members the libraries call
+# (src/core_stubs.cpp, compiled with the collections' include
+# directories).  As a library, a program takes only the stubs it needs; it
+# shrinks as the core builds.
+TEST_STUBS = [('unittests/stubs/Microsoft.UI.Xaml.Stubs.vcxproj',
+               ('UIElement_Stub.cpp', 'DCompVisual_Stub.cpp', 'Geometry_Stub.cpp', 'VisualStateManager_Stub.cpp'), []),
+              ('metadata/mocks/Microsoft.UI.Xaml.Tests.Isolated.Mocks.Framework.Metadata.vcxproj', (),
+               ['-fno-access-control', '-I', os.path.join(XCP, 'components', 'metadata', 'mocks')])]
 PCH = os.path.join(XCP, 'components', 'pch', 'precomp.h')
 # the DLLs XAML's sources call beyond a program's usual ones
 LIBS = ['dbghelp', 'shlwapi']
@@ -184,13 +215,38 @@ def library(b, odir):
     with _LIB:
         f = flags(b)
         headers = [os.path.join(r, h) for r, _, fs in os.walk(INC) for h in fs if h.endswith('.h')] + \
-                  [os.path.abspath(__file__)]
+                  [os.path.abspath(__file__)] + list(REPLACED.values()) + [x for v in ADDED.values() for x in v]
         objs = []
         for proj in LIBRARIES:
             p = vcxproj.read(os.path.join(XCP, 'components', proj), PROPS)
             extra = [x for i in p['includes'] for x in ('-I', i)] + ['-D' + d for d in p['defines']] + ['-include', PCH]
             prefix = 'xaml_' + proj.split('/')[0] + '_'
-            objs += b.compile_many(p['sources'], odir, prefix, f + extra, headers, compiler='clang++')
+            srcs = [REPLACED.get(os.path.relpath(s, os.path.join(XCP, 'components')).replace(os.sep, '/'), s)
+                    for s in p['sources']] + ADDED.get(proj, [])
+            objs += b.compile_many(srcs, odir, prefix, f + extra, headers, compiler='clang++')
+        if not os.path.exists(lib) or any(os.path.getmtime(o) > os.path.getmtime(lib) for o in objs):
+            b.run(['lld-link', '/lib', f'/out:{lib}'] + objs)
+    return lib
+
+
+_STUBS = threading.Lock()
+
+
+def test_stubs(b, odir):
+    """xaml_teststubs.lib (TEST_STUBS), built once per architecture"""
+    lib = os.path.join(odir, 'xaml_teststubs.lib')
+    with _STUBS:
+        f = flags(b) + ['-D__XAML_UNITTESTS__']
+        headers = [os.path.join(r, h) for r, _, fs in os.walk(INC) for h in fs if h.endswith('.h')] + \
+                  [os.path.abspath(__file__)]
+        objs = []
+        for proj, skip, more in TEST_STUBS + [('Collection/Lib/Microsoft.UI.Xaml.Collection.vcxproj', None, [])]:
+            p = vcxproj.read(os.path.join(XCP, 'components', proj), PROPS)
+            extra = more + [x for i in p['includes'] for x in ('-I', i)] + ['-D' + d for d in p['defines']] + \
+                ['-include', PCH]
+            srcs = [os.path.join(HERE, 'src', 'core_stubs.cpp')] if skip is None else \
+                [s for s in p['sources'] if os.path.basename(s) not in skip]
+            objs += b.compile_many(srcs, odir, 'xamlstub_', f + extra, headers, compiler='clang++')
         if not os.path.exists(lib) or any(os.path.getmtime(o) > os.path.getmtime(lib) for o in objs):
             b.run(['lld-link', '/lib', f'/out:{lib}'] + objs)
     return lib
@@ -202,5 +258,6 @@ def program_flags(b):
 
 
 def program_objs(b, odir):
-    """what such a program links besides the C++ library: xaml_components.lib"""
-    return [library(b, odir)]
+    """what such a program links besides the C++ library: xaml_components.lib
+    and, after it, xaml_teststubs.lib"""
+    return [library(b, odir), test_stubs(b, odir)]

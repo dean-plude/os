@@ -982,8 +982,12 @@ as `Windows.UI.Xaml.dll`, then WinUI 2 and app packages.  See
   and composition interop headers, WRL's `async.h`), the type metadata
   built and linked (every built-in type and dependency property, looked up
   in `xamlbasetest`) and `CDependencyObject`'s property system compiled.
-  Next: the collections (`CompositionHelper.h` and the rest of the
-  composition tree's headers), then the rest of the core, the parser, and
+  Fifth part done: the collections and the value types under them
+  (`CValue`, flyweight, primitive dependency objects, math, theming)
+  built and linked with `CDependencyObject`, stand-ins for the composition
+  tree's `CompositionHelper.h`, and a `DependencyObjectCollection` filled,
+  searched and emptied in `xamlbasetest` on Microsoft's unit-test stubs.
+  Next: the resources and the parser, then the rest of the core and
   `dxaml/lib` as `Windows.UI.Xaml.dll`.
 - [ ] **32.4 A XAML page draws.** A `TextBlock` and a `Button` laid out,
   drawn, typed into and clicked in a self-test, with a screenshot.

@@ -2,15 +2,17 @@
  * NovaOS (roadmap step 32.3, docs/design/windows-ui-xaml.md): the XAML
  * core's lowest layer (dxaml/xcp/components: strings, numbers, containers,
  * resource qualifiers, runtime-enabled features, the dependency locator)
- * and its type metadata (every built-in type and dependency property, by
- * index and by name), compiled from Microsoft's sources as XAML is
- * compiled and linked from xaml_components.lib, plus NovaOS's WRL (the
- * Windows SDK's Windows Runtime C++ template library the sources are
- * written on): ComPtr, RuntimeClass, weak references, Callback,
- * EventSource, HString.  The metadata's two calls into the layers above
- * (custom types' providers and class constructors) are Microsoft's own
- * stubs from its isolated unit tests (components/unittests/stubs), linked
- * here until those layers build.
+ * its type metadata (every built-in type and dependency property, by
+ * index and by name) and the collections on CDependencyObject, compiled
+ * from Microsoft's sources as XAML is compiled and linked from
+ * xaml_components.lib, plus NovaOS's WRL (the Windows SDK's Windows
+ * Runtime C++ template library the sources are written on): ComPtr,
+ * RuntimeClass, weak references, Callback, EventSource, HString.  What
+ * those call in the XAML core above them (elements, the core services,
+ * custom types' providers) is Microsoft's own stubs and metadata mocks from
+ * its isolated unit tests (components/unittests), from xaml_teststubs.lib,
+ * until the core builds; the test is built as those tests are, with
+ * __XAML_UNITTESTS__ (xamlbasetest.json).
  *
  *   xamlbasetest        the self-test runs it with no arguments
  */
@@ -30,6 +32,8 @@
 #include <TypeTableStructs.h>
 #include <MetadataAPI.h>
 #include <CStaticLock.h>
+#include <DOCollection.h>
+#include <CollectionMoveView.h>
 
 using namespace Microsoft::WRL;
 using namespace Microsoft::WRL::Wrappers;
@@ -245,6 +249,51 @@ static void test_metadata()
               button, XSTRING_PTR_EPHEMERAL(L"NoSuchProperty"), &found)) && !found);
 }
 
+/* the collections: CDOCollection (a collection of dependency objects, what
+ * Panel.Children and the rest build on, made as Microsoft's isolated tests
+ * make it, with no core), and the view a collection's Move keeps of its
+ * items while it moves them */
+static void test_collections()
+{
+    /* Microsoft's own collection tests: a bare CDOCollection has no type
+     * index, so ValidateItem refuses every item; the typed
+     * DependencyObjectCollection takes any DependencyObject */
+    auto bare = make_xref<CDOCollection>();
+    CHECK("CDOCollection made", bare && bare->GetCount() == 0);
+    CHECK("Reserve", bare->Reserve(33) == S_OK);
+    CHECK("associates children", bare->ShouldAssociateChildren(nullptr));
+    auto items = make_xref<CDependencyObjectCollection>();
+    xref_ptr<CDependencyObject> child[4];
+    for (auto &c : child) c.attach(new CDependencyObject());
+    for (auto &c : child) items->push_back(c);
+    auto &list = items->GetCollection();
+    CHECK("push_back", list.size() == 4 && list[0] == child[0].get() && list[3] == child[3].get());
+    XINT32 at = -1;
+    CHECK("IndexOf", SUCCEEDED(items->IndexOf(child[2].get(), &at)) && at == 2);
+    CHECK("child knows its parent", child[1]->GetParentInternal(false) == items.get());
+    items->remove(child[1].get());
+    CHECK("remove", items->size() == 3 && (*items)[1] == child[2].get());
+    items->remove_if([&](CDependencyObject *obj) { return obj == child[0].get(); });
+    CHECK("remove_if", items->size() == 2 && (*items)[0] != child[0].get());
+    items->clear();
+    CHECK("clear", items->size() == 0);
+
+    using DirectUI::Components::CollectionMoveView;
+    CHECK("move arguments", CollectionMoveView::IsValid(4, 0, 3, 1, 1) && !CollectionMoveView::IsValid(4, 3, 0, 2, 2) &&
+          !CollectionMoveView::HasValidArguments(0, 0, 0, 0));
+    /* items 1-2 of 0,1,2,3 moved to 0 (now 1,2,0,3): the view shows the old
+     * order, by where each item is now, until the move is replayed */
+    CollectionMoveView view(4, 1, 0, 2);
+    CHECK("move view", view.GetSize() == 4 && view.GetSourceIndex(0) == 2 && view.GetSourceIndex(1) == 0 &&
+          view.GetSourceIndex(3) == 3);
+    view.RemoveNext();
+    view.RemoveNext();
+    CHECK("move view after removing", view.GetSize() == 2);
+    view.InsertNext();
+    view.InsertNext();
+    CHECK("move view after inserting", view.GetSize() == 4 && view.GetSourceIndex(0) == 0 && view.GetSourceIndex(3) == 3);
+}
+
 int main(void)
 {
     if (FAILED(RoInitialize(RO_INIT_MULTITHREADED))) printf("RoInitialize failed\n");
@@ -254,6 +303,7 @@ int main(void)
      * which Microsoft.UI.Xaml.dll's DllMain sets up */
     CHECK("StaticLockGlobalInit", SUCCEEDED(DirectUI::StaticLockGlobalInit()));
     test_metadata();
+    test_collections();
     printf("xamlbasetest: %d passed, %d failed (%d-bit)\n", pass, fail, (int)sizeof(void *) * 8);
     return fail != 0;
 }
