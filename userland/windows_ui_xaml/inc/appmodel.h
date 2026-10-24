@@ -9,3 +9,9 @@
 #define __WIL_APPMODEL_H_
 #define __WIL_APPMODEL_H_STL
 #endif
+
+/* (the SDK's longest application user model ID, which MinGW-w64's lacks;
+   XAML's trace session sizes its buffer with it) */
+#ifndef APPLICATION_USER_MODEL_ID_MAX_LENGTH
+#define APPLICATION_USER_MODEL_ID_MAX_LENGTH 130
+#endif

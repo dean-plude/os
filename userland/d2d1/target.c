@@ -257,7 +257,11 @@ static HRESULT STDMETHODCALLTYPE t_qi(Target *t, REFIID riid, void **out)
                        t->kind == TGT_DC ? &IID_ID2D1DCRenderTarget :
                        t->kind == TGT_CONTEXT ? &IID_ID2D1DeviceContext : &IID_ID2D1BitmapRenderTarget;
     if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_ID2D1Resource) ||
-        IsEqualIID(riid, &IID_ID2D1RenderTarget) || IsEqualIID(riid, kind)) {
+        IsEqualIID(riid, &IID_ID2D1RenderTarget) || IsEqualIID(riid, kind) ||
+        (t->kind == TGT_CONTEXT && (IsEqualIID(riid, &IID_ID2D1DeviceContext1) || IsEqualIID(riid, &IID_ID2D1DeviceContext2) ||
+                                    IsEqualIID(riid, &IID_ID2D1DeviceContext3) || IsEqualIID(riid, &IID_ID2D1DeviceContext4) ||
+                                    IsEqualIID(riid, &IID_ID2D1DeviceContext5) || IsEqualIID(riid, &IID_ID2D1DeviceContext6) ||
+                                    IsEqualIID(riid, &IID_ID2D1DeviceContext7)))) {
         *out = t;
         InterlockedIncrement(&t->ref);
         return S_OK;
@@ -1162,6 +1166,144 @@ static void STDMETHODCALLTYPE c_opacity_mask(Target *t, void *mask, void *brush,
     t_opacity_mask(t, mask, brush, 0, dst, src);
 }
 
+/* ---- ID2D1DeviceContext1-7 (Direct2D 1.2-1.3) ----
+ * A device context answers all seven, as Windows 10 and 11's do: XAML's
+ * text drawing asks every glyph run's context for ID2D1DeviceContext4
+ * (core/native/text's D2DTextDrawingContext) and its platform layer hands
+ * out ID2D1DeviceContext5.  What they add draws through the 1.1 calls
+ * where it maps onto them: the colour-font text and glyph-run calls draw
+ * the glyphs' outlines in the brush (NovaOS's DirectWrite has no colour
+ * glyph formats, so no font asks for bitmap, SVG or COLR glyph images).
+ * Geometry realizations, ink, gradient meshes, image sources, lookup
+ * tables, sprite batches, SVG documents and colour contexts aren't made
+ * yet, and drawing them or blending an image draws nothing. */
+#define NO_OBJECT(out) do { if (out) *(void **)(out) = 0; return E_NOTIMPL; } while (0)
+static HRESULT STDMETHODCALLTYPE c1_filled(Target *t, void *g, float tol, void **out) { (void)t; (void)g; (void)tol; NO_OBJECT(out); }
+static HRESULT STDMETHODCALLTYPE c1_stroked(Target *t, void *g, float tol, float w, void *style, void **out)
+{
+    (void)t; (void)g; (void)tol; (void)w; (void)style;
+    NO_OBJECT(out);
+}
+static void STDMETHODCALLTYPE c1_draw_realization(Target *t, void *r, void *brush) { (void)t; (void)r; (void)brush; }
+static HRESULT STDMETHODCALLTYPE c2_ink(Target *t, const void *start, void **out) { (void)t; (void)start; NO_OBJECT(out); }
+static HRESULT STDMETHODCALLTYPE c2_ink_style(Target *t, const void *props, void **out) { (void)t; (void)props; NO_OBJECT(out); }
+static HRESULT STDMETHODCALLTYPE c2_mesh(Target *t, const void *patches, UINT32 n, void **out)
+{
+    (void)t; (void)patches; (void)n;
+    NO_OBJECT(out);
+}
+static HRESULT STDMETHODCALLTYPE c2_source_wic(Target *t, void *wic, UINT32 options, UINT32 alpha, void **out)
+{
+    (void)t; (void)wic; (void)options; (void)alpha;
+    NO_OBJECT(out);
+}
+static HRESULT STDMETHODCALLTYPE c2_lut(Target *t, UINT32 precision, const UINT32 *extents, const BYTE *data, UINT32 n,
+                                       const UINT32 *strides, void **out)
+{
+    (void)t; (void)precision; (void)extents; (void)data; (void)n; (void)strides;
+    NO_OBJECT(out);
+}
+static HRESULT STDMETHODCALLTYPE c2_source_dxgi(Target *t, void **surfaces, UINT32 n, UINT32 space, UINT32 options,
+                                               void **out)
+{
+    (void)t; (void)surfaces; (void)n; (void)space; (void)options;
+    NO_OBJECT(out);
+}
+static HRESULT STDMETHODCALLTYPE c2_mesh_bounds(Target *t, void *mesh, RCF *bounds)
+{
+    (void)t; (void)mesh;
+    if (bounds) memset(bounds, 0, sizeof(*bounds));
+    return E_NOTIMPL;
+}
+static void STDMETHODCALLTYPE c2_draw_ink(Target *t, void *ink, void *brush, void *style) { (void)t; (void)ink; (void)brush; (void)style; }
+static void STDMETHODCALLTYPE c2_draw_mesh(Target *t, void *mesh) { (void)t; (void)mesh; }
+static void STDMETHODCALLTYPE c2_metafile(Target *t, void *mf, const RCF *dst, const RCF *src)
+{
+    (void)t; (void)mf; (void)dst; (void)src;
+}
+static HRESULT STDMETHODCALLTYPE c2_transformed(Target *t, void *source, const void *props, void **out)
+{
+    (void)t; (void)source; (void)props;
+    NO_OBJECT(out);
+}
+static HRESULT STDMETHODCALLTYPE c3_sprites(Target *t, void **out) { (void)t; NO_OBJECT(out); }
+static void STDMETHODCALLTYPE c3_draw_sprites(Target *t, void *batch, UINT32 start, UINT32 n, void *bitmap, UINT32 interp,
+                                              UINT32 options)
+{
+    (void)t; (void)batch; (void)start; (void)n; (void)bitmap; (void)interp; (void)options;
+}
+static HRESULT STDMETHODCALLTYPE c4_svg_style(Target *t, void **out) { (void)t; NO_OBJECT(out); }
+static void STDMETHODCALLTYPE c4_text(Target *t, const WCHAR *s, UINT32 n, void *format, const RCF *rc, void *brush,
+                                      void *svg_style, UINT32 palette, UINT32 options, UINT32 measuring)
+{
+    (void)svg_style; (void)palette;
+    t_draw_text(t, s, n, format, rc, brush, options, measuring);
+}
+static void STDMETHODCALLTYPE c4_layout(Target *t, PT origin, void *layout, void *brush, void *svg_style, UINT32 palette,
+                                        UINT32 options)
+{
+    (void)svg_style; (void)palette;
+    t_draw_layout(t, origin, layout, brush, options);
+}
+static void STDMETHODCALLTYPE c4_bitmap_glyphs(Target *t, UINT32 formats, PT origin, const DW_GLYPHRUN *run, UINT32 mode,
+                                               UINT32 snap)
+{
+    (void)t; (void)formats; (void)origin; (void)run; (void)mode; (void)snap;     /* (no brush to draw outlines in) */
+}
+static void STDMETHODCALLTYPE c4_svg_glyphs(Target *t, PT origin, const DW_GLYPHRUN *run, void *brush, void *svg_style,
+                                            UINT32 palette, UINT32 mode)
+{
+    (void)svg_style; (void)palette;
+    if (brush) t_draw_glyphs(t, origin, run, brush, mode);
+}
+static HRESULT STDMETHODCALLTYPE c4_bitmap_glyph_image(Target *t, UINT32 formats, PT origin, void *face, float em,
+                                                       UINT16 glyph, BOOL sideways, const MAT *world, float dpix,
+                                                       float dpiy, MAT *glyph_transform, void **out)
+{
+    (void)t; (void)formats; (void)origin; (void)face; (void)em; (void)glyph; (void)sideways; (void)world;
+    (void)dpix; (void)dpiy; (void)glyph_transform;
+    NO_OBJECT(out);
+}
+static HRESULT STDMETHODCALLTYPE c4_svg_glyph_image(Target *t, PT origin, void *face, float em, UINT16 glyph,
+                                                   BOOL sideways, const MAT *world, void *brush, void *svg_style,
+                                                   UINT32 palette, MAT *glyph_transform, void **out)
+{
+    (void)t; (void)origin; (void)face; (void)em; (void)glyph; (void)sideways; (void)world; (void)brush;
+    (void)svg_style; (void)palette; (void)glyph_transform;
+    NO_OBJECT(out);
+}
+static HRESULT STDMETHODCALLTYPE c5_svg_document(Target *t, void *stream, SZ viewport, void **out)
+{
+    (void)t; (void)stream; (void)viewport;
+    NO_OBJECT(out);
+}
+static void STDMETHODCALLTYPE c5_draw_svg(Target *t, void *doc) { (void)t; (void)doc; }
+static HRESULT STDMETHODCALLTYPE c5_color_dxgi(Target *t, UINT32 space, void **out) { (void)t; (void)space; NO_OBJECT(out); }
+static HRESULT STDMETHODCALLTYPE c5_color_simple(Target *t, const void *profile, void **out)
+{
+    (void)t; (void)profile;
+    NO_OBJECT(out);
+}
+static void STDMETHODCALLTYPE c6_blend(Target *t, void *image, UINT32 mode, const PT *offset, const RCF *rect,
+                                       UINT32 interp)
+{
+    (void)t; (void)image; (void)mode; (void)offset; (void)rect; (void)interp;
+}
+static UINT32 STDMETHODCALLTYPE c7_paint_level(Target *t) { (void)t; return 0; }    /* DWRITE_PAINT_FEATURE_LEVEL_NONE */
+static void STDMETHODCALLTYPE c7_paint_glyphs(Target *t, PT origin, const DW_GLYPHRUN *run, void *brush, UINT32 palette,
+                                              UINT32 mode)
+{
+    (void)palette;
+    if (brush) t_draw_glyphs(t, origin, run, brush, mode);
+}
+static void STDMETHODCALLTYPE c7_color_glyphs(Target *t, PT origin, const DW_GLYPHRUN *run, const void *desc,
+                                              void *brush, void *svg_style, UINT32 palette, UINT32 mode, UINT32 snap)
+{
+    (void)desc; (void)svg_style; (void)palette; (void)snap;
+    if (brush) t_draw_glyphs(t, origin, run, brush, mode);
+}
+#undef NO_OBJECT
+
 const void *const rt_ctx_vtbl[] = {
     RT_METHODS,
     c_bitmap1, c_bitmap1_wic, c_color_context, c_color_file, c_color_wic, c_bitmap_surface, c_effect, c_stops1,
@@ -1169,8 +1311,17 @@ const void *const rt_ctx_vtbl[] = {
     c_glyph_bounds, c_get_device, c_set_target, c_get_target, c_set_controls, c_get_controls, c_set_blend, c_get_blend,
     c_set_unit, c_get_unit, c_glyphs, c_image, c_metafile, c_bitmap, c_push_layer, c_invalidate, c_invalid_count,
     c_invalid_rects, c_required, c_opacity_mask,
+    c1_filled, c1_stroked, c1_draw_realization,
+    c2_ink, c2_ink_style, c2_mesh, c2_source_wic, c2_lut, c2_source_dxgi, c2_mesh_bounds, c2_draw_ink, c2_draw_mesh,
+    c2_metafile, c2_transformed,
+    c3_sprites, c3_draw_sprites,
+    c4_svg_style, c4_text, c4_layout, c4_bitmap_glyphs, c4_svg_glyphs, c4_bitmap_glyph_image, c4_svg_glyph_image,
+    c5_svg_document, c5_draw_svg, c5_color_dxgi, c5_color_simple,
+    c6_blend,
+    c7_paint_level, c7_paint_glyphs, c7_color_glyphs,
 };
-_Static_assert(sizeof(rt_ctx_vtbl) / sizeof(rt_ctx_vtbl[0]) == 57 + 35, "ID2D1DeviceContext has 92 methods");
+_Static_assert(sizeof(rt_ctx_vtbl) / sizeof(rt_ctx_vtbl[0]) == 57 + 35 + 3 + 11 + 2 + 7 + 4 + 1 + 3,
+               "ID2D1DeviceContext7 has 123 methods");
 
 
 /* ---- ID2D1GdiInteropRenderTarget ---- */

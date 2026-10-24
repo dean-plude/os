@@ -1199,10 +1199,18 @@ as `Windows.UI.Xaml.dll`, then WinUI 2 and app packages.  See
   its DirectComposition device, and what the first frame makes after it
   (the island's `FocusController`, the window's present target, the
   popup, print, full-window media and transition roots' peers, the focus
-  event args); a page test window now runs to its checks.  Left: the
-  framework's control styles stop at `EntranceThemeTransition` (the theme
-  transitions' code, which 32.5's data binding part builds), so nothing
-  is laid out yet; then the page drawn, typed into and clicked.
+  event args); a page test window now runs to its checks.  Page-drawn
+  part done: the page's first frame, a `Border`, a `TextBlock` and a
+  `Button`, laid out and drawn through the framework's composition tree
+  (its render walk, composition nodes, transforms, geometry clips and
+  DirectWrite text drawn into DirectComposition surfaces) on
+  `dcomp.dll`'s compositor, which gained mask brushes (XAML's text is
+  its glyphs' alpha over a colour brush), surface brush and clip
+  transforms; NovaOS's `XamlIsland` now asks for its content, the
+  island's `CompositionSurfaceHelper` is NovaOS's own, and the window
+  closes cleanly; checked in `xamlpagetest`, with
+  [a screenshot](screenshots/winui3-first-page.png).  Left: the page
+  typed into (a `TextBox`) and clicked (the `Button`).
 - [ ] **32.5 WinUI 2.** `Microsoft.UI.Xaml.dll` 2.x on the system XAML.
   First part done: the framework under its `Windows.UI.Xaml` names,
   which WinUI 2 and UWP apps are compiled against.  `tools/winrt/winfaces.py`

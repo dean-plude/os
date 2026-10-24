@@ -9,6 +9,8 @@
 #include <wrl/client.h>
 #include <Microsoft.DirectManipulation.h>
 
+namespace ABI { namespace Microsoft { namespace UI { namespace Composition { struct IVisual; } } } }
+
 class DirectManipulationHelper
 {
 public:
@@ -16,6 +18,9 @@ public:
     static HRESULT GetDirectManipulationManagerFactory(_In_ HMODULE dmanip, _Outptr_ IClassFactory **factory);
     // and its composition-backed manipulation compositor's
     static HRESULT GetDCompManipulationCompositorFactory(_In_ HMODULE dmanip, _Outptr_ IClassFactory **factory);
+    // a manipulated viewport's interaction on its element's visual, which
+    // chains its manipulations to another process's (none on NovaOS)
+    static HRESULT SetInteraction(_In_ ABI::Microsoft::UI::Composition::IVisual *visual, _In_opt_ IInspectable *interaction);
 };
 
 // the helper a DirectManipulation service owns, made once it has its

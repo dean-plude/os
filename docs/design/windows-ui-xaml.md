@@ -741,14 +741,47 @@ vendors.
      `XamlSourceFocusNavigationRequest`, the core transforms' base
      `CTransform`, and Microsoft's `DependencyObjectAbstractionHelpers`
      in place of the test stubs that answered "no peer".
-   - *Left:* the page test's window now runs to its checks, but the
-     framework's control styles fail to load at `EntranceThemeTransition`
-     (its `PrepareState` is in the theme transitions' code,
-     `LayoutTransition_partial.cpp` with `ThemeGenerator`, which 32.5's
-     data binding part builds), so nothing is laid out; and
-     `Window.Close` then crashes in `WindowChrome::OnContentChanged`.
-     Then the page drawn, typed into and clicked.  The page test is kept
-     for that part.
+   - *Seventh part, the page drawn.*  The control styles load now that
+     the theme transitions are built (`ThemeAnimations.cpp`, the theme
+     animations helper, the visual state classes and their generated
+     peers), and layout, measure and arrange run over the page
+     (`ScrollData`, `RectangleGeometry` for the scroll presenter's clip,
+     the transforms and `TransformGroup`, the core `SolidColorBrush`,
+     `TextOptions` and `Typography`).  Two duties of the closed Windows
+     App SDK code fall to NovaOS: its `XamlIsland` calls
+     `CXamlIslandRoot::SetContentRequested` once the island is made
+     (without it the composition tree host never connects the island's
+     root visual), and its `CompositionSurfaceHelper`
+     (`src/composition_helper.cpp`) begins a surface's drawing with no
+     gutters (NovaOS samples surfaces nearest, so none are needed).  The
+     frame is then the framework's own: the render walk and hardware walk
+     (`core/hw`: the content renderers, `hwcompnode.cpp`,
+     `hwrealization.cpp`), the composition nodes
+     (`components/comptree`: `HWCompNode.cpp`, `HWCompNodeWinRT.cpp`)
+     with their transform expressions
+     (`WinRTExpressionConversionContext`, `WinRTLocalExpressionBuilder`,
+     `XamlLocalTransformBuilder`), the text block's DirectWrite renderer
+     (`DWriteTextRenderer`, `TextObject`) and the native text's Direct2D
+     drawing context (`D2DTextDrawingContext`, `SharedWicBitmap`,
+     `TextHelpers`), the text highlight renderer
+     (`components/text`), the platform layer's DirectComposition
+     surfaces (`DCompSurface`, `DCompSurfaceFactoryManager`,
+     `DCompSurfaceMonitor`) and the shadow effect policy
+     (`EffectPolicyHelper`).  NovaOS's side: `d2d1.dll` answers
+     `ID2D1DeviceContext1` to `7` (XAML asks for `4` for every glyph
+     run); `windowsnumerics.h` converts its `float2` ... `quaternion` to
+     and from the ABI `Vector2` ... `Quaternion` as the Windows SDK's
+     does; and `dcomp.dll`'s compositor gained `CompositionMaskBrush`
+     (XAML draws text as its glyphs' alpha mask over a colour brush),
+     `ICompositionSurfaceBrush2`/`3` (a brush's own transform, which
+     places each glyph run's texture) and `ICompositionClip2` (a clip's
+     transform).  `xamlpagetest` now draws the page: a SteelBlue
+     `Border`, "Hello from NovaOS" in the theme's font and a "Click me"
+     `Button` ([screenshot](../screenshots/winui3-first-page.png)), then
+     closes the window and exits cleanly.
+   - *Left for 32.4:* typing into a `TextBox` and clicking the `Button`
+     in the test (the island's pointer and keyboard input into the
+     framework's input manager), and a pixel check of the drawn frame.
 5. **32.5 WinUI 2.** The `controls` tree as `Microsoft.UI.Xaml.dll` 2.x on
    top of the system XAML, with its `.pri` resources.
    - *First part, the framework under its Windows names.*  WinUI 2 (the

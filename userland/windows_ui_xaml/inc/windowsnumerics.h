@@ -1,13 +1,64 @@
 /* NovaOS: the Windows SDK's windowsnumerics.h, MinGW-w64's plus what its
  * declares and never defines that XAML calls: inverting a 3x2 and a 4x4
  * matrix (XAML's 2D and 3D transforms, components/math).  As the SDK's,
- * they return false, and a matrix of NaNs, for a matrix with no inverse. */
+ * they return false, and a matrix of NaNs, for a matrix with no inverse.
+ * And, as the SDK's do when the Windows Runtime's numerics are declared
+ * (windows.foundation.numerics.h before it), each type converts to and
+ * from the Windows Runtime struct of the same layout (float2 and Vector2,
+ * float3 and Vector3, float4 and Vector4, float3x2 and Matrix3x2, float4x4
+ * and Matrix4x4, plane and Plane, quaternion and Quaternion), which XAML's
+ * composition code passes to and takes from composition objects
+ * (components/comptree, components/transforms).  MinGW-w64's types have no
+ * such conversions, so here each is MinGW-w64's under another name with a
+ * type of its own name over it that adds them. */
 #pragma once
+#include <windows.foundation.numerics.values.h>
+#define float2 nova_mingw_float2
+#define float3 nova_mingw_float3
+#define float4 nova_mingw_float4
+#define float3x2 nova_mingw_float3x2
+#define float4x4 nova_mingw_float4x4
+#define plane nova_mingw_plane
+#define quaternion nova_mingw_quaternion
 #include_next <windowsnumerics.h>
+#undef float2
+#undef float3
+#undef float4
+#undef float3x2
+#undef float4x4
+#undef plane
+#undef quaternion
 #include <float.h>
 #include <math.h>
 
 namespace Windows { namespace Foundation { namespace Numerics {
+
+#define NOVA_NUMERICS_INTEROP(Cpp, WinRT)                                                                    \
+    struct Cpp : nova_mingw_##Cpp                                                                            \
+    {                                                                                                        \
+        using nova_mingw_##Cpp::nova_mingw_##Cpp;                                                            \
+        Cpp() = default;                                                                                     \
+        Cpp(const nova_mingw_##Cpp &value) : nova_mingw_##Cpp(value) {}                                      \
+        Cpp(const ABI::Windows::Foundation::Numerics::WinRT &value)                                          \
+            : nova_mingw_##Cpp(*reinterpret_cast<const nova_mingw_##Cpp *>(&value)) {}                       \
+        operator ABI::Windows::Foundation::Numerics::WinRT() const                                           \
+        {                                                                                                    \
+            return *reinterpret_cast<const ABI::Windows::Foundation::Numerics::WinRT *>(this);              \
+        }                                                                                                    \
+    };                                                                                                       \
+    static_assert(sizeof(Cpp) == sizeof(ABI::Windows::Foundation::Numerics::WinRT), #Cpp " matches " #WinRT);
+NOVA_NUMERICS_INTEROP(float2, Vector2)
+NOVA_NUMERICS_INTEROP(float3, Vector3)
+NOVA_NUMERICS_INTEROP(float4, Vector4)
+NOVA_NUMERICS_INTEROP(float3x2, Matrix3x2)
+NOVA_NUMERICS_INTEROP(float4x4, Matrix4x4)
+NOVA_NUMERICS_INTEROP(plane, Plane)
+NOVA_NUMERICS_INTEROP(quaternion, Quaternion)
+#undef NOVA_NUMERICS_INTEROP
+/* (MinGW-w64's functions take its own types, which have no conversion from
+ * the Windows Runtime's: normalizing a Vector3, as XAML's local transform
+ * builder does with a rotation axis, goes through float3 here) */
+inline float3 normalize(const ABI::Windows::Foundation::Numerics::Vector3 &v) { return normalize(float3(v)); }
 
 inline bool invert(const float3x2 &m, float3x2 *out)
 {

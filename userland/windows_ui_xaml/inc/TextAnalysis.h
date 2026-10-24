@@ -9,10 +9,10 @@
  * support reads (TextAnalysis_CreateDWritePrivateTextAnalysisSourceProxy,
  * pal/win's DWriteTextAnalyzer.cpp) is here the source itself: NovaOS's
  * DirectWrite reads a source's one locale name.
- * The other two functions are FrameworkUdk's, which NovaOS does not have yet:
- * they stand in as unbuilt (build.py unbuilt()), so a text block keeps its
- * language and a direction detected from content falls back as XAML's does
- * when detection fails. */
+ * The other two functions are FrameworkUdk's: the reading direction is
+ * NovaOS's own (src/text_analysis.cpp: the first strong character's); the
+ * locale name list stands in as unbuilt (build.py unbuilt()), so a text
+ * block keeps its language. */
 #pragma once
 #include <dwrite_2.h>
 #include <stdint.h>

@@ -17,6 +17,7 @@
 // nothing to do: NovaOS's surfaces are read back at each EndDraw.
 #include "precomp.h"
 #include "DCompTreeHost.h"
+#include <CompHelper/CompositionSurfaceHelper.h>
 #include <roapi.h>
 #include <microsoft.ui.composition.h>
 
@@ -179,4 +180,66 @@ void CompositionHelperHolder::Uninitialize()
         delete m_helper;
         m_helper = nullptr;
     }
+}
+
+// The DirectComposition surface helper (inc/CompHelper/CompositionSurfaceHelper.h,
+// also closed) each of XAML's surfaces draws through
+// (plat/win/desktop/DCompSurface.cpp).  NovaOS's surfaces need no gutters
+// (dcomp.dll samples them without bilinear filtering), so BeginDraw reports
+// none and is the surface's own; their pixels are always kept.
+_Check_return_ HRESULT CompositionSurfaceHelper::Initialize(_In_opt_ IDCompositionSurface *surface)
+{
+    if (surface)
+        surface->AddRef();
+    Drop(m_surface);
+    m_surface = surface;
+    return S_OK;
+}
+
+_Check_return_ HRESULT CompositionSurfaceHelper::ResetWinRTSurface(
+    _In_opt_ ABI::Microsoft::UI::Composition::ICompositionSurface *winrtSurface, _In_opt_ IDCompositionSurface *surface)
+{
+    typedef HRESULT(WINAPI * SetDComp)(IUnknown *, IUnknown *);
+    static SetDComp set = reinterpret_cast<SetDComp>(
+        GetProcAddress(GetModuleHandleA("dcomp.dll"), "NovaCompositionSurfaceSetDComp"));
+    if (!set)
+        return E_NOTIMPL;
+    return winrtSurface ? set(winrtSurface, surface) : S_OK;
+}
+
+void CompositionSurfaceHelper::ReleaseSurface() { Drop(m_surface); }
+
+_Check_return_ HRESULT CompositionSurfaceHelper::HasValidPixels(_Out_ BOOL *valid)
+{
+    *valid = m_surface != nullptr;
+    return S_OK;
+}
+
+_Check_return_ HRESULT CompositionSurfaceHelper::Resize(UINT width, UINT height)
+{
+    if (!m_surface)
+        return E_UNEXPECTED;
+    wrl::ComPtr<IDCompositionVirtualSurface> virtualSurface;
+    IFC_RETURN(m_surface->QueryInterface(IID_PPV_ARGS(&virtualSurface)));
+    return virtualSurface->Resize(width, height);
+}
+
+// (a copy of a surface's pixels: XAML's surface dumps and render target
+// bitmaps read one; not yet)
+_Check_return_ HRESULT CompositionSurfaceHelper::CopySurface(_Outptr_ IDXGISurface **copy)
+{
+    *copy = nullptr;
+    return E_NOTIMPL;
+}
+
+_Check_return_ HRESULT CompositionSurfaceHelper::BeginDrawWithGutters(_In_opt_ const RECT *updateRect, REFIID iid,
+                                                                      _Outptr_ void **updateObject,
+                                                                      _Out_ POINT *updateOffset,
+                                                                      _Out_ COMPOSITION_HELPER_GUTTERS *gutters)
+{
+    *updateObject = nullptr;
+    *gutters = {};
+    if (!m_surface)
+        return E_UNEXPECTED;
+    return m_surface->BeginDraw(updateRect, iid, updateObject, updateOffset);
 }

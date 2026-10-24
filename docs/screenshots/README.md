@@ -73,6 +73,7 @@ desktop of early October.
 | File | Size | How it was taken |
 |---|---|---|
 | `winscp.png`, `thunderbird.png`, `audacity.png`, `sumatrapdf.png`, `winmerge.png`, `putty.png`, `openttd.png`, `photocraft.png`, `vectorcraft.png`, `effectcraft.png` | 1280x800 | Copies of the `tests/reference/` screenshots that `tools/appcorpus.py` takes of those programs (`tests/appcorpus/952-winscp.py`, `954-thunderbird.py`, `880-audacity.py`, `850-sumatrapdf.py`, `860-winmerge.py`, `950-putty.py`, `910-gog-openttd.py`, `886-photocraft.py`, `887-vectorcraft.py`, `888-effectcraft.py`). |
+| `winui3-first-page.png` | 961x543 | Roadmap step 32.4: the first frame of a WinUI 3 page (a `Border`, a `TextBlock` and a `Button` in a `Window`), the core self-test `xamlpagetest`'s screenshot (`tests/selftest/core/102-xamlpagetest.py`, `tools/selftest.py --only xamlpagetest`) cropped to the window and halved.  In the [XAML design](../design/windows-ui-xaml.md), the roadmap and the history, not in the README. |
 | `krita.png` | 1280x800 | Earlier (2026-10-14, roadmap step 27.3): Krita with a line drawn and saved as `drawing.kra`, as in `tests/appcorpus/885-krita.py`. |
 | `libreoffice-calc.png` | 1280x800 | Earlier (2026-10-14, roadmap step 27.2): LibreOffice Calc with `sums.xlsx` open, as in `tests/appcorpus/953-libreoffice.py`. |
 | `7zip-setup.png` | 1280x800 | Earlier (2026-10-02): the 7-Zip `.msi` installed with `msiexec /i`, on its Custom Setup feature tree. |

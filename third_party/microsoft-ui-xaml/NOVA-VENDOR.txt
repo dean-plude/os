@@ -197,6 +197,32 @@ animations, key frames and eases they and the parser make.  Changed:
 components/animation/TimeManager.cpp's batch handler lists FtmBase without
 IAgileObject (NovaOS's WRL FtmBase already derives IAgileObject).
 
+For the page drawn (step 32.4 part 7): components/themeanimationshelper
+with its project; components/Telemetry/XamlTraceSession.cpp;
+components/transforms' HitTestParams.cpp, TransformCollection.cpp,
+TransformGroup.cpp, WinRTExpressionConversionContext.cpp,
+WinRTLocalExpressionBuilder.cpp (with inc/WinRTLocalExpressionBuilder.h) and
+XamlLocalTransformBuilder.cpp; components/graphics' RectangleGeometry.cpp
+and EffectPolicyHelper.cpp; components/brushes/SolidColorBrush.cpp;
+components/comptree's HWCompNode.cpp, HWCompNodeWinRT.cpp and
+inc/WucVisualTreeProfiler.h; components/text's TextHighlightRenderer.cpp
+and TextHighlightMerge.cpp with lib/Microsoft.UI.Xaml.Text.vcxproj;
+core/compositor/compositortree.cpp; core/hw's BaseContentRenderer.cpp,
+ContentRenderer.cpp, VisualContentRenderer.cpp, hwcompnode.cpp and
+hwrealization.cpp; core/native/text/Common's D2DTextDrawingContext.cpp,
+SharedWicBitmap.cpp and TextHelpers.cpp; core/optional/elements/printing/
+printroot.cpp; core/text's RichTextServices/shared/TextObject.cpp,
+TextBlock/DWriteTextRenderer.cpp, common/TextOptions.cpp,
+common/Typography.cpp and Inc's InputProcessor.h, LinkedRichTextBlockView.h,
+RichTextBlockView.h and TextSelectionSettings.h; plat/win/desktop's
+DCompSurface.cpp, DCompSurfaceFactoryManager.cpp and DCompSurfaceMonitor.cpp;
+and dxaml/lib's AutomationPeer, BudgetManager, BuildTreeService,
+EventTrigger, Geometry, InternalTransform, Transform, VisualStateGroup and
+VisualStateGroupCollection partial classes, ScrollData.cpp and
+ThemeAnimations.cpp, with the generated classes of those and of the theme
+animations, transforms, visual states, triggers, key frame collections,
+row and column definitions and timelines they make.
+
 For WinUI 2's theme resources and the UWP start-up (step 32.5 part 6):
 dxaml/lib's CompositionTarget.cpp and .h and XamlLight_Partial.cpp,
 components/graphics/XamlLight.cpp, and the generated XamlLight and

@@ -37,8 +37,10 @@
  * for; DllGetActivationFactory serves Microsoft.UI.Composition.Compositor
  * as well); property sets (an object's Properties, CreatePropertySet); key
  * frame animations run by the compositor's thread, animation groups,
- * scoped and commit batches, easing functions (and their statics) and
- * rectangle clips.  A compositor is a DirectComposition device as well
+ * scoped and commit batches, easing functions (and their statics),
+ * rectangle clips, clip and surface brush transforms (ICompositionClip2,
+ * ICompositionSurfaceBrush2 and 3) and mask brushes (the XAML framework
+ * draws text as its glyphs' alpha mask over a colour brush).  A compositor is a DirectComposition device as well
  * (dcomp.c's dcomp_part_new), as the XAML framework's composition tree
  * host has it, and DirectComposition surfaces can be shown in its surface
  * brushes (NovaCompositionSurfaceForDComp).
@@ -46,7 +48,7 @@
  * Not implemented: expression animations' expressions (they are accepted,
  * held on their property and stopped, not evaluated), implicit
  * animations, animation controllers, effects, lights, shadows, shapes,
- * gradient and other brushes, perspective and 3-D rotation (only the
+ * gradient, nine-grid and other brushes, brushes' and clips' AnchorPoint, perspective and 3-D rotation (only the
  * matrix's 2-D part and the Z rotation are used), clips other than inset
  * and square-cornered rectangle clips (and a clip under a rotation is its
  * bounding box), bilinear sampling and surfaces from handles.
@@ -111,7 +113,7 @@ typedef struct { float a, b, c, d, tx, ty; } Aff;   /* [x y 1] * [a b; c d; tx t
  * 2-11 depend on the kind.  The compositor's slots are its own (S_C_*). */
 enum { K_COMPOSITOR, K_CONTAINER, K_SPRITE, K_COLLECTION, K_COLOR_BRUSH, K_SURFACE_BRUSH, K_INSET_CLIP,
        K_TARGET, K_GRAPHICS, K_DRAWING_SURFACE, K_CHAIN_SURFACE, K_RECT_CLIP, K_PROPSET, K_EXPRESSION, K_KEYFRAME,
-       K_GROUP, K_EASING, K_BATCH, K_BATCH_ARGS, K_COUNT };
+       K_GROUP, K_EASING, K_BATCH, K_BATCH_ARGS, K_MASK_BRUSH, K_COUNT };
 #define NIF 18
 enum { S_CO_M = 12, S_CO2, S_CO3_W, S_CO3_M, S_CO4, S_CO5 };
 enum { S_C_M = 4, S_C2, S_C3, S_C4, S_C5, S_C6, S_C7_W, S_C7_M, S_C8 };
@@ -156,6 +158,11 @@ struct Obj {
     /* brushes and clips */
     Color color;
     Obj *surface;                       /* (counted) */
+    Obj *mask;                          /* a mask brush's Mask (counted; its Source is brush) */
+    Vec2 b_anchor, b_center, b_offset, b_scale;     /* a surface brush's or a clip's transform (ICompositionSurfaceBrush2, ICompositionClip2) */
+    float b_angle;
+    Aff b_tm;
+    boolean_t b_snap;
     int stretch, interp;
     float hratio, vratio;
     float inset[4];                     /* left, top, right, bottom (a rectangle clip's sides too) */
@@ -239,9 +246,11 @@ static const Iface if_container[] = { VISUAL_IFS, { 0, 0 } };
 static const Iface if_sprite[] = { BOTH(SpriteVisual, 4), VISUAL_IFS, { 0, 0 } };
 static const Iface if_collection[] = { BOTH(VisualCollection, 2), { 0, 0 } };
 static const Iface if_color[] = { BOTH(CompositionColorBrush, 3), BOTH(CompositionBrush, 2), { 0, 0 } };
-static const Iface if_surface_brush[] = { BOTH(CompositionSurfaceBrush, 3), BOTH(CompositionBrush, 2), { 0, 0 } };
-static const Iface if_inset[] = { BOTH(InsetClip, 3), BOTH(CompositionClip, 2), { 0, 0 } };
-static const Iface if_rect_clip[] = { BOTH(RectangleClip, 3), BOTH(CompositionClip, 2), { 0, 0 } };
+static const Iface if_surface_brush[] = { BOTH(CompositionSurfaceBrush, 3), BOTH(CompositionBrush, 2), BOTH(CompositionSurfaceBrush2, 4),
+                                          BOTH(CompositionSurfaceBrush3, 5), { 0, 0 } };
+static const Iface if_mask_brush[] = { BOTH(CompositionMaskBrush, 3), BOTH(CompositionBrush, 2), { 0, 0 } };
+static const Iface if_inset[] = { BOTH(InsetClip, 3), BOTH(CompositionClip, 2), BOTH(CompositionClip2, 4), { 0, 0 } };
+static const Iface if_rect_clip[] = { BOTH(RectangleClip, 3), BOTH(CompositionClip, 2), BOTH(CompositionClip2, 4), { 0, 0 } };
 static const Iface if_target[] = { { &IIDW_CompositionTarget, 2 }, { 0, 0 } };
 static const Iface if_desktop_target[] = { { &IID_IDesktopWindowTarget_, 3 }, { &IIDW_CompositionTarget, 2 }, { 0, 0 } };
 static const Iface if_graphics[] = { BOTH(CompositionGraphicsDevice, 2), { &IID_ICompositionGraphicsDeviceInterop_, 3 }, { 0, 0 } };
@@ -273,7 +282,7 @@ static int default_slot(Obj *o)
 {
     switch (o->kind) {
     case K_SPRITE: return 4;
-    case K_CONTAINER: case K_COLOR_BRUSH: case K_SURFACE_BRUSH: case K_INSET_CLIP: case K_RECT_CLIP: return 3;
+    case K_CONTAINER: case K_COLOR_BRUSH: case K_SURFACE_BRUSH: case K_MASK_BRUSH: case K_INSET_CLIP: case K_RECT_CLIP: return 3;
     case K_TARGET: return o->vt[3] ? 3 : 2;
     case K_COMPOSITOR: return 0;
     case K_EXPRESSION: return 7;
@@ -291,6 +300,7 @@ static const Iface *ifaces(Obj *o)
     case K_COLLECTION: return if_collection;
     case K_COLOR_BRUSH: return if_color;
     case K_SURFACE_BRUSH: return if_surface_brush;
+    case K_MASK_BRUSH: return if_mask_brush;
     case K_INSET_CLIP: return if_inset;
     case K_RECT_CLIP: return if_rect_clip;
     case K_TARGET: return o->vt[3] ? if_desktop_target : if_target;
@@ -371,6 +381,7 @@ static HRESULT obj_name(Obj *o, HSTRING *n)
         L"Windows.UI.Composition.ExpressionAnimation", L"Windows.UI.Composition.KeyFrameAnimation",
         L"Windows.UI.Composition.CompositionAnimationGroup", L"Windows.UI.Composition.CompositionEasingFunction",
         L"Windows.UI.Composition.CompositionScopedBatch", L"Windows.UI.Composition.CompositionBatchCompletedEventArgs",
+        L"Windows.UI.Composition.CompositionMaskBrush",
     };
     static const WCHAR *const keyframes[] = {
         [P_SCALAR] = L"Windows.UI.Composition.ScalarKeyFrameAnimation", [P_VEC2] = L"Windows.UI.Composition.Vector2KeyFrameAnimation",
@@ -413,6 +424,13 @@ static Obj *obj_of(void *p, int kind1, int kind2)
     return o;
 }
 static BOOL is_visual(Obj *o) { return o && (o->kind == K_CONTAINER || o->kind == K_SPRITE); }
+/* the brush behind an interface pointer of ours (counted), or NULL */
+static Obj *brush_of(void *p)
+{
+    Obj *b = obj_of(p, -1, -1);
+    if (b && b->kind != K_COLOR_BRUSH && b->kind != K_SURFACE_BRUSH && b->kind != K_MASK_BRUSH) { obj_release(b); b = 0; }
+    return b;
+}
 
 /* *@out: @o's interface at @slot, counted (NULL stays NULL) */
 static HRESULT give(Obj *o, int slot, void **out)
@@ -442,6 +460,8 @@ static Obj *obj_new(Obj *comp, int kind)
     o->refs = 1;
     o->kind = kind;
     if (comp) { o->comp = comp; obj_addref(comp); }
+    o->b_scale.X = o->b_scale.Y = 1.0f;
+    o->b_tm.a = o->b_tm.d = 1.0f;
     if (kind != K_COMPOSITOR) {
         o->vt[0] = co_vt; o->vt[1] = closable_vt; o->vt[S_CO_M] = co_m_vt; o->vt[S_CO2] = co2_vt;
         o->vt[S_CO3_W] = co3_w_vt; o->vt[S_CO3_M] = co3_m_vt; o->vt[S_CO4] = co4_vt; o->vt[S_CO5] = co5_vt;
@@ -579,6 +599,71 @@ static const BYTE *surface_pixels(Obj *s, UINT *pitch, UINT *w, UINT *h, BOOL *o
     return 0;
 }
 
+/* a surface brush's or a clip's own transform (ICompositionSurfaceBrush2,
+ * ICompositionClip2) */
+static Aff xform(const Obj *o)
+{
+    float k = (float)c_cos(o->b_angle), n = (float)c_sin(o->b_angle);
+    Aff rs = { o->b_scale.X * k, o->b_scale.X * n, -o->b_scale.Y * n, o->b_scale.Y * k, 0, 0 };
+    return aff_mul(aff_mul(aff_mul(aff_move(-o->b_center.X, -o->b_center.Y), rs),
+                           aff_move(o->b_center.X + o->b_offset.X, o->b_center.Y + o->b_offset.Y)), o->b_tm);
+}
+
+/* where a brush's pixels come from, for a visual @vs in size: a colour
+ * (premultiplied), or a surface's pixels placed in the visual by the
+ * brush's stretch and alignment */
+typedef struct {
+    DWORD solid;
+    const BYTE *bits;
+    UINT pitch, sw, sh;
+    BOOL opaque;
+    float cx, cy, cw, ch;               /* the surface's place in the visual */
+    BOOL moved;                         /* the brush's transform, inverted (visual to content) */
+    Aff inv;
+} Samp;
+static BOOL samp_init(Obj *b, Vec2 vs, Samp *s)
+{
+    s->solid = 0; s->bits = 0; s->pitch = s->sw = s->sh = 0; s->opaque = FALSE; s->moved = FALSE;
+    s->cx = s->cy = 0; s->cw = vs.X; s->ch = vs.Y;
+    if (!b) return FALSE;
+    if (b->kind == K_COLOR_BRUSH) {
+        s->solid = premul(b->color, 1.0f);
+        return (s->solid >> 24) != 0;
+    }
+    if (b->kind != K_SURFACE_BRUSH) return FALSE;
+    s->bits = surface_pixels(b->surface, &s->pitch, &s->sw, &s->sh, &s->opaque);
+    if (!s->bits || !s->sw || !s->sh) return FALSE;
+    float kx = vs.X / s->sw, ky = vs.Y / s->sh;
+    switch (b->stretch) {
+    case 0: s->cw = (float)s->sw; s->ch = (float)s->sh; break;                      /* None */
+    case 2: { float k = kx < ky ? kx : ky; s->cw = s->sw * k; s->ch = s->sh * k; break; }   /* Uniform */
+    case 3: { float k = kx > ky ? kx : ky; s->cw = s->sw * k; s->ch = s->sh * k; break; }   /* UniformToFill */
+    }
+    s->cx = (vs.X - s->cw) * b->hratio;
+    s->cy = (vs.Y - s->ch) * b->vratio;
+    Aff m = xform(b);
+    s->moved = m.a != 1 || m.b != 0 || m.c != 0 || m.d != 1 || m.tx != 0 || m.ty != 0;
+    if (s->moved) {
+        float det = m.a * m.d - m.b * m.c;
+        if (c_abs(det) < 1e-9f) return FALSE;
+        Aff inv = { m.d / det, -m.b / det, -m.c / det, m.a / det, 0, 0 };
+        inv.tx = -(m.tx * inv.a + m.ty * inv.c);
+        inv.ty = -(m.tx * inv.b + m.ty * inv.d);
+        s->inv = inv;
+    }
+    return TRUE;
+}
+/* the brush's pixel at (@u, @w) in the visual (premultiplied; 0: none) */
+static DWORD samp_at(const Samp *s, float u, float w)
+{
+    if (!s->bits) return s->solid;
+    if (s->moved) { float x = u, y = w; aff_apply(&s->inv, x, y, &u, &w); }
+    float su = (u - s->cx) * s->sw / s->cw, sv = (w - s->cy) * s->sh / s->ch;
+    if (su < 0 || sv < 0 || su >= s->sw || sv >= s->sh) return 0;
+    DWORD px = ((const DWORD *)(s->bits + (size_t)(int)sv * s->pitch))[(int)su];
+    return s->opaque ? px | 0xFF000000u : px;
+}
+
 /* @v (a sprite, @vs in size) filled with its brush in @pic (@pw x @ph),
  * through @m, inside @clip, at opacity @op */
 static void fill(Obj *v, Vec2 vs, const Aff *m, RECT clip, float op, DWORD *pic, int pw, int ph)
@@ -589,27 +674,11 @@ static void fill(Obj *v, Vec2 vs, const Aff *m, RECT clip, float op, DWORD *pic,
     if (c_abs(det) < 1e-9f) return;
     RECT box = aff_box(m, 0, 0, vs.X, vs.Y), all = { 0, 0, pw, ph };
     if (!IntersectRect(&box, &box, &clip) || !IntersectRect(&box, &box, &all)) return;
-    DWORD solid = 0;
-    const BYTE *bits = 0;
-    UINT pitch = 0, sw = 0, sh = 0;
-    BOOL opaque = FALSE;
-    float cx = 0, cy = 0, cw = vs.X, ch = vs.Y;      /* the surface's place in the visual */
+    Samp src, mask;
+    BOOL masked = b->kind == K_MASK_BRUSH;
+    if (!samp_init(masked ? b->brush : b, vs, &src)) return;
+    if (masked && !samp_init(b->mask, vs, &mask)) return;
     UINT opi = (UINT)(int)(op * 256.0f + 0.5f);
-    if (b->kind == K_COLOR_BRUSH) {
-        solid = premul(b->color, op);
-        if (!(solid >> 24)) return;
-    } else if (b->kind == K_SURFACE_BRUSH) {
-        bits = surface_pixels(b->surface, &pitch, &sw, &sh, &opaque);
-        if (!bits || !sw || !sh) return;
-        float kx = vs.X / sw, ky = vs.Y / sh;
-        switch (b->stretch) {
-        case 0: cw = (float)sw; ch = (float)sh; break;                                  /* None */
-        case 2: { float k = kx < ky ? kx : ky; cw = sw * k; ch = sh * k; break; }       /* Uniform */
-        case 3: { float k = kx > ky ? kx : ky; cw = sw * k; ch = sh * k; break; }       /* UniformToFill */
-        }
-        cx = (vs.X - cw) * b->hratio;
-        cy = (vs.Y - ch) * b->vratio;
-    } else return;
     /* each pixel's centre, back in the visual's space */
     float ia = m->d / det, ib = -m->b / det, ic = -m->c / det, id = m->a / det;
     for (LONG y = box.top; y < box.bottom; y++) {
@@ -618,15 +687,13 @@ static void fill(Obj *v, Vec2 vs, const Aff *m, RECT clip, float op, DWORD *pic,
         DWORD *row = pic + (size_t)y * pw;
         for (LONG x = box.left; x < box.right; x++, u += ia, w += ib) {
             if (u < 0 || w < 0 || u >= vs.X || w >= vs.Y) continue;
-            DWORD s = solid;
-            if (bits) {
-                float su = (u - cx) * sw / cw, sv = (w - cy) * sh / ch;
-                if (su < 0 || sv < 0 || su >= sw || sv >= sh) continue;
-                s = ((const DWORD *)(bits + (size_t)(int)sv * pitch))[(int)su];
-                if (opaque) s |= 0xFF000000u;
-                s = scale_px(s, opi);
+            DWORD s = samp_at(&src, u, w);
+            if (masked && s) {
+                UINT a = samp_at(&mask, u, w) >> 24;
+                s = a ? scale_px(s, a + (a >> 7)) : 0;
             }
-            row[x] = over(s, row[x]);
+            if (!s) continue;
+            row[x] = over(scale_px(s, opi), row[x]);
         }
     }
 }
@@ -640,8 +707,9 @@ static void draw_visual(Obj *v, Aff parent, Vec2 psize, RECT clip, float op, DWO
     op *= v->opacity > 1.0f ? 1.0f : v->opacity;
     if (v->clip) {
         const float *k = v->clip->inset;
-        RECT c = v->clip->kind == K_RECT_CLIP ? aff_box(&m, k[0], k[1], k[2], k[3])       /* (left, top, right, bottom) */
-                                              : aff_box(&m, k[0], k[1], vs.X - k[2], vs.Y - k[3]);
+        Aff cm = aff_mul(xform(v->clip), m);
+        RECT c = v->clip->kind == K_RECT_CLIP ? aff_box(&cm, k[0], k[1], k[2], k[3])       /* (left, top, right, bottom) */
+                                              : aff_box(&cm, k[0], k[1], vs.X - k[2], vs.Y - k[3]);
         if (!IntersectRect(&clip, &clip, &c)) return;
     }
     if (v->kind == K_SPRITE) fill(v, vs, &m, clip, op, pic, pw, ph);
@@ -778,7 +846,7 @@ static void obj_free(Obj *o)
     }
     if (o->chain) o->chain->lpVtbl->SetSink(o->chain, 0, 0);
     drop[n++] = o->clip; drop[n++] = o->brush; drop[n++] = o->of; drop[n++] = o->surface; drop[n++] = o->root;
-    drop[n++] = o->props; drop[n++] = o->for_transform;
+    drop[n++] = o->props; drop[n++] = o->for_transform; drop[n++] = o->mask;
     unlock();
     for (int i = 0; i < o->nprops; i++) HeapFree(GetProcessHeap(), 0, o->propv[i].name);
     HeapFree(GetProcessHeap(), 0, o->propv);
@@ -978,7 +1046,7 @@ static HRESULT STDMETHODCALLTYPE sv_get_brush(void *p, void **out) { lock(); HRE
 static HRESULT STDMETHODCALLTYPE sv_put_brush(void *p, void *brush)
 {
     Obj *b = 0;
-    if (brush && !(b = obj_of(brush, K_COLOR_BRUSH, K_SURFACE_BRUSH))) return E_INVALIDARG;
+    if (brush && !(b = brush_of(brush))) return E_INVALIDARG;
     swap_ref(&OBJ_AT(p, 4)->brush, b);
     return S_OK;
 }
@@ -1096,6 +1164,50 @@ static HRESULT STDMETHODCALLTYPE sb_put_v(void *p, float v) { if (!(v >= 0 && v 
 static const void *const surface_brush_vt[] = { BASE(3), (void *)sb_get_interp, (void *)sb_put_interp, (void *)sb_get_h, (void *)sb_put_h,
                                                 (void *)sb_get_stretch, (void *)sb_put_stretch, (void *)sb_get_surface,
                                                 (void *)sb_put_surface, (void *)sb_get_v, (void *)sb_put_v };
+/* ICompositionSurfaceBrush2 (slot 4), and a clip's ICompositionClip2
+ * (slot 4 too, the same members): the transform of the brush's content or
+ * of the clip's shape in the visual: scaled and rotated about CenterPoint,
+ * moved by Offset, then TransformMatrix (AnchorPoint is kept, not used) */
+#define SB2(p) OBJ_AT(p, 4)
+#define SB2_VEC(name, field) \
+    static HRESULT STDMETHODCALLTYPE sb2_get_##name(void *p, Vec2 *v) { if (!v) return E_POINTER; *v = SB2(p)->field; return S_OK; } \
+    static HRESULT STDMETHODCALLTYPE sb2_put_##name(void *p, Vec2 v) { lock(); SB2(p)->field = v; unlock(); schedule(); return S_OK; }
+SB2_VEC(anchor, b_anchor) SB2_VEC(center, b_center) SB2_VEC(offset, b_offset) SB2_VEC(scale, b_scale)
+static HRESULT STDMETHODCALLTYPE sb2_get_angle(void *p, float *v) { if (!v) return E_POINTER; *v = SB2(p)->b_angle; return S_OK; }
+static HRESULT STDMETHODCALLTYPE sb2_put_angle(void *p, float v) { lock(); SB2(p)->b_angle = v; unlock(); schedule(); return S_OK; }
+static HRESULT STDMETHODCALLTYPE sb2_get_deg(void *p, float *v) { if (!v) return E_POINTER; *v = SB2(p)->b_angle * 57.2957795f; return S_OK; }
+static HRESULT STDMETHODCALLTYPE sb2_put_deg(void *p, float v) { return sb2_put_angle(p, v / 57.2957795f); }
+static HRESULT STDMETHODCALLTYPE sb2_get_tm(void *p, Aff *v) { if (!v) return E_POINTER; *v = SB2(p)->b_tm; return S_OK; }
+static HRESULT STDMETHODCALLTYPE sb2_put_tm(void *p, Aff v) { lock(); SB2(p)->b_tm = v; unlock(); schedule(); return S_OK; }
+static const void *const surface_brush2_vt[] = { BASE(4), (void *)sb2_get_anchor, (void *)sb2_put_anchor, (void *)sb2_get_center,
+                                                 (void *)sb2_put_center, (void *)sb2_get_offset, (void *)sb2_put_offset,
+                                                 (void *)sb2_get_angle, (void *)sb2_put_angle, (void *)sb2_get_deg, (void *)sb2_put_deg,
+                                                 (void *)sb2_get_scale, (void *)sb2_put_scale, (void *)sb2_get_tm, (void *)sb2_put_tm };
+/* ICompositionSurfaceBrush3 (slot 5): SnapToPixels (kept; pixels are sampled nearest) */
+static HRESULT STDMETHODCALLTYPE sb3_get_snap(void *p, boolean_t *v) { if (!v) return E_POINTER; *v = OBJ_AT(p, 5)->b_snap; return S_OK; }
+static HRESULT STDMETHODCALLTYPE sb3_put_snap(void *p, boolean_t v) { OBJ_AT(p, 5)->b_snap = v; return S_OK; }
+static const void *const surface_brush3_vt[] = { BASE(5), (void *)sb3_get_snap, (void *)sb3_put_snap };
+
+/* ICompositionMaskBrush (slot 3): Mask, Source (the Source's pixels, each
+ * kept as much as the Mask's alpha there says) */
+static HRESULT mb_get(Obj *b, void **out) { lock(); HRESULT hr = give(b, b ? default_slot(b) : 0, out); unlock(); return hr; }
+static HRESULT STDMETHODCALLTYPE mb_get_mask(void *p, void **out) { return mb_get(OBJ_AT(p, 3)->mask, out); }
+static HRESULT STDMETHODCALLTYPE mb_get_source(void *p, void **out) { return mb_get(OBJ_AT(p, 3)->brush, out); }
+static HRESULT STDMETHODCALLTYPE mb_put_mask(void *p, void *brush)
+{
+    Obj *b = 0;
+    if (brush && !(b = brush_of(brush))) return E_INVALIDARG;
+    swap_ref(&OBJ_AT(p, 3)->mask, b);
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE mb_put_source(void *p, void *brush)
+{
+    Obj *b = 0;
+    if (brush && !(b = brush_of(brush))) return E_INVALIDARG;
+    swap_ref(&OBJ_AT(p, 3)->brush, b);
+    return S_OK;
+}
+static const void *const mask_brush_vt[] = { BASE(3), (void *)mb_get_mask, (void *)mb_put_mask, (void *)mb_get_source, (void *)mb_put_source };
 
 /* IInsetClip: Bottom, Left, Right, Top */
 #define INSET(name, i) \
@@ -2361,7 +2473,7 @@ static HRESULT rect_clip_new(Obj *comp, float l, float t, float r, float b, cons
     *out = 0;
     Obj *c = obj_new(comp, K_RECT_CLIP);
     if (!c) return E_OUTOFMEMORY;
-    c->vt[2] = empty2_vt; c->vt[3] = rect_clip_vt;
+    c->vt[2] = empty2_vt; c->vt[3] = rect_clip_vt; c->vt[4] = surface_brush2_vt;
     c->inset[0] = l; c->inset[1] = t; c->inset[2] = r; c->inset[3] = b;
     if (radii) for (int i = 0; i < 4; i++) c->radius[i] = radii[i];
     *out = IF(c, 3);
@@ -2420,6 +2532,7 @@ static HRESULT STDMETHODCALLTYPE c_surface_brush_with(void *p, void *surface, vo
     Obj *b = obj_new(COMP(p, 0), K_SURFACE_BRUSH);
     if (!b) { if (s) obj_release(s); return E_OUTOFMEMORY; }
     b->vt[0] = co_vt; b->vt[1] = closable_vt; b->vt[2] = empty2_vt; b->vt[3] = surface_brush_vt;
+    b->vt[4] = surface_brush2_vt; b->vt[5] = surface_brush3_vt;
     b->surface = s;
     b->stretch = 1;                     /* Fill */
     b->interp = 1;                      /* Linear (sampled nearest here) */
@@ -2434,7 +2547,7 @@ static HRESULT STDMETHODCALLTYPE c_inset_with(void *p, float l, float t, float r
     *out = 0;
     Obj *c = obj_new(COMP(p, 0), K_INSET_CLIP);
     if (!c) return E_OUTOFMEMORY;
-    c->vt[0] = co_vt; c->vt[1] = closable_vt; c->vt[2] = empty2_vt; c->vt[3] = inset_vt;
+    c->vt[0] = co_vt; c->vt[1] = closable_vt; c->vt[2] = empty2_vt; c->vt[3] = inset_vt; c->vt[4] = surface_brush2_vt;
     c->inset[0] = l; c->inset[1] = t; c->inset[2] = r; c->inset[3] = b;
     *out = IF(c, 3);
     return S_OK;
@@ -2528,7 +2641,8 @@ static HRESULT STDMETHODCALLTYPE c_close(void *p) { (void)p; return S_OK; }
 static const void *const compositor_closable_vt[] = { BASE(1), (void *)c_close };
 
 /* ICompositor2 (slot S_C2): CreateAnimationGroup, CreateStepEasingFunction; lights, shadows,
- * layer visuals, mask, nine-grid and backdrop brushes and implicit animations are not here */
+ * mask brushes; lights, shadows, layer visuals, nine-grid and backdrop brushes and implicit
+ * animations are not here */
 static HRESULT STDMETHODCALLTYPE c2_group(void *p, void **out)
 {
     if (!out) return E_POINTER;
@@ -2541,8 +2655,18 @@ static HRESULT STDMETHODCALLTYPE c2_group(void *p, void **out)
 }
 static HRESULT STDMETHODCALLTYPE c2_step(void *p, void **out) { return easing_step(COMP(p, S_C2), 1, out); }
 static HRESULT STDMETHODCALLTYPE c2_step_n(void *p, int n, void **out) { return easing_step(COMP(p, S_C2), n, out); }
+static HRESULT STDMETHODCALLTYPE c2_mask_brush(void *p, void **out)
+{
+    if (!out) return E_POINTER;
+    *out = 0;
+    Obj *b = obj_new(COMP(p, S_C2), K_MASK_BRUSH);
+    if (!b) return E_OUTOFMEMORY;
+    b->vt[0] = co_vt; b->vt[1] = closable_vt; b->vt[2] = empty2_vt; b->vt[3] = mask_brush_vt;
+    *out = IF(b, 3);
+    return S_OK;
+}
 static const void *const compositor2_vt[] = { BASE(5), (void *)c_none, (void *)c2_group, (void *)c_none, (void *)c_none, (void *)c_none,
-                                              (void *)c_none, (void *)c_none, (void *)c_none, (void *)c_none, (void *)c_none, (void *)c_none,
+                                              (void *)c_none, (void *)c_none, (void *)c2_mask_brush, (void *)c_none, (void *)c_none, (void *)c_none,
                                               (void *)c2_step, (void *)c2_step_n };
 /* ICompositor3 (slot S_C3): CreateHostBackdropBrush (not here) */
 static const void *const compositor3_vt[] = { BASE(6), (void *)c_none };
@@ -2752,6 +2876,22 @@ COMP_API HRESULT WINAPI NovaCompositionSurfaceForDComp(IUnknown *compositor, IUn
     s->vt[0] = co_vt; s->vt[1] = closable_vt; s->vt[2] = empty2_vt;
     if (surface) { s->dsurf = surface; surface->lpVtbl->AddRef(surface); }
     *out = IF(s, 2);
+    return S_OK;
+}
+
+/* (and puts another DirectComposition surface, or none, behind one: the
+ * XAML framework's surfaces get new pixels after their device was lost,
+ * CompositionSurfaceHelper::ResetWinRTSurface) */
+COMP_API HRESULT WINAPI NovaCompositionSurfaceSetDComp(IUnknown *winrt, IUnknown *surface)
+{
+    Obj *s = 0;
+    if (!winrt || FAILED(winrt->lpVtbl->QueryInterface(winrt, &IID_INovaCompositionObject, (void **)&s)) || !s)
+        return E_INVALIDARG;
+    if (s->kind != K_CHAIN_SURFACE) { obj_release(s); return E_INVALIDARG; }
+    if (surface) surface->lpVtbl->AddRef(surface);
+    if (s->dsurf) s->dsurf->lpVtbl->Release(s->dsurf);
+    s->dsurf = surface;
+    obj_release(s);
     return S_OK;
 }
 

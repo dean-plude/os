@@ -1,0 +1,5 @@
+{
+  "deps": ["kernel32", "ntdll"],
+  "file": "Microsoft.DirectManipulation.dll",
+  "x64_only": true
+}

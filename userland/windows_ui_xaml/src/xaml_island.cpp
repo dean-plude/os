@@ -243,6 +243,11 @@ _Check_return_ HRESULT XamlIsland::Initialize()
     m_pXamlIslandCore = static_cast<CXamlIslandRoot *>(root->GetHandle());
 
     dxamlCore->GetHandle()->AddXamlIslandRoot(m_pXamlIslandCore);
+    // its content island is wanted from the start: the site bridge shows it,
+    // so the composition tree host hangs the root's visuals on it once a
+    // frame has rendered them (DCompTreeHost::EnsureXamlIslandTargetRoots and
+    // ConnectXamlIslandTargetRoots look for a requested island)
+    m_pXamlIslandCore->SetContentRequested(true);
     return S_OK;
 }
 
@@ -320,6 +325,7 @@ _Check_return_ HRESULT XamlIsland::get_ContentIslandImpl(_Outptr_ ixp::IContentI
     {
         return RO_E_CLOSED;
     }
+    m_pXamlIslandCore->SetContentRequested(true);
     *ppValue = m_pXamlIslandCore->GetContentIsland();
     if (*ppValue)
     {

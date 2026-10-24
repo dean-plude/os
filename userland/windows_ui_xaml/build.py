@@ -425,7 +425,7 @@ def dwrite_headers(mingw, out):
     back into scope with using-declarations, and XAML's text block and its
     DirectWrite font services call them so (core/text/TextBlock,
     pal/win): here each such interface gets the using-declaration of the
-    nearest base interface that declares the name"""
+    nearest base interface that declares the name, after its methods"""
     head = re.compile(r'^MIDL_INTERFACE\("[^"]*"\)\n(\w+) : public (\w+)\n\{\n', re.M)
     meth = re.compile(r'virtual [^;(]*?STDMETHODCALLTYPE\s+(\w+)\(')
     texts = {h: open(os.path.join(mingw, h)).read() for h in _DWRITE}
@@ -444,11 +444,19 @@ def dwrite_headers(mingw, out):
         return None
 
     for h, t in texts.items():
-        def using(m):
+        # (at the end of the interface, as the SDK's: a using-declaration
+        # ahead of the methods would make Microsoft's C++ ABI place the
+        # interface's overloads of those names first in its vtable, out of
+        # its IDL order: IDWriteFactory6's GetSystemFontCollection would
+        # call CreateFontCollectionFromFontSet)
+        out_text, at = [], 0
+        for m in head.finditer(t):
+            end = t.index('\n};', m.end())
             lines = ['    using %s::%s;\n' % (o, n) for n in sorted(names[m.group(1)])
                      for o in [owner(base[m.group(1)], n)] if o]
-            return m.group(0) + ''.join(lines)
-        text = head.sub(using, t)
+            out_text.append(t[at:end + 1] + ''.join(lines))
+            at = end + 1
+        text = ''.join(out_text) + t[at:]
         p = os.path.join(out, h)
         if not os.path.exists(p) or open(p).read() != text:
             open(p, 'w').write(text)
@@ -991,6 +999,86 @@ CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += tuple(
 # too, so once only)
 if '../FrameworkEventArgs.cpp' not in CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj']:
     CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += ('../FrameworkEventArgs.cpp',)
+# (and what a page's first frame needs (roadmap 32.4): the root
+# ScrollViewer's scrolling state, which its presenter makes when the
+# template hooks it to its owner (ScrollData.cpp; without it the root's
+# content never enters the tree, so nothing is laid out or drawn), and the
+# frame's time budget for deferred work (BudgetManager))
+_PAGE_PEERS = ('BudgetManager',)
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += ('../ScrollData.cpp',) + tuple(
+    '../%s_Partial.cpp' % x for x in _PAGE_PEERS) + tuple(
+    '../winrtgeneratedclasses/%s.g.cpp' % x for x in _PAGE_PEERS)
+# (and the text block's typography, which its text is formatted with
+# (core/text's Typography.cpp))
+CORE_SOURCES[_CORETEXT] += ('common/Typography.cpp', 'common/TextOptions.cpp')
+# (and what draws the frame: the compositor tree's clips and transform
+# stacks (core/compositor's compositortree.cpp), the hardware walk's
+# content renderers, composition nodes and realizations (core/hw), and the
+# hit-test parameters the input walk takes (components/transforms))
+CORE_SOURCES['core/xcpcore.vcxproj'] += ('compositor/compositortree.cpp',)
+CORE_SOURCES['core/hw/hw.vcxproj'] += ('BaseContentRenderer.cpp', 'ContentRenderer.cpp', 'VisualContentRenderer.cpp',
+                                       'hwcompnode.cpp', 'hwrealization.cpp')
+# (and NovaOS's DirectManipulationHelper (closed in the Windows App SDK):
+# the lifted DirectManipulation DLL's class factories, which the
+# framework's probe asks for on the first frame; NovaOS's
+# Microsoft.DirectManipulation.dll cannot make its manager yet, so the
+# framework scrolls without it)
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += (
+    os.path.join(HERE, 'src', 'direct_manipulation_helper.cpp'), os.path.join(HERE, 'src', 'text_analysis.cpp'))
+# (NovaOS's TextAnalysis_GetContentReadingDirection, closed in the Windows
+# App SDK: a text block's reading direction from its first strong
+# character; and the trace session the frame's tracing asks for
+# (components/Telemetry's XamlTraceSession.cpp))
+CORE_SOURCES[_TELEMETRY] += ('XamlTraceSession.cpp',)
+PROJECT_DEFINES[_TELEMETRY] = PROJECT_DEFINES.get(_TELEMETRY, []) + ['RPC_USE_NATIVE_WCHAR']
+# (and the theme animations a button's visual states run (PointerUp/
+# PointerDownThemeAnimation and the rest: their generated classes, their
+# base's and the framework's ThemeAnimations.cpp, which makes their
+# storyboards with the theme generator), with the helper component they
+# share (components/themeanimationshelper))
+_THEME_ANIMATIONS = ('ThemeAnimationBase', 'DragItemThemeAnimation', 'DragOverThemeAnimation', 'DrillInThemeAnimation',
+                     'DrillOutThemeAnimation', 'DropTargetItemThemeAnimation', 'FadeInThemeAnimation',
+                     'FadeOutThemeAnimation', 'PointerDownThemeAnimation', 'PointerUpThemeAnimation',
+                     'PopInThemeAnimation', 'PopOutThemeAnimation', 'RepositionThemeAnimation',
+                     'SplitCloseThemeAnimation', 'SplitOpenThemeAnimation', 'SwipeBackThemeAnimation',
+                     'SwipeHintThemeAnimation')
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += ('../ThemeAnimations.cpp',) + tuple(
+    '../winrtgeneratedclasses/%s.g.cpp' % x for x in _THEME_ANIMATIONS)
+COMPONENT_INCLUDES.append('components/themeanimationshelper/inc')
+_THEMEANIMHELPER = 'components/themeanimationshelper/lib/Microsoft.UI.Xaml.ThemeAnimationsHelper.vcxproj'
+CORE_LIBRARIES.append((_THEMEANIMHELPER, _THEMEANIMHELPER, 'components/pch/precomp.h', []))
+CORE_FIRST[_THEMEANIMHELPER] = CORE_FIRST['core/xcpcore.vcxproj'] + ['microsoft.ui.composition.h']
+CORE_SOURCES[_THEMEANIMHELPER] = ('ThemeAnimationsHelper.cpp',)
+# (and the framework's peers of what those storyboards animate and are
+# made of: the transforms and projections, the timelines, the key frame
+# collections, each its generated class (InternalTransform its partial too))
+_ANIMATED_PEERS = ('ColorKeyFrameCollection', 'CompositeTransform', 'DoubleKeyFrameCollection', 'DynamicTimeline',
+                   'GeneralTransform', 'InternalTransform', 'MatrixTransform', 'ObjectKeyFrameCollection',
+                   'ParallelTimeline', 'PlaneProjection', 'PointKeyFrameCollection', 'PointerAnimationUsingKeyFrames',
+                   'PointerKeyFrame', 'PointerKeyFrameCollection', 'Projection', 'RotateTransform', 'ScaleTransform',
+                   'SkewTransform', 'StoryboardCollection', 'TransformCollection', 'TransformGroup', 'TranslateTransform')
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += ('../InternalTransform_Partial.cpp',) + tuple(
+    '../winrtgeneratedclasses/%s.g.cpp' % x for x in _ANIMATED_PEERS)
+# (and the transforms' base and the peers of a control template's visual
+# states and triggers, and of a grid's rows and columns)
+_STATE_PEERS = ('Transform', 'VisualState', 'VisualStateCollection', 'VisualStateGroup', 'VisualStateGroupCollection',
+                'VisualTransition', 'VisualTransitionCollection', 'StateTriggerCollection', 'TriggerCollection',
+                'TriggerActionCollection', 'KeyboardAcceleratorCollection', 'BeginStoryboard', 'EventTrigger',
+                'ColumnDefinition', 'ColumnDefinitionCollection', 'RowDefinition', 'RowDefinitionCollection',
+                'DoubleCollection')
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += tuple(
+    '../%s_Partial.cpp' % x for x in ('Transform', 'VisualStateGroup', 'VisualStateGroupCollection', 'EventTrigger')) + tuple(
+    '../winrtgeneratedclasses/%s.g.cpp' % x for x in _STATE_PEERS)
+# (and the automation peers' base, AutomationPeer: layout asks it whether a
+# UI Automation client listens (ListenerExistsHelper) before raising the
+# scroll viewer's property changes)
+_STATE_PEERS += ('AutomationPeer',)
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += ('../winrtgeneratedclasses/UnhandledExceptionEventArgs.g.cpp',)   # (the args an unhandled error is reported with)
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += (
+    '../AutomationPeer_Partial.cpp', '../winrtgeneratedclasses/AutomationPeer.g.cpp')
+# (and the print root's layout, which the root visual measures with the
+# rest of its children (core/optional's printroot.cpp))
+CORE_SOURCES['core/xcpcore.vcxproj'] += ('optional/elements/printing/printroot.cpp',)
 # (and the window's present target the browser host retargets the render
 # target to as the window sizes, plat/win/desktop's WindowsPresentTarget)
 CORE_SOURCES['plat/win/desktop/platwindesktop.vcxproj'] += ('windowspresenttarget.cpp',)
@@ -1002,7 +1090,50 @@ CORE_SERVICES_STUBS += ('DXaml_Stub.cpp',)
 _TRANSFORMS = 'components/transforms/lib/Microsoft.UI.Xaml.Transforms.vcxproj'
 CORE_LIBRARIES.append((_TRANSFORMS, _TRANSFORMS, 'components/pch/precomp.h', []))
 CORE_FIRST[_TRANSFORMS] = CORE_FIRST['core/xcpcore.vcxproj'] + ['microsoft.ui.composition.h']
-CORE_SOURCES[_TRANSFORMS] = ('../Transform.cpp',)
+CORE_SOURCES[_TRANSFORMS] = ('../Transform.cpp', '../HitTestParams.cpp')
+# (and what the first frame's arrange and render walk make (roadmap
+# 32.4): a scrolling presenter's clip (components/graphics'
+# CRectangleGeometry), a transform group with its collection, and the
+# solid colour brush's core half (components/brushes' CSolidColorBrush))
+CORE_SOURCES[_TRANSFORMS] += ('../TransformGroup.cpp', '../TransformCollection.cpp',
+                              # (and what turns an element's transforms into its
+                              # composition visual's: expressions and local transforms)
+                              '../WinRTExpressionConversionContext.cpp', '../WinRTLocalExpressionBuilder.cpp',
+                              '../XamlLocalTransformBuilder.cpp')
+CORE_SOURCES['components/graphics/lib/Microsoft.UI.Xaml.GraphicsUtility.vcxproj'] += ('../RectangleGeometry.cpp', '../EffectPolicyHelper.cpp')
+CORE_SOURCES['components/brushes/lib/Microsoft.UI.Xaml.Brushes.vcxproj'] += ('../SolidColorBrush.cpp',)
+# (with the clip's peer: Geometry, its partial one, and RectangleGeometry)
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += ('../Geometry_Partial.cpp',) + tuple(
+    '../winrtgeneratedclasses/%s.g.cpp' % x for x in ('Geometry', 'RectangleGeometry'))
+# (and what draws a text block's glyphs: the native text's Direct2D
+# drawing context, with its shared WIC bitmap and text helpers)
+CORE_SOURCES['core/native/text/Common/Native.Text.Common.vcxproj'] += (
+    'D2DTextDrawingContext.cpp', 'SharedWicBitmap.cpp', 'TextHelpers.cpp')
+CORE_SOURCES[_CORETEXT] += ('RichTextServices/shared/TextObject.cpp',)     # (the drawing context's base)
+# (and the text block's DirectWrite renderer, which hands its glyph runs to
+# the drawing context, and the service the first frame's deferred tree
+# building runs on (BuildTreeService, its generated class and its partial one))
+CORE_SOURCES[_CORETEXT] += ('TextBlock/DWriteTextRenderer.cpp',)
+# (and the composition nodes the render walk hangs elements' visuals on:
+# components/comptree's HWCompTreeNode and its Windows.UI.Composition kind)
+CORE_SOURCES['components/comptree/lib/Microsoft.UI.Xaml.CompTree.vcxproj'] += ('../HWCompNode.cpp', '../HWCompNodeWinRT.cpp')
+CORE_SERVICES_STUBS += ('HWCompNode_Stub.cpp',)                    # (their stubs leave xaml_corestubs.lib)
+# (and what a text block's render walk draws its text highlights with:
+# components/text's highlight renderer and its region merge)
+_TEXT = 'components/text/lib/Microsoft.UI.Xaml.Text.vcxproj'
+CORE_LIBRARIES.append((_TEXT, _TEXT, 'components/pch/precomp.h', []))
+CORE_FIRST[_TEXT] = CORE_FIRST['core/xcpcore.vcxproj'] + ['microsoft.ui.composition.h']
+CORE_SOURCES[_TEXT] = ('../TextHighlightRenderer.cpp', '../TextHighlightMerge.cpp')
+# (and the DirectComposition surfaces a text block's glyphs are drawn into:
+# the platform layer's DCompSurface, its factories and their monitor)
+CORE_SOURCES['plat/win/desktop/platwindesktop.vcxproj'] += ('DCompSurface.cpp', 'DCompSurfaceFactoryManager.cpp',
+                                                            'DCompSurfaceMonitor.cpp')
+# (whose debug dump of a surface's pixels writes them through WIC, which the
+# Windows SDK's headers the platform layer's precompiled header pulls in declare)
+CORE_FIRST['plat/win/desktop/platwindesktop.vcxproj'] = \
+    CORE_FIRST['plat/win/desktop/platwindesktop.vcxproj'] + ['wincodec.h']
+CORE_SOURCES['dxaml/lib/winrtfoundation/wrtdxamlfoundation.vcxproj'] += (
+    '../BuildTreeService_Partial.cpp', '../winrtgeneratedclasses/BuildTreeService.g.cpp')
 
 # Xaml 32.5 (WinUI 2 on the system XAML), first part: the framework under
 # its Windows.UI.Xaml names, which WinUI 2 and UWP apps are compiled
