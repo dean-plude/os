@@ -6,8 +6,12 @@
  * with files' clusters after each extent of it.  It grew 64 records at a
  * time once: one more run each time, until its runs no longer fitted in
  * record 0 and no file could be made (about 7,000 files: Steam's update).
- * The volume must mount again with every file there and pass
- * scripts/ntfs-check.py.
+ * Then files that fill their record (small contents kept in it) are made
+ * under a short name and renamed to a long one, as installers do (Inno
+ * Setup's is-XXXXX.tmp), and given a second long name (a link): the
+ * contents move to clusters to make room, as on Windows (GIMP's install
+ * failed on a rename once).  The volume must mount again with every file
+ * there and pass scripts/ntfs-check.py.
  *
  *   ntfs_many CHECKER OUT [IMAGE]   OUT: the disk saved for the check */
 #include "../../kernel/fs/ntfs.c"
@@ -29,6 +33,7 @@ static UINT64 now(void) { return tick += 10000000; }
 #define DISK_BYTES (1ull << 30)
 #define FILES      40000
 #define PER_DIR    500
+#define RENAMED    600
 
 typedef struct { BlockDev d; UINT8 *data; } Ram;
 static bool ram_read(BlockDev *d, UINT64 lba, UINT32 n, void *buf)
@@ -44,6 +49,13 @@ static bool ram_write(BlockDev *d, UINT64 lba, UINT32 n, const void *buf)
     return true;
 }
 static bool ram_flush(BlockDev *d) { (void)d; return true; }
+
+/* Renamed file i: 600-899 bytes, in its record when made */
+static UINT32 renamed_size(UINT32 i) { return 600 + i * 37 % 300; }
+static void long_name(char *out, UINT32 i, char tag)
+{
+    snprintf(out, 200, "%c-a-file-name-long-enough-to-need-the-room-its-contents-took-in-the-record-%04u.png", tag, i);
+}
 
 /* File i: every fourth one has clusters (5-9 KB), the rest fit in their record */
 static UINT32 file_size(UINT32 i) { return i % 4 ? 100 + i % 300 : 5000 + i % 4000; }
@@ -82,6 +94,21 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    UINT64 rdir;
+    assert(NtfsCreate(v, NTFS_ROOT, "renamed", true, &rdir));
+    for (UINT32 i = 0; i < RENAMED; i++) {
+        char tmp[32], name[200];
+        snprintf(tmp, sizeof(tmp), "is-%05X.tmp", i * 7919u % 0xFFFFF);
+        long_name(name, i, 'r');
+        memset(buf, (int)(i & 0xFF), sizeof(buf));
+        if (!NtfsCreate(v, rdir, tmp, false, &m) || !NtfsWriteFile(v, m, buf, renamed_size(i)) ||
+            !NtfsRename(v, rdir, m, tmp, rdir, name)) {
+            printf("ntfs_many: %s not renamed to %s\n", tmp, name);
+            return 1;
+        }
+        long_name(name, i, 'l');
+        if (i % 10 == 0 && !NtfsLink(v, m, rdir, name)) { printf("ntfs_many: no link %s\n", name); return 1; }
+    }
     NtfsUnmount(v);
 
     /* Again, as the next boot: every file there, whole */
@@ -101,6 +128,21 @@ int main(int argc, char **argv)
             !NtfsRead(v, m, 0, back, size) || memcmp(back, buf, size)) {
             printf("ntfs_many: %s is not whole\n", name);
             bad++;
+        }
+    }
+    bool is_dir;
+    assert(NtfsLookup(v, NTFS_ROOT, "renamed", &rdir, &is_dir));
+    for (UINT32 i = 0; i < RENAMED; i++) {
+        char name[200];
+        UINT64 size = 0;
+        memset(buf, (int)(i & 0xFF), sizeof(buf));
+        for (int k = 0; k < (i % 10 ? 1 : 2); k++) {
+            long_name(name, i, k ? 'l' : 'r');
+            if (!NtfsLookup(v, rdir, name, &m, &is_dir) || !NtfsSize(v, m, &size) || size != renamed_size(i) ||
+                !NtfsRead(v, m, 0, back, size) || memcmp(back, buf, size)) {
+                printf("ntfs_many: %s is not whole\n", name);
+                bad++;
+            }
         }
     }
     NtfsUnmount(v);

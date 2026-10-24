@@ -460,7 +460,8 @@ item ends when a named program or test demonstrates it.
   with `ERROR_DISK_FULL` (`ntfstest fill`), both on the "ntfs" boot's
   disposable disk.  ~~Many files~~ Done: the MFT grows by half its size
   (and its bitmap with it), so a volume takes as many files as fit
-  (`tests/tools/test_ntfs_many.py`: 40,000).  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
+  (`tests/tools/test_ntfs_many.py`: 40,000), and a rename or link that
+  needs room in a file's record moves its small contents to clusters.  ~~NVMe~~ Done: NVMe disks, installed to and booted from.
 - ~~IPv6, HTTP/2~~ Done (Phase 18.8): lwIP's IPv6 (SLAAC, RDNSS, MLD),
   dual-stack Winsock with `getaddrinfo`, `ping -6` and `curl -6`; a
   virtio-net driver; `winhttp` on Schannel with HTTP/2 by ALPN (nghttp2).

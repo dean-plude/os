@@ -1,7 +1,9 @@
 """Many files on one NTFS volume, on the host: the real kernel/fs/ntfs.c on
 a RAM disk (tests/host/ntfs_many.c), formatted as Setup does and as mkntfs
 does.  40,000 files must all be made (the MFT grows past its first bitmap
-cluster, in few extents), mount again whole, and pass scripts/ntfs-check.py."""
+cluster, in few extents); files that fill their record must take a long new
+name and a link (their contents move to clusters); all must mount again
+whole and pass scripts/ntfs-check.py."""
 from pathlib import Path
 import shutil
 import subprocess

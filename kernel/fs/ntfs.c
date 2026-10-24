@@ -2147,6 +2147,42 @@ out:
     return ok;
 }
 
+/* Room for @need more bytes in file record @rec, as Windows makes it when a
+ * name is added: a resident $DATA that leaves too little moves to clusters
+ * (in @moved, given back by the caller if the record is not written) */
+static bool make_room(NtfsVol *v, UINT8 *rec, UINT32 need, Stream *moved)
+{
+    if (rec_used(rec) + need <= v->rec_size) return true;
+    UINT8 *da = find_attr(rec, v->rec_size, AT_DATA, NULL, 0);
+    if (!da || da[8] || (rd16(da + 0xC) & (ATTR_COMPRESSED | ATTR_ENCRYPTED | 0x8000))) return false;
+    UINT32 len = rd32(da + 0x10), keep_len = rd32(da + 4);
+    if (!len) return false;                                      /* (nothing to move) */
+    UINT64 clusters = (len + v->cluster - 1) / v->cluster, alloc = clusters * v->cluster;
+    UINT8 *buf = kzalloc(alloc), *keep = kmalloc(keep_len), *attr = kmalloc(v->rec_size);
+    bool ok = false;
+    if (!buf || !keep || !attr) goto out;
+    memcpy(buf, da + rd16(da + 0x14), len);
+    memcpy(keep, da, keep_len);
+    if (!alloc_clusters(v, moved, 0, clusters)) goto out;
+    moved->size = moved->init_size = alloc;
+    UINT32 alen = 0;
+    if (write_raw(v, moved, 0, buf, alloc)) {
+        remove_attr(rec, da);
+        alen = make_nonresident(v, attr, v->rec_size - rec_used(rec), AT_DATA, NULL, 0, moved, alloc, len);
+    }
+    if (!alen || !insert_attr(v, rec, attr, alen) || rec_used(rec) + need > v->rec_size) {
+        if (alen) remove_attr(rec, find_attr(rec, v->rec_size, AT_DATA, NULL, 0));
+        if (!find_attr(rec, v->rec_size, AT_DATA, NULL, 0)) insert_attr(v, rec, keep, keep_len);
+        free_runs(v, moved->runs, moved->nruns);
+        stream_free(moved);
+        goto out;
+    }
+    ok = true;
+out:
+    kfree(buf); kfree(keep); kfree(attr);
+    return ok;
+}
+
 bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, const char *old_name, UINT64 new_dir, const char *name)
 {
     if (!writing(v) || mft < MFT_FIRST_USER) return false;
@@ -2159,7 +2195,9 @@ bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, const char *old_name, UI
     UINT8 fn[0x42 + 2 * 255];
     Ent *ents = NULL;
     UINT32 n = 0;
-    bool ok = false;
+    Stream moved;
+    memset(&moved, 0, sizeof(moved));
+    bool ok = false, written = false;
     if (!rec || !drec || !attr || !read_record(v, mft, rec) || !read_record(v, new_dir, drec)) goto out;
     if (!(rd16(drec + 0x16) & REC_IS_DIR)) goto out;
     bool is_dir = rd16(rec + 0x16) & REC_IS_DIR;
@@ -2175,6 +2213,7 @@ bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, const char *old_name, UI
         size = rd64(val + 0x30);
         remove_attr(rec, k);
     }
+    if (!make_room(v, rec, align8(0x18 + 0x42 + 2 * (UINT32)nlen), &moved)) goto out;
     const UINT8 *da = next_attr(rec, v->rec_size, NULL, AT_DATA);
     if (da && da[8]) { alloc = rd64(da + 0x28); size = rd64(da + 0x30); }
     else if (da) { alloc = 0; size = rd32(da + 0x10); }
@@ -2190,6 +2229,7 @@ bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, const char *old_name, UI
     if (ents_has(v, ents, n, wname, (UINT32)nlen)) goto out;
     touch_si(rec, v->rec_size, t, false);
     if (!write_record(v, mft, rec)) goto out;
+    written = true;
     if (new_dir != old_dir && !unlink_from(v, old_dir, mft, oname, (UINT32)olen)) goto out;
     if (new_dir != old_dir) {                                    /* (the record of @new_dir is unchanged so far) */
         ents_free(ents, n);
@@ -2201,6 +2241,8 @@ bool NtfsRename(NtfsVol *v, UINT64 old_dir, UINT64 mft, const char *old_name, UI
     touch_si(drec, v->rec_size, t, true);
     ok = write_index(v, new_dir, drec, ents, n);
 out:
+    if (!written && moved.nruns) free_runs(v, moved.runs, moved.nruns);
+    stream_free(&moved);
     if (ents) ents_free(ents, n);
     kfree(rec); kfree(drec); kfree(attr);
     return ok;
@@ -2220,11 +2262,14 @@ bool NtfsLink(NtfsVol *v, UINT64 mft, UINT64 dir, const char *name)
     UINT8 fn[0x42 + 2 * 255];
     Ent *ents = NULL;
     UINT32 n = 0;
-    bool ok = false;
+    Stream moved;
+    memset(&moved, 0, sizeof(moved));
+    bool ok = false, written = false;
     if (!rec || !drec || !attr || !read_record(v, mft, rec) || !read_record(v, dir, drec)) goto out;
     if (!(rd16(drec + 0x16) & REC_IS_DIR) || (rd16(rec + 0x16) & REC_IS_DIR)) goto out;
     if (next_attr(rec, v->rec_size, NULL, AT_ATTRIBUTE_LIST)) goto out;
     if (!load_index(v, dir, drec, &ents, &n) || ents_has(v, ents, n, wname, (UINT32)nlen)) goto out;
+    if (!make_room(v, rec, align8(0x18 + 0x42 + 2 * (UINT32)nlen), &moved)) goto out;
     UINT64 alloc = 0, size = 0;
     const UINT8 *da = next_attr(rec, v->rec_size, NULL, AT_DATA);
     if (da && da[8]) { alloc = rd64(da + 0x28); size = rd64(da + 0x30); }
@@ -2236,11 +2281,14 @@ bool NtfsLink(NtfsVol *v, UINT64 mft, UINT64 dir, const char *name)
     count_links(v, rec);
     touch_si(rec, v->rec_size, t, false);
     if (!write_record(v, mft, rec)) goto out;
+    written = true;
     Ent e = make_entry(seq_ref(rec, mft), fn, fnlen);
     if (!e.e || !ents_insert(v, &ents, &n, e)) { kfree(e.e); goto out; }
     touch_si(drec, v->rec_size, t, true);
     ok = write_index(v, dir, drec, ents, n);
 out:
+    if (!written && moved.nruns) free_runs(v, moved.runs, moved.nruns);
+    stream_free(&moved);
     if (ents) ents_free(ents, n);
     kfree(rec); kfree(drec); kfree(attr);
     return ok;
