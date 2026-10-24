@@ -19,7 +19,7 @@ jobs:
   image:
     name: Kernel, userland and image
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
     - uses: actions/checkout@v4
     - name: Install build dependencies
@@ -27,14 +27,19 @@ jobs:
       with:
         profile: build
       timeout-minutes: 25
+    - name: Compiler cache key
+      id: ccache-key
+      run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
     - name: Restore compiler cache
       id: cache
       uses: actions/cache/restore@v4
       with:
         path: ~/.ccache
-        key: ccache-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_userland.py', 'kernel/CMakeLists.txt')
-          }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: ccache-v3-${{ runner.os }}-${{ runner.arch }}-
+        key: ccache-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_userland.py', 'kernel/CMakeLists.txt')
+          }}-${{ steps.ccache-key.outputs.day }}
+        restore-keys: |
+          ccache-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_userland.py', 'kernel/CMakeLists.txt') }}-
+          ccache-v4-${{ runner.os }}-${{ runner.arch }}-
     - name: Restore Firefox installer cache
       uses: actions/cache@v4
       with:
@@ -64,11 +69,12 @@ jobs:
         python3 tools/ci/image_manifest.py stamp --sha "$GITHUB_SHA"
         ccache -s
     - name: Save compiler cache
+      if: github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
         path: ~/.ccache
-        key: ccache-v3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_userland.py', 'kernel/CMakeLists.txt')
-          }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: ccache-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build_userland.py', 'kernel/CMakeLists.txt')
+          }}-${{ steps.ccache-key.outputs.day }}
     - name: Keep ${{ inputs.artifact }}
       uses: actions/upload-artifact@v4
       with:

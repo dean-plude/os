@@ -122,10 +122,14 @@ and SMP jobs) it fails the job unless the run was started by hand with
 
 ### Caches
 
-- **Compiler cache** (`build.yml`): ccache, restored by prefix and saved
-  after every build, so a pull request mostly recompiles what it changed.
-  The key includes the runner OS and architecture and the hash of
-  `tools/build_userland.py` and `kernel/CMakeLists.txt`.
+- **Compiler cache** (`build.yml`): ccache (capped at 1 GB so one entry
+  fits), restored by prefix. Only runs on `main` save it, and at most once
+  a day (key `ccache-v4-OS-ARCH-HASH-YYYY-MM-DD`, skipped on an exact hit),
+  so the repository's 10 GB cache is not churned out by per-run entries.
+  Pull request runs only restore, falling back to main's newest entry, which
+  they can read. The hash covers `tools/build_userland.py` and
+  `kernel/CMakeLists.txt`. A cold build (no entry) is slower than the old
+  45-minute job limit, so the image job allows 90 minutes.
 - **Firefox installer and Mesa archive** downloads, keyed on
   `tools/bundle_firefox.py` and `tools/bundle_mesa.py`.
 - **Graphics job**: the Mesa, DXVK and 7-Zip downloads, Venus
