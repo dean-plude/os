@@ -1,0 +1,153 @@
+{
+ "schema_version": 1,
+ "date": "2026-10-24",
+ "commit": "42d6473",
+ "run": "https://github.com/dean-plude/os/actions/runs/40100765419",
+ "apps": [
+  {
+   "name": "Firefox",
+   "result": "passed",
+   "rating": "Platinum"
+  },
+  {
+   "name": "Thunderbird",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "GIMP",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "Krita",
+   "result": "passed",
+   "rating": "Silver"
+  },
+  {
+   "name": "OBS Studio",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "LibreOffice",
+   "result": "passed",
+   "rating": "Silver"
+  },
+  {
+   "name": "qBittorrent",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "WinSCP",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "ShareX",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "Roblox",
+   "result": "passed",
+   "rating": "Borked"
+  },
+  {
+   "name": "Steam",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "Teeworlds",
+   "result": "passed",
+   "rating": "Silver"
+  },
+  {
+   "name": "OpenTyrian",
+   "result": "passed",
+   "rating": "Gold"
+  },
+  {
+   "name": "Blobby Volley 2",
+   "result": "passed",
+   "rating": "Gold"
+  },
+  {
+   "name": "LBreakout2",
+   "result": "passed",
+   "rating": "Platinum"
+  },
+  {
+   "name": "Cave Story",
+   "result": "passed",
+   "rating": "Platinum"
+  },
+  {
+   "name": "SuperTux",
+   "result": "passed",
+   "rating": "Platinum"
+  },
+  {
+   "name": "PhotoCraft",
+   "result": "passed",
+   "rating": "Silver"
+  },
+  {
+   "name": "VectorCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "FilmCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "LightCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "PdfCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "EffectCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "DesignCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "WordCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "SoundCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "DeckCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "CADCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  },
+  {
+   "name": "GridCraft",
+   "result": "passed",
+   "rating": "Bronze"
+  }
+ ]
+}
